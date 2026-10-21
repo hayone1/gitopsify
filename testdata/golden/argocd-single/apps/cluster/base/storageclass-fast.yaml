@@ -1,0 +1,8 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer

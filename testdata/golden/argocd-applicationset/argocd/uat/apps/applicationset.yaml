@@ -1,0 +1,96 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: gitopsify-uat
+  namespace: argocd
+spec:
+  generators:
+    - git:
+        files:
+          - path: argocd/uat/config/*.json
+        repoURL: https://github.com/acme/gitops.git
+        revision: main
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=default
+  strategy:
+    rollingSync:
+      steps:
+        - matchExpressions:
+            - key: gitopsify.io/wave
+              operator: In
+              values:
+                - w-30
+        - matchExpressions:
+            - key: gitopsify.io/wave
+              operator: In
+              values:
+                - w-20
+        - matchExpressions:
+            - key: gitopsify.io/wave
+              operator: In
+              values:
+                - w-10
+        - matchExpressions:
+            - key: gitopsify.io/wave
+              operator: In
+              values:
+                - w0
+    type: RollingSync
+  template:
+    metadata:
+      name: '{{ .appName }}'
+      labels:
+        gitopsify.io/app: '{{ .app }}'
+        gitopsify.io/env: uat
+        gitopsify.io/wave: '{{ .wave }}'
+    spec:
+      destination:
+        namespace: '{{ .namespace }}'
+        server: https://kubernetes.default.svc
+      project: gitopsify-uat
+  templatePatch: |
+    spec:
+    {{- if eq .type "helm" }}
+      sources:
+        - repoURL: '{{ .repoURL }}'
+          chart: '{{ .chart }}'
+          targetRevision: '{{ .version }}'
+          helm:
+            releaseName: '{{ .releaseName }}'
+            ignoreMissingValueFiles: true
+            valueFiles:
+              - '$values/{{ .valuesBase }}'
+              - '$values/{{ .valuesEnv }}'
+        - repoURL: https://github.com/acme/gitops.git
+          targetRevision: main
+          ref: values
+    {{- else if eq .type "helm-git" }}
+      sources:
+        - repoURL: https://github.com/acme/gitops.git
+          targetRevision: main
+          path: '{{ .appPath }}'
+          helm:
+            releaseName: '{{ .releaseName }}'
+            ignoreMissingValueFiles: true
+            valueFiles:
+              - '$values/{{ .valuesBase }}'
+              - '$values/{{ .valuesEnv }}'
+        - repoURL: https://github.com/acme/gitops.git
+          targetRevision: main
+          ref: values
+    {{- else }}
+      source:
+        repoURL: https://github.com/acme/gitops.git
+        targetRevision: main
+        path: '{{ .appPath }}'
+    {{- end }}
+      syncPolicy:
+        syncOptions:
+          - ServerSideApply=true
+    {{- if eq .skipDryRun "true" }}
+          - SkipDryRunOnMissingResource=true
+    {{- end }}
+    {{- if eq .createNamespace "true" }}
+          - CreateNamespace=true
+    {{- end }}

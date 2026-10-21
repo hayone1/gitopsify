@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: uat-podinfo
+  namespace: argocd
+  labels:
+    gitopsify.io/app: podinfo
+    gitopsify.io/env: uat
+    gitopsify.io/wave: w0
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  destination:
+    namespace: podinfo
+    server: https://uat.example.com:6443
+  project: gitopsify-uat
+  sources:
+    - chart: podinfo
+      helm:
+        ignoreMissingValueFiles: true
+        releaseName: podinfo
+        valueFiles:
+          - $values/apps/podinfo/base/values.yaml
+          - $values/apps/podinfo/envs/uat/values.yaml
+      repoURL: https://stefanprodan.github.io/podinfo
+      targetRevision: 6.9.2
+    - ref: values
+      repoURL: https://github.com/acme/gitops.git
+      targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+      limit: 5
+    syncOptions:
+      - ServerSideApply=true

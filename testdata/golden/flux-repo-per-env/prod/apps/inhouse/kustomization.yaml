@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+  - name: inhouse-values
+    files:
+      - values.yaml=values.yaml
+    namespace: tools
+configurations:
+  - kustomizeconfig.yaml
+resources:
+  - helmrelease.yaml

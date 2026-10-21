@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+  namespace: shop
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  BACKEND_URL: http://api.payments.svc.cluster.local
+  GREETING: hello

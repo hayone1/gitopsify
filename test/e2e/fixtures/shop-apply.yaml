@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: shop
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: fast
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: example.com/v1
+kind: Widget
+metadata:
+  name: blue
+  namespace: shop
+spec:
+  size: large
+  color: blue
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web
+  namespace: shop
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: widget-reader
+rules:
+  - apiGroups: [example.com]
+    resources: [widgets]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shop-web-widget-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: widget-reader
+subjects:
+  - kind: ServiceAccount
+    name: web
+    namespace: shop

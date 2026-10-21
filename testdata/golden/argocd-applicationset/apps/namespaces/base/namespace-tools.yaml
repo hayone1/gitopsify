@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tools
+  labels:
+    name: tools
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false

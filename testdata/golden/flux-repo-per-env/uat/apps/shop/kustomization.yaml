@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - configmap-web-config.yaml
+  - persistentvolumeclaim-data.yaml
+  - externalsecret-web-db.yaml
+  - service-web.yaml
+  - serviceaccount-web.yaml
+  - deployment-web.yaml
+  - horizontalpodautoscaler-web.yaml
+  - cronjob-cleanup.yaml
+  - widget-blue.yaml
+  - ingress-web.yaml
+  - role-widget-editor.yaml
+  - rolebinding-web-widget-editor.yaml

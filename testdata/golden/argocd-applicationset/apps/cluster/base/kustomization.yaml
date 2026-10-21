@@ -1,0 +1,6 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - clusterrole-widget-reader.yaml
+  - clusterrolebinding-shop-web-widget-reader.yaml
+  - storageclass-fast.yaml

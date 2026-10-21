@@ -1,0 +1,10 @@
+apiVersion: example.com/v1
+kind: Widget
+metadata:
+  name: blue
+  namespace: shop
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  color: blue
+  size: large

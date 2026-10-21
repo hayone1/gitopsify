@@ -1,0 +1,10 @@
+{
+  "app": "payments",
+  "appName": "uat-payments",
+  "appPath": "apps/payments/envs/uat",
+  "createNamespace": "false",
+  "namespace": "payments",
+  "skipDryRun": "false",
+  "type": "kustomize",
+  "wave": "w0"
+}

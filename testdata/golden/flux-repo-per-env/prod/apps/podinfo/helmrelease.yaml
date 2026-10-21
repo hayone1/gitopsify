@@ -1,0 +1,29 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: podinfo
+  namespace: podinfo
+spec:
+  chart:
+    spec:
+      chart: podinfo
+      sourceRef:
+        kind: HelmRepository
+        name: podinfo
+      version: 6.9.2
+  driftDetection:
+    mode: enabled
+  install:
+    crds: CreateReplace
+    createNamespace: false
+    remediation:
+      retries: 3
+  interval: 10m
+  releaseName: podinfo
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  valuesFrom:
+    - name: podinfo-values
+      kind: ConfigMap

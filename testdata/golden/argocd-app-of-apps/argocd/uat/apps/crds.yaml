@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: uat-crds
+  namespace: argocd
+  labels:
+    gitopsify.io/app: crds
+    gitopsify.io/env: uat
+    gitopsify.io/wave: w-30
+  annotations:
+    argocd.argoproj.io/sync-wave: "-30"
+spec:
+  destination:
+    server: https://uat.example.com:6443
+  project: gitopsify-uat
+  source:
+    path: apps/crds/envs/uat
+    repoURL: https://github.com/acme/gitops.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+      limit: 5
+    syncOptions:
+      - ServerSideApply=true

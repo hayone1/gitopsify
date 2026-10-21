@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: payments
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: ENDPOINT
+              value: https://api.uat.example.com
+          image: registry.k8s.io/pause:3.10
+          ports:
+            - containerPort: 8080

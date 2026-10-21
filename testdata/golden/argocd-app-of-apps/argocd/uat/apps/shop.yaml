@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: uat-shop
+  namespace: argocd
+  labels:
+    gitopsify.io/app: shop
+    gitopsify.io/env: uat
+    gitopsify.io/wave: w0
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  destination:
+    namespace: shop
+    server: https://uat.example.com:6443
+  project: gitopsify-uat
+  source:
+    path: apps/shop/envs/uat
+    repoURL: https://github.com/acme/gitops.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+      limit: 5
+    syncOptions:
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true

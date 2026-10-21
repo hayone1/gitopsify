@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: payments
+  labels:
+    app: api
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: ENDPOINT
+              value: https://api.test.example.com
+          image: registry.k8s.io/pause:3.10
+          ports:
+            - containerPort: 8080

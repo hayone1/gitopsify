@@ -1,0 +1,10 @@
+{
+  "app": "crds",
+  "appName": "uat-crds",
+  "appPath": "apps/crds/envs/uat",
+  "createNamespace": "false",
+  "namespace": "",
+  "skipDryRun": "false",
+  "type": "kustomize",
+  "wave": "w-30"
+}

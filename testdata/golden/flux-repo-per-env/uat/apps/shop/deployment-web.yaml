@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: shop
+  labels:
+    app: web
+spec:
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: nginx
+          env:
+            - name: GREETING
+              valueFrom:
+                configMapKeyRef:
+                  key: GREETING
+                  name: web-config
+            - name: BACKEND_URL
+              valueFrom:
+                configMapKeyRef:
+                  key: BACKEND_URL
+                  name: web-config
+            - name: PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: web-db
+            - name: USERNAME
+              valueFrom:
+                secretKeyRef:
+                  key: username
+                  name: web-db
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+      serviceAccountName: web

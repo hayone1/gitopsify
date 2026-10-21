@@ -1,0 +1,10 @@
+ingress:
+  enabled: true
+  hosts:
+    - host: podinfo.test.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+replicaCount: 1
+ui:
+  message: hello from test

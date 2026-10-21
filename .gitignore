@@ -1,0 +1,5 @@
+/bin/
+/dist/
+/gitops/
+/.gitopsify-backup/
+/.secrets/

@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: gitopsify-uat
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-100"
+spec:
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  description: Migrated by gitopsify
+  destinations:
+    - namespace: '*'
+      server: https://uat.example.com:6443
+  sourceRepos:
+    - https://github.com/acme/gitops.git
+    - https://stefanprodan.github.io/podinfo

@@ -1,0 +1,10 @@
+{
+  "app": "shop",
+  "appName": "uat-shop",
+  "appPath": "apps/shop/envs/uat",
+  "createNamespace": "false",
+  "namespace": "shop",
+  "skipDryRun": "true",
+  "type": "kustomize",
+  "wave": "w0"
+}

@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prod-cluster
+  namespace: argocd
+  labels:
+    gitopsify.io/app: cluster
+    gitopsify.io/env: prod
+    gitopsify.io/wave: w-10
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  destination:
+    server: https://kubernetes.default.svc
+  project: gitopsify-prod
+  source:
+    path: apps/cluster/envs/prod
+    repoURL: https://github.com/acme/gitops.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+      limit: 5
+    syncOptions:
+      - ServerSideApply=true
+      - ClientSideApplyMigration=false
