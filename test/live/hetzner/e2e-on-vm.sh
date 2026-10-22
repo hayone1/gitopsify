@@ -8,6 +8,7 @@
 #   ./e2e-on-vm.sh                 the whole suite
 #   STAGES="auth argocd" ./e2e-on-vm.sh
 #   SERVER_TYPE=cx53 ./e2e-on-vm.sh  a bigger machine (default cx43: 8 vCPU, 16 GB)
+#   LOCATIONS="nbg1 hel1"           where to try, in order (default fsn1 nbg1 hel1)
 #   ./e2e-on-vm.sh destroy         remove what an interrupted run left behind
 set -euo pipefail
 
@@ -56,9 +57,17 @@ rm -f "$state"/ssh "$state"/ssh.pub "$state"/known_hosts
 ssh-keygen -q -t ed25519 -N '' -f "$state/ssh"
 cp "$here/main.tf" "$state/"
 tf init -input=false >/dev/null
-tf apply -auto-approve -input=false -var run_id="$run_id" -var ssh_public_key="$(cat "$state/ssh.pub")" \
-  -var allowed_cidr="$(curl -fsS https://api.ipify.org)/32" -var label="$label" -var install_k3s=false \
-  -var 'clusters=["runner"]' -var server_type="${SERVER_TYPE:-cx43}" >/dev/null
+myip=$(curl -fsS https://api.ipify.org)
+# Cloud locations run out of a server type now and then: try the next one.
+for location in ${LOCATIONS:-fsn1 nbg1 hel1}; do
+  if tf apply -auto-approve -input=false -var run_id="$run_id" -var ssh_public_key="$(cat "$state/ssh.pub")" \
+    -var allowed_cidr="$myip/32" -var label="$label" -var install_k3s=false -var location="$location" \
+    -var 'clusters=["runner"]' -var server_type="${SERVER_TYPE:-cx43}" > "$state/apply.log" 2>&1; then
+    break
+  fi
+  grep -q resource_unavailable "$state/apply.log" || { cat "$state/apply.log"; exit 1; }
+  echo "${SERVER_TYPE:-cx43} unavailable in $location"
+done
 ip=$(tf output -json ips | jq -r .runner)
 ssh_() { ssh -i "$state/ssh" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$state/known_hosts" -o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=30 "root@$ip" "$@"; }
 until ssh_ true 2>/dev/null; do sleep 5; done
