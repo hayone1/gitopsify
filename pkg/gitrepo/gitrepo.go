@@ -103,8 +103,13 @@ func Publish(o Options) (*Result, error) {
 		return nil, err
 	}
 	if status != "" {
-		if _, err := git(o.Dir, "commit", "-q", "-m", o.Message); err != nil {
-			return nil, fmt.Errorf("%w (is git user.name/user.email configured?)", err)
+		args := []string{"commit", "-q", "-m", o.Message}
+		if email, _ := git(o.Dir, "config", "user.email"); email == "" {
+			// Fresh CI runners have no identity; commit as gitopsify.
+			args = append([]string{"-c", "user.name=gitopsify", "-c", "user.email=gitopsify@users.noreply.github.com"}, args...)
+		}
+		if _, err := git(o.Dir, args...); err != nil {
+			return nil, err
 		}
 		res.Committed = true
 	}

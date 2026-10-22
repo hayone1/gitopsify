@@ -13,3 +13,4 @@
 *.tfstate.*
 .terraform.lock.hcl
 /.logs/
+/test/live/hetzner/.state-runner/

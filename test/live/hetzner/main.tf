@@ -39,6 +39,18 @@ variable "ssh_public_key" {
   type = string
 }
 
+variable "install_k3s" {
+  description = "Install k3s; false for a plain machine that runs tests."
+  type        = bool
+  default     = true
+}
+
+variable "label" {
+  description = "Label every resource carries, for cleanup."
+  type        = string
+  default     = "gitopsify-e2e"
+}
+
 variable "allowed_cidr" {
   description = "The only address allowed to reach SSH and the API servers."
   type        = string
@@ -49,17 +61,17 @@ provider "hcloud" {
 }
 
 locals {
-  labels = { "gitopsify-e2e" = "true", "run" = var.run_id }
+  labels = { (var.label) = "true", "run" = var.run_id }
 }
 
 resource "hcloud_ssh_key" "e2e" {
-  name       = "gitopsify-e2e-${var.run_id}"
+  name       = "${var.label}-${var.run_id}"
   public_key = var.ssh_public_key
   labels     = local.labels
 }
 
 resource "hcloud_firewall" "e2e" {
-  name   = "gitopsify-e2e-${var.run_id}"
+  name   = "${var.label}-${var.run_id}"
   labels = local.labels
   rule {
     direction  = "in"
@@ -82,7 +94,7 @@ resource "hcloud_firewall" "e2e" {
 
 resource "hcloud_server" "k3s" {
   for_each     = toset(var.clusters)
-  name         = "gitopsify-e2e-${each.key}-${var.run_id}"
+  name         = "${var.label}-${each.key}-${var.run_id}"
   server_type  = var.server_type
   location     = var.location
   image        = "ubuntu-24.04"
@@ -91,7 +103,11 @@ resource "hcloud_server" "k3s" {
   labels       = merge(local.labels, { "cluster" = each.key })
   # Docker Hub limits anonymous pulls per IP, and cloud IPs are shared: pull
   # through Google's mirror instead.
-  user_data = <<-EOT
+  user_data = var.install_k3s ? local.k3s_user_data : null
+}
+
+locals {
+  k3s_user_data = <<-EOT
     #cloud-config
     write_files:
       - path: /etc/rancher/k3s/registries.yaml
