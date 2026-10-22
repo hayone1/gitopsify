@@ -315,7 +315,7 @@ func (b *bootstrapFlags) add(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&b.sshKey, "ssh-key", "", "private key file for an SSH repository")
 	cmd.Flags().StringVar(&b.knownHosts, "known-hosts", "", "known_hosts file of the Git server, e.g. from ssh-keyscan (needed by Flux over SSH, and by Argo CD for hosts other than GitHub, GitLab, Bitbucket and Azure DevOps)")
 	cmd.Flags().StringVar(&b.sopsAgeKey, "sops-age-key", "", "age key file loaded as Flux's SOPS decryption key")
-	cmd.Flags().DurationVar(&b.timeout, "timeout", 10*time.Minute, "how long to wait for the GitOps tool to become ready")
+	cmd.Flags().DurationVar(&b.timeout, "timeout", 15*time.Minute, "how long to wait for Argo CD or Flux to start (image pulls are the slow part)")
 	cmd.Flags().BoolVarP(&b.yes, "yes", "y", false, "don't ask for confirmation")
 	cmd.Flags().BoolVar(&b.wait, "wait", false, "after bootstrapping, wait until every app is synced and healthy")
 	cmd.Flags().DurationVar(&b.waitTimeout, "wait-timeout", 20*time.Minute, "how long --wait waits")

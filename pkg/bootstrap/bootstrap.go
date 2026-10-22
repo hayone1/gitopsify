@@ -4,15 +4,18 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,7 +63,7 @@ func (o *Options) log(format string, args ...any) {
 // Run bootstraps the configured GitOps tool.
 func Run(ctx context.Context, o Options) error {
 	if o.Timeout == 0 {
-		o.Timeout = 10 * time.Minute
+		o.Timeout = 15 * time.Minute
 	}
 	switch o.Config.Output.Tool {
 	case config.ToolArgoCD:
@@ -392,7 +395,11 @@ func waitReady(ctx context.Context, c *kube.Client, ns string, deployments, stat
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for %s in namespace %s", strings.Join(pending, ", "), ns)
+			msg := fmt.Sprintf("timed out after %s waiting for %s in namespace %s", timeout, strings.Join(pending, ", "), ns)
+			if why := podProblems(ctx, c, ns); why != "" {
+				msg += ": " + why
+			}
+			return errors.New(msg)
 		}
 		select {
 		case <-ctx.Done():
@@ -400,6 +407,45 @@ func waitReady(ctx context.Context, c *kube.Client, ns string, deployments, stat
 		case <-time.After(3 * time.Second):
 		}
 	}
+}
+
+// podProblems describes the pods of a namespace that aren't running and
+// ready: image pulls that fail, crash loops, pods that can't be scheduled.
+func podProblems(ctx context.Context, c *kube.Client, ns string) string {
+	pods, err := c.Kubernetes.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return ""
+	}
+	var out []string
+	for _, p := range pods.Items {
+		var why []string
+		for _, cond := range p.Status.Conditions {
+			if cond.Type == corev1.PodScheduled && cond.Status != corev1.ConditionTrue && cond.Message != "" {
+				why = append(why, "not scheduled: "+cond.Message)
+			}
+		}
+		for _, cs := range append(p.Status.InitContainerStatuses, p.Status.ContainerStatuses...) {
+			switch {
+			case cs.State.Waiting != nil && cs.State.Waiting.Reason == "ContainerCreating":
+				why = append(why, cs.Name+" still being created (pulling its image? kubelet pulls one image at a time, so slow registries add up)")
+			case cs.State.Waiting != nil && cs.State.Waiting.Reason != "" && cs.State.Waiting.Reason != "PodInitializing":
+				why = append(why, fmt.Sprintf("%s %s: %s", cs.Name, cs.State.Waiting.Reason, cs.State.Waiting.Message))
+			case cs.LastTerminationState.Terminated != nil && cs.RestartCount > 0:
+				t := cs.LastTerminationState.Terminated
+				why = append(why, fmt.Sprintf("%s restarted %d times, last %s (exit %d)", cs.Name, cs.RestartCount, t.Reason, t.ExitCode))
+			case !cs.Ready && cs.State.Running != nil:
+				why = append(why, cs.Name+" running but not ready")
+			}
+		}
+		if len(why) > 0 {
+			out = append(out, p.Name+": "+strings.Join(why, "; "))
+		}
+	}
+	sort.Strings(out)
+	if len(out) > 5 {
+		out = append(out[:5], fmt.Sprintf("and %d more", len(out)-5))
+	}
+	return strings.Join(out, " | ")
 }
 
 func deploymentReady(d *appsv1.Deployment) bool {

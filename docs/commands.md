@@ -155,7 +155,7 @@ Usage: `gitopsify bootstrap [flags]`
 | `--known-hosts` |  | known_hosts file of the Git server, e.g. from ssh-keyscan (needed by Flux over SSH, and by Argo CD for hosts other than GitHub, GitLab, Bitbucket and Azure DevOps) |
 | `--sops-age-key` |  | age key file loaded as Flux's SOPS decryption key |
 | `--ssh-key` |  | private key file for an SSH repository |
-| `--timeout` | `10m0s` | how long to wait for the GitOps tool to become ready |
+| `--timeout` | `15m0s` | how long to wait for Argo CD or Flux to start (image pulls are the slow part) |
 | `--wait` |  | after bootstrapping, wait until every app is synced and healthy |
 | `--wait-for` | `healthy` | what --wait waits for: healthy, or synced (applied, health aside) |
 | `--wait-timeout` | `20m0s` | how long --wait waits |
@@ -894,7 +894,7 @@ Usage: `gitopsify migrate [flags]`
 | `--known-hosts` |  | known_hosts file of the Git server, e.g. from ssh-keyscan (needed by Flux over SSH, and by Argo CD for hosts other than GitHub, GitLab, Bitbucket and Azure DevOps) |
 | `--sops-age-key` |  | age key file loaded as Flux's SOPS decryption key |
 | `--ssh-key` |  | private key file for an SSH repository |
-| `--timeout` | `10m0s` | how long to wait for the GitOps tool to become ready |
+| `--timeout` | `15m0s` | how long to wait for Argo CD or Flux to start (image pulls are the slow part) |
 | `--wait` |  | after bootstrapping, wait until every app is synced and healthy |
 | `--wait-for` | `healthy` | what --wait waits for: healthy, or synced (applied, health aside) |
 | `--wait-timeout` | `20m0s` | how long --wait waits |

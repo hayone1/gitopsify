@@ -214,7 +214,7 @@ if want argocd; then
   kubectl --context "kind-$dst" apply -f "$work/argocd/.secrets/shop/web-db.yaml"
   # kind has no ingress controller or metrics server: Ingresses and the HPA
   # can't become healthy, so wait for the sync and check the explanations.
-  (cd "$work" && g bootstrap -o argocd --yes --wait --wait-for synced --wait-timeout 20m) || fail "bootstrap --wait"
+  (cd "$work" && g bootstrap -o argocd --yes --timeout 25m --wait --wait-for synced --wait-timeout 20m) || fail "bootstrap --wait"
   (cd "$work" && g status -o argocd --format json) > "$work/argocd-status.json" || true
   [[ $(jq 'length' "$work/argocd-status.json") -ge 8 ]] || fail "too few applications"
   jq -e 'all(.[]; .sync == "Synced")' "$work/argocd-status.json" >/dev/null || fail "not every application synced"
@@ -234,7 +234,7 @@ if want flux; then
   url=$(new_repo flux)
   (cd "$work" && g generate --context "kind-$src" --tool flux --env uat="kind-$dst" \
     --repo-url "$url" --secrets sealed-secrets -o flux --push)
-  (cd "$work" && g bootstrap -o flux --yes --wait --wait-timeout 20m) || fail "bootstrap --wait"
+  (cd "$work" && g bootstrap -o flux --yes --timeout 25m --wait --wait-timeout 20m) || fail "bootstrap --wait"
   [[ $(kubectl --context "kind-$dst" get helmreleases.helm.toolkit.fluxcd.io -A -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' | grep -c '^True$') == 2 ]] || fail "HelmReleases not ready"
   password=$(kubectl --context "kind-$dst" -n shop get secret web-db -o jsonpath='{.data.password}' | base64 -d)
   [[ "$password" == "s3cr3t" ]] || fail "unsealed password is '$password'"
@@ -260,7 +260,7 @@ if want sops; then
     --repo-url "$url" --secrets sops --sops-age "$(age-keygen -y "$work/age.key")" -o sops --push)
   ! grep -rq "s3cr3t" "$work/sops/apps" || fail "plain-text secret in the repository"
   grep -rq "ENC\[AES256_GCM" "$work/sops/apps/shop" || fail "no encrypted Secret"
-  (cd "$work" && g bootstrap -o sops --yes --sops-age-key "$work/age.key" --wait --wait-timeout 20m) || fail "bootstrap --wait"
+  (cd "$work" && g bootstrap -o sops --yes --timeout 25m --sops-age-key "$work/age.key" --wait --wait-timeout 20m) || fail "bootstrap --wait"
   password=$(kubectl --context "kind-$dst" -n shop get secret web-db -o jsonpath='{.data.password}' | base64 -d)
   [[ "$password" == "s3cr3t" ]] || fail "decrypted password is '$password'"
   pass "Flux decrypted the sops Secret"
@@ -279,7 +279,7 @@ if want takeover; then
   pods > "$work/pods-before.txt"
   (cd "$work" && g adopt -c takeover/gitopsify.yaml --helm-records backup-delete --yes --backup-dir helm-backup)
   ls "$work/helm-backup"/*/sh.helm.release.v1.* >/dev/null || fail "no Helm record backups"
-  (cd "$work" && g bootstrap -o takeover --yes --wait --wait-for synced --wait-timeout 20m) || fail "bootstrap --wait"
+  (cd "$work" && g bootstrap -o takeover --yes --timeout 25m --wait --wait-for synced --wait-timeout 20m) || fail "bootstrap --wait"
   pods > "$work/pods-after.txt"
   restarted=$(comm -23 "$work/pods-before.txt" "$work/pods-after.txt" | grep -v '^podinfo/' | grep -v '^shop/debug=' || true)
   [[ -z "$restarted" ]] || fail "pods restarted or deleted during the takeover: $restarted"

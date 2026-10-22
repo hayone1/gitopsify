@@ -50,10 +50,10 @@ completions included:
 
 ```sh
 # Debian, Ubuntu
-curl -fsSLO https://github.com/hayone1/gitopsify/releases/download/v0.1.0/gitopsify_0.1.0_amd64.deb
-sudo dpkg -i gitopsify_0.1.0_amd64.deb
+curl -fsSLO https://github.com/hayone1/gitopsify/releases/download/v0.1.0/gitopsify_0.1.0_linux_amd64.deb
+sudo dpkg -i gitopsify_0.1.0_linux_amd64.deb
 # Fedora, RHEL
-sudo rpm -i https://github.com/hayone1/gitopsify/releases/download/v0.1.0/gitopsify-0.1.0-1.x86_64.rpm
+sudo rpm -i https://github.com/hayone1/gitopsify/releases/download/v0.1.0/gitopsify_0.1.0_linux_amd64.rpm
 ```
 
 Homebrew, Scoop and winget packages are planned.

@@ -15,6 +15,7 @@
 #   ./run.sh          create the clusters, test, destroy them
 #   ./run.sh destroy  destroy what a failed or kept run left behind
 #   KEEP=1            keep the clusters (destroy later with ./run.sh destroy)
+#   STAGES="argocd"   run only these of argocd, flux and takeover (fewer servers)
 #   REPO=owner/name   GitHub repository to use (default <you>/gitopsify-e2e-live)
 set -euo pipefail
 
@@ -53,6 +54,10 @@ destroy() {
     while read -r repo id; do gh repo deploy-key delete "$id" -R "$repo" >/dev/null 2>&1 || true; done < "$state/deploy-keys"
     rm -f "$state/deploy-keys"
   fi
+  if [[ -f "$state/branches" && "${KEEP:-}" != 1 ]]; then
+    while read -r repo branch; do gh api -X DELETE "repos/$repo/git/refs/heads/$branch" >/dev/null 2>&1 || true; done < "$state/branches"
+    rm -f "$state/branches"
+  fi
   rm -f "$state/terraform.tfstate" "$state/terraform.tfstate.backup"
 }
 
@@ -67,7 +72,18 @@ echo "$run_id" > "$state/run_id"
 work=$(mktemp -d)
 export KUBECONFIG="$state/kubeconfig"
 rm -f "$KUBECONFIG"
+want() { [[ -z "${STAGES:-}" || " $STAGES " == *" $1 "* ]]; }
+clusters='"src"'
+want argocd && clusters+=',"argocd"'
+want flux && clusters+=',"flux"'
 cleanup() {
+  local rc=$?
+  if ((rc != 0)) && [[ -d "${work:-}" ]]; then
+    # Keep what explains the failure: reports, scans, diffs, statuses.
+    rm -rf "$state/last-run" && mkdir -p "$state/last-run"
+    find "$work" -maxdepth 3 \( -name '*.json' -o -name '*.txt' -o -name 'MIGRATION_REPORT.md' \) -exec cp --parents {} "$state/last-run" \; 2>/dev/null || true
+    echo "diagnostics kept in $state/last-run"
+  fi
   if [[ "${KEEP:-}" == 1 ]]; then
     echo "kept: KUBECONFIG=$KUBECONFIG, work dir $work; destroy with $0 destroy"
     return
@@ -86,7 +102,7 @@ ssh-keygen -q -t ed25519 -N '' -C "gitopsify-e2e-$run_id" -f "$state/ssh"
 myip=$(curl -fsS https://api.ipify.org)
 cp "$here/main.tf" "$state/"
 tf init -input=false >/dev/null
-tf apply -auto-approve -input=false -var run_id="$run_id" -var ssh_public_key="$(cat "$state/ssh.pub")" -var allowed_cidr="$myip/32" >/dev/null
+tf apply -auto-approve -input=false -var run_id="$run_id" -var ssh_public_key="$(cat "$state/ssh.pub")" -var allowed_cidr="$myip/32" -var "clusters=[$clusters]" >/dev/null
 tf output -json ips > "$state/ips.json"
 cat "$state/ips.json"
 ssh_() { ssh -i "$state/ssh" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$state/known_hosts" -o ConnectTimeout=10 -o BatchMode=yes "root@$1" "${@:2}"; }
@@ -103,7 +119,8 @@ for name in $(jq -r 'keys[]' "$state/ips.json"); do
     sed -e "s/127.0.0.1/$ip/" -e "s/: default$/: hz-$name/" -e "s/name: default$/name: hz-$name/" > "$state/$name.yaml"
   echo "k3s ready on $name ($ip)"
 done
-export KUBECONFIG="$state/src.yaml:$state/argocd.yaml:$state/flux.yaml"
+KUBECONFIG=$(jq -r 'keys | map("'"$state"'/" + . + ".yaml") | join(":")' "$state/ips.json")
+export KUBECONFIG
 kubectl config view --flatten > "$state/kubeconfig"
 export KUBECONFIG="$state/kubeconfig"
 kubectl --context hz-src get nodes -o wide
@@ -136,7 +153,7 @@ pass "k3s components and CRDs left out"
 
 log "GitHub repository"
 repo=${REPO:-$(gh api user -q .login)/gitopsify-e2e-live}
-gh repo view "$repo" >/dev/null 2>&1 || gh repo create "$repo" --private --description "gitopsify live test output" >/dev/null
+gh repo view "$repo" >/dev/null 2>&1 || gh repo create "$repo" --private --add-readme --description "gitopsify live test output" >/dev/null
 ssh-keygen -q -t ed25519 -N '' -C "gitopsify-e2e-writer-$run_id" -f "$work/writer"
 ssh-keygen -q -t ed25519 -N '' -C "gitopsify-e2e-reader-$run_id" -f "$work/reader"
 add_key() { # <file> <title> [--allow-write]
@@ -149,52 +166,55 @@ ssh-keyscan -t ed25519,rsa,ecdsa github.com 2>/dev/null > "$work/known_hosts"
 export GIT_SSH_COMMAND="ssh -i $work/writer -o IdentitiesOnly=yes -o UserKnownHostsFile=$work/known_hosts"
 git config --global user.email >/dev/null || export GIT_AUTHOR_NAME=gitopsify-e2e GIT_AUTHOR_EMAIL=e2e@example.com GIT_COMMITTER_NAME=gitopsify-e2e GIT_COMMITTER_EMAIL=e2e@example.com
 url="git@github.com:$repo.git"
-branches=()
+branch_for() { echo "$repo run-$run_id-$1" >> "$state/branches"; echo "run-$run_id-$1"; }
 
+if want argocd; then
 log "Argo CD with Sealed Secrets, via migrate"
 kubectl --context hz-argocd apply -f https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.40.0/controller.yaml >/dev/null
 kubectl --context hz-argocd -n kube-system rollout status deploy/sealed-secrets-controller --timeout=300s
-branch="run-$run_id-argocd"
-branches+=("$branch")
+branch=$(branch_for argocd)
 (cd "$work" && g migrate --context hz-src --env uat=hz-argocd --tool argocd --secrets sealed-secrets \
-  --repo-url "$url" --revision "$branch" -o argocd --push --yes --ssh-key "$work/reader" --known-hosts "$work/known_hosts" \
+  --repo-url "$url" --revision "$branch" -o argocd --push --yes --timeout 25m --ssh-key "$work/reader" --known-hosts "$work/known_hosts" \
   --wait --wait-timeout 25m) || fail "migrate to Argo CD"
 password=$(kubectl --context hz-argocd -n shop get secret web-db -o jsonpath='{.data.password}' | base64 -d)
 [[ "$password" == s3cr3t ]] || fail "unsealed password is '$password'"
 kubectl --context hz-argocd -n shop get widget blue >/dev/null || fail "custom resource missing"
 g status -o "$work/argocd" --env uat >/dev/null || fail "status"
 pass "Argo CD synced everything from GitHub; SealedSecret unsealed"
+fi
 
+if want flux; then
 log "Flux, via generate + bootstrap"
-branch="run-$run_id-flux"
-branches+=("$branch")
+branch=$(branch_for flux)
 (cd "$work" && g generate --context hz-src --env uat=hz-flux --tool flux --secrets local \
   --repo-url "$url" --revision "$branch" -o flux --push)
 kubectl --context hz-flux create namespace shop
 kubectl --context hz-flux apply -f "$work/flux/.secrets/shop/web-db.yaml"
 (cd "$work" && g check -c flux/gitopsify.yaml) || fail "check"
-(cd "$work" && g bootstrap -o flux --yes --ssh-key "$work/reader" --known-hosts "$work/known_hosts" --wait --wait-timeout 25m) || fail "bootstrap Flux"
+(cd "$work" && g bootstrap -o flux --yes --timeout 25m --ssh-key "$work/reader" --known-hosts "$work/known_hosts" --wait --wait-timeout 25m) || fail "bootstrap Flux"
 kubectl --context hz-flux -n shop rollout status deploy/web --timeout=300s
 pass "Flux synced everything from GitHub"
+fi
 
+if want takeover; then
 log "Argo CD takes over the source cluster"
-branch="run-$run_id-takeover"
-branches+=("$branch")
+branch=$(branch_for takeover)
 (cd "$work" && g generate --context hz-src --env prod=hz-src --tool argocd --adopt \
   --repo-url "$url" --revision "$branch" -o takeover --push)
 (cd "$work" && g diff -c takeover/gitopsify.yaml --format json) > "$work/takeover-diff.json"
 changed=$(jq -r '[.[] | select(.action == "update")] | map(.object) | join(",")' "$work/takeover-diff.json")
-[[ "$changed" == "Deployment.apps/podinfo/podinfo" ]] || fail "takeover diff changed: $changed"
+if [[ "$changed" != "Deployment.apps/podinfo/podinfo" ]]; then
+  jq -r '.[] | select(.action == "update") | .diff' "$work/takeover-diff.json"
+  fail "takeover diff changed: $changed"
+fi
 pods() { kubectl --context hz-src get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}={.metadata.uid}{"\n"}{end}' | grep -Ev '^(kube-system|argocd)/|^shop/cleanup-' | sort; }
 pods > "$work/pods-before.txt"
 (cd "$work" && g adopt -c takeover/gitopsify.yaml --helm-records backup-delete --yes --backup-dir helm-backup)
-(cd "$work" && g bootstrap -o takeover --yes --ssh-key "$work/reader" --known-hosts "$work/known_hosts" --wait --wait-timeout 25m) || fail "bootstrap takeover"
+(cd "$work" && g bootstrap -o takeover --yes --timeout 25m --ssh-key "$work/reader" --known-hosts "$work/known_hosts" --wait --wait-timeout 25m) || fail "bootstrap takeover"
 pods > "$work/pods-after.txt"
 restarted=$(comm -23 "$work/pods-before.txt" "$work/pods-after.txt" | grep -v '^podinfo/' | grep -v '^shop/debug=' || true)
 [[ -z "$restarted" ]] || fail "pods restarted during the takeover: $restarted"
 pass "takeover without restarts"
-
-if [[ "${KEEP:-}" != 1 ]]; then
-  for b in "${branches[@]}"; do git push -q "$url" --delete "$b" 2>/dev/null || true; done
 fi
+
 log "PASS"
