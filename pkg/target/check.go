@@ -142,20 +142,27 @@ func Check(ctx context.Context, inv *model.Inventory, cfg *config.Config, env *c
 	}
 
 	// Existing objects and their owners.
-	existing, owned := 0, 0
-	for _, eo := range objs {
-		u := eo.Object.DeepCopy()
-		if err := defaultNamespace(c, u, eo.DefaultNamespace); err != nil {
-			continue
+	owners, refs := make([]string, len(objs)), make([]string, len(objs))
+	exists := make([]bool, len(objs))
+	parallel(ctx, len(objs), func(i int) {
+		u := objs[i].Object.DeepCopy()
+		if err := defaultNamespace(c, u, objs[i].DefaultNamespace); err != nil {
+			return
 		}
 		live, err := c.Get(ctx, u)
 		if err != nil || live == nil {
+			return
+		}
+		exists[i], owners[i], refs[i] = true, ownerOf(live), refString(u)
+	})
+	existing := 0
+	for i := range objs {
+		if !exists[i] {
 			continue
 		}
 		existing++
-		if owner := ownerOf(live); owner != "" {
-			owned++
-			add(SeverityWarning, "ownership", refString(u), "already exists and is managed by %s; the first sync takes it over", owner)
+		if owners[i] != "" {
+			add(SeverityWarning, "ownership", refs[i], "already exists and is managed by %s; the first sync takes it over", owners[i])
 		}
 	}
 	if existing > 0 {

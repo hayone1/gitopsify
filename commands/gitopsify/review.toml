@@ -1,0 +1,9 @@
+description = "Review a gitopsify MIGRATION_REPORT.md and fix what the configuration can fix"
+prompt = """
+Read MIGRATION_REPORT.md in the generated gitopsify repository (default ./gitops,
+or the path below) and work through it with the gitopsify-migrate skill's
+references/report-warnings.md: explain each warning, change gitopsify.yaml and
+regenerate where that fixes it, and list the manual tasks that remain.
+
+Repository or notes: {{args}}
+"""

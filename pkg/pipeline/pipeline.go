@@ -26,6 +26,7 @@ import (
 	"github.com/hayone1/gitopsify/pkg/match"
 	"github.com/hayone1/gitopsify/pkg/model"
 	"github.com/hayone1/gitopsify/pkg/order"
+	"github.com/hayone1/gitopsify/pkg/portability"
 	"github.com/hayone1/gitopsify/pkg/render"
 	"github.com/hayone1/gitopsify/pkg/secrets"
 	"github.com/hayone1/gitopsify/pkg/transform"
@@ -106,6 +107,7 @@ func Scan(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	clean.Run(inv, cfg)
+	portability.Check(inv, cfg)
 	if err := group.Run(inv, cfg); err != nil {
 		return nil, err
 	}

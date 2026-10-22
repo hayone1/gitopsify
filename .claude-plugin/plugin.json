@@ -1,0 +1,22 @@
+{
+  "name": "gitopsify",
+  "displayName": "gitopsify",
+  "version": "0.1.0",
+  "description": "Migrate what runs in a Kubernetes cluster into a GitOps repository for Argo CD, Flux or Kustomize with the gitopsify CLI: setup decisions, cluster access, Git remotes on any host, Secrets, takeover and troubleshooting.",
+  "author": {
+    "name": "gitopsify maintainers",
+    "url": "https://github.com/hayone1/gitopsify"
+  },
+  "homepage": "https://github.com/hayone1/gitopsify",
+  "repository": "https://github.com/hayone1/gitopsify",
+  "license": "Apache-2.0",
+  "keywords": [
+    "kubernetes",
+    "gitops",
+    "argocd",
+    "flux",
+    "migration",
+    "helm"
+  ],
+  "icon": "./.claude-plugin/icon.png"
+}

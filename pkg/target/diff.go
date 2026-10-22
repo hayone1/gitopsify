@@ -10,9 +10,11 @@ import (
 	"strings"
 
 	"github.com/pmezard/go-difflib/difflib"
+	"golang.org/x/sync/errgroup"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/helm"
@@ -69,57 +71,80 @@ func Diff(ctx context.Context, inv *model.Inventory, cfg *config.Config, env *co
 		fm = "gitopsify-diff"
 	}
 	migrated := migratedKinds(inv)
-	var changes []Change
-	for _, eo := range objs {
-		u := eo.Object.DeepCopy()
-		ch := Change{App: eo.App.Name}
-		if err := defaultNamespace(c, u, eo.DefaultNamespace); err != nil {
-			ch.Object = refString(u)
-			if meta.IsNoMatchError(err) {
-				ch.Action = ActionCreate
-				ch.Message = "kind not served yet"
-				if app := migrated[u.GroupVersionKind().GroupKind()]; app != "" {
-					ch.Message += "; its CRD is installed by app " + app
-				}
-			} else {
-				ch.Action, ch.Message = ActionError, err.Error()
-			}
-			changes = append(changes, ch)
-			continue
-		}
-		ch.Object = refString(u)
-		live, err := c.Get(ctx, u)
-		if err != nil {
-			ch.Action, ch.Message = ActionError, err.Error()
-			changes = append(changes, ch)
-			continue
-		}
-		if live == nil {
-			ch.Action = ActionCreate
-			if _, err := c.Apply(ctx, u, kube.ApplyOptions{DryRun: true, FieldManager: fm, Force: true}); err != nil && !apierrors.IsNotFound(err) {
-				ch.Message = "dry-run failed: " + err.Error()
-			}
-			changes = append(changes, ch)
-			continue
-		}
-		result, err := c.Apply(ctx, u, kube.ApplyOptions{DryRun: true, FieldManager: fm, Force: true})
-		if err != nil {
-			ch.Action, ch.Message = ActionError, "dry-run failed: "+err.Error()
-			changes = append(changes, ch)
-			continue
-		}
-		d, err := unifiedDiff(live, result, ch.Object)
+	changes := make([]Change, len(objs))
+	errs := make([]error, len(objs))
+	parallel(ctx, len(objs), func(i int) {
+		changes[i], errs[i] = diffObject(ctx, c, objs[i], fm, migrated)
+	})
+	for _, err := range errs {
 		if err != nil {
 			return nil, nil, err
 		}
-		if d == "" {
-			ch.Action = ActionUnchanged
-		} else {
-			ch.Action, ch.Diff = ActionUpdate, d
-		}
-		changes = append(changes, ch)
 	}
 	return changes, notes, nil
+}
+
+// diffObject dry-runs one object and compares the result with the live one.
+func diffObject(ctx context.Context, c *kube.Client, eo EnvObject, fm string, migrated map[schema.GroupKind]string) (Change, error) {
+	u := eo.Object.DeepCopy()
+	ch := Change{App: eo.App.Name}
+	if err := defaultNamespace(c, u, eo.DefaultNamespace); err != nil {
+		ch.Object = refString(u)
+		if meta.IsNoMatchError(err) {
+			ch.Action = ActionCreate
+			ch.Message = "kind not served yet"
+			if app := migrated[u.GroupVersionKind().GroupKind()]; app != "" {
+				ch.Message += "; its CRD is installed by app " + app
+			}
+		} else {
+			ch.Action, ch.Message = ActionError, err.Error()
+		}
+		return ch, nil
+	}
+	ch.Object = refString(u)
+	live, err := c.Get(ctx, u)
+	if err != nil {
+		ch.Action, ch.Message = ActionError, c.Explain(err).Error()
+		return ch, nil
+	}
+	if live == nil {
+		ch.Action = ActionCreate
+		if _, err := c.Apply(ctx, u, kube.ApplyOptions{DryRun: true, FieldManager: fm, Force: true}); err != nil && !apierrors.IsNotFound(err) {
+			ch.Message = "dry-run failed: " + err.Error()
+		}
+		return ch, nil
+	}
+	result, err := c.Apply(ctx, u, kube.ApplyOptions{DryRun: true, FieldManager: fm, Force: true})
+	if err != nil {
+		ch.Action, ch.Message = ActionError, "dry-run failed: "+err.Error()
+		return ch, nil
+	}
+	d, err := unifiedDiff(live, result, ch.Object)
+	if err != nil {
+		return ch, err
+	}
+	if d == "" {
+		ch.Action = ActionUnchanged
+	} else {
+		ch.Action, ch.Diff = ActionUpdate, d
+	}
+	return ch, nil
+}
+
+// parallel calls fn for 0..n-1 with a few calls in flight, which keeps
+// per-object API round trips fast against remote clusters.
+func parallel(ctx context.Context, n int, fn func(i int)) {
+	g, _ := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+	for i := 0; i < n; i++ {
+		g.Go(func() error {
+			if ctx.Err() == nil {
+				fn(i)
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
 }
 
 // normalizeForDiff drops fields that change on every write.

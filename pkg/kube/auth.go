@@ -125,7 +125,11 @@ func (c *Client) Explain(err error) error {
 		return nil
 	}
 	msg := err.Error()
-	cmd := pluginCommand(c.Config)
+	cfg := c.Config
+	if cfg == nil {
+		cfg = &rest.Config{}
+	}
+	cmd := pluginCommand(cfg)
 	plugin, known := credentialPlugins[cmd]
 	var dnsErr *net.DNSError
 	var opErr *net.OpError
@@ -151,9 +155,9 @@ func (c *Client) Explain(err error) error {
 		switch {
 		case known:
 			hint = plugin.login
-		case c.Config.AuthProvider != nil && c.Config.AuthProvider.Name == "oidc":
+		case cfg.AuthProvider != nil && cfg.AuthProvider.Name == "oidc":
 			hint = "the OIDC id-token expired and couldn't be refreshed; log in again"
-		case c.Config.BearerToken != "" || c.Config.BearerTokenFile != "":
+		case cfg.BearerToken != "" || cfg.BearerTokenFile != "":
 			hint = "the bearer token is wrong or has expired"
 		}
 		return fmt.Errorf("%w\nThe API server rejected the credentials (%s): %s", err, c.Auth, hint)

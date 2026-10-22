@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -14,8 +17,45 @@ import (
 	"github.com/hayone1/gitopsify/internal/ui"
 )
 
-// Version is set at build time with -ldflags "-X .../internal/cli.Version=...".
-var Version = "dev"
+// Version, Commit and Date are set at build time with -ldflags
+// "-X .../internal/cli.Version=...". go install builds fall back to the module
+// version.
+var (
+	Version = "dev"
+	Commit  = ""
+	Date    = ""
+)
+
+func init() {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	if Version == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		Version = info.Main.Version
+	}
+	for _, s := range info.Settings {
+		switch {
+		case s.Key == "vcs.revision" && Commit == "" && len(s.Value) >= 7:
+			Commit = s.Value[:7]
+		case s.Key == "vcs.time" && Date == "":
+			Date = s.Value
+		}
+	}
+}
+
+// versionString describes the build: version, commit, date and platform.
+func versionString() string {
+	var parts []string
+	if Commit != "" {
+		parts = append(parts, "commit "+Commit)
+	}
+	if Date != "" {
+		parts = append(parts, "built "+Date)
+	}
+	parts = append(parts, runtime.Version(), runtime.GOOS+"/"+runtime.GOARCH)
+	return Version + " (" + strings.Join(parts, ", ") + ")"
+}
 
 // exitError ends the process with a code, after its message (if any) was
 // printed.
@@ -76,7 +116,7 @@ Typical flow:
 or all at once: gitopsify migrate`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Version:       Version,
+		Version:       versionString(),
 	}
 	o.addGlobal(root.PersistentFlags())
 	root.AddGroup(
@@ -91,7 +131,7 @@ or all at once: gitopsify migrate`,
 		c.GroupID = "target"
 		root.AddCommand(c)
 	}
-	root.AddCommand(newRules(o), newDoctor(o), newVersion())
+	root.AddCommand(newRules(o), newDoctor(o), newSkills(o), newVersion())
 	root.SetUsageTemplate(usageTemplate)
 	registerCompletions(root, o)
 	return root
@@ -103,7 +143,7 @@ func newVersion() *cobra.Command {
 		Short: "Print the version",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Fprintln(cmd.OutOrStdout(), "gitopsify", Version)
+			fmt.Fprintln(cmd.OutOrStdout(), "gitopsify", versionString())
 		},
 	}
 }

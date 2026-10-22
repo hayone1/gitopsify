@@ -173,6 +173,9 @@ func Latest(storage []*unstructured.Unstructured) ([]*model.HelmRelease, []strin
 		}
 		if rel.Status != "deployed" {
 			rel.Warnings = append(rel.Warnings, fmt.Sprintf("no deployed revision; using revision %d (%s)", rel.Revision, rel.Status))
+		} else if newest := cs[0]; newest.version > pick.version {
+			// A failed or interrupted upgrade may have changed some objects.
+			rel.Warnings = append(rel.Warnings, fmt.Sprintf("revision %d (%s) is newer than the deployed revision %d that is migrated; objects changed by the unfinished upgrade are set back to revision %d", newest.version, orUnknown(newest.status), pick.version, pick.version))
 		}
 		out = append(out, rel)
 	}
@@ -283,4 +286,11 @@ func OwnerOf(u *unstructured.Unstructured) string {
 		ns = u.GetNamespace()
 	}
 	return ns + "/" + name
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown status"
+	}
+	return s
 }

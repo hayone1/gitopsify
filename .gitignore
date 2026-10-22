@@ -4,3 +4,4 @@
 /.gitopsify-backup/
 /.secrets/
 /.env
+/completions/

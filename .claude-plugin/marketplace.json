@@ -1,0 +1,17 @@
+{
+  "name": "gitopsify",
+  "owner": {
+    "name": "gitopsify maintainers",
+    "url": "https://github.com/hayone1/gitopsify"
+  },
+  "description": "Skills for migrating Kubernetes clusters to GitOps with gitopsify.",
+  "plugins": [
+    {
+      "name": "gitopsify",
+      "source": "./",
+      "description": "Migrate a running Kubernetes cluster to Argo CD, Flux or Kustomize with gitopsify, including the steps around the CLI.",
+      "category": "devops",
+      "tags": ["kubernetes", "gitops", "argocd", "flux", "migration"]
+    }
+  ]
+}

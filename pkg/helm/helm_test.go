@@ -85,6 +85,9 @@ func TestLatestPicksDeployedRevision(t *testing.T) {
 	if !IsStorage(cur) {
 		t.Error("IsStorage should recognize release secrets")
 	}
+	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], "revision 3 (failed) is newer than the deployed revision 2") {
+		t.Errorf("warnings = %v", r.Warnings)
+	}
 }
 
 func TestManifestRefs(t *testing.T) {

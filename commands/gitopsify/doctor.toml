@@ -1,0 +1,8 @@
+description = "Check gitopsify's access to the clusters and Git, and fix what is missing"
+prompt = """
+Run `gitopsify doctor` (with the contexts and environments below, if any) and
+fix every failed check with the gitopsify-cluster-access skill. Ask before
+creating ServiceAccounts, tokens or other credentials.
+
+Clusters and environments: {{args}}
+"""

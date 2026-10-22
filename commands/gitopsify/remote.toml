@@ -1,0 +1,10 @@
+description = "Create the remote repository for gitopsify output, push it and set up read-only access"
+prompt = """
+Use the gitopsify-git-remote skill: create the remote repository on the Git host
+I name (GitHub, GitLab, Azure DevOps, Bitbucket, Gitea/Forgejo, CodeCommit or
+self-hosted), push the generated repository, and create a read-only deploy key
+or token for Argo CD or Flux. Confirm the owner, name and visibility before
+creating anything.
+
+Host and repository: {{args}}
+"""

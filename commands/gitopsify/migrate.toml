@@ -1,0 +1,8 @@
+description = "Migrate a Kubernetes cluster, environment or app to GitOps with gitopsify"
+prompt = """
+Use the gitopsify-migrate skill to run this migration with me, step by step.
+Ask only what you can't find out yourself, recommend a setup, and wait for my
+go-ahead before anything changes a cluster or creates a repository.
+
+What I want: {{args}}
+"""
