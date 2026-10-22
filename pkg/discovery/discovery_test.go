@@ -46,6 +46,9 @@ func TestListRetriesAndTolerance(t *testing.T) {
 	if !builtinGroup("") || !builtinGroup("apps") || !builtinGroup("networking.k8s.io") || builtinGroup("example.com") || builtinGroup("cluster.x-k8s.io") {
 		t.Error("builtinGroup")
 	}
+	if !retryable(errString("unexpected error when reading response body. Please retry. Original error: stream error: stream ID 27; INTERNAL_ERROR; received from peer")) {
+		t.Error("HTTP/2 stream resets must be retried")
+	}
 	if !retryable(apierrors.NewTooManyRequests("slow down", 1)) || retryable(apierrors.NewForbidden(cms.GroupResource(), "", errString("no"))) {
 		t.Error("retryable")
 	}

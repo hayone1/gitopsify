@@ -236,7 +236,13 @@ func retryable(err error) bool {
 		return true
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "connection reset") || strings.Contains(msg, "http2: client connection lost") || strings.Contains(msg, "TLS handshake timeout")
+	for _, s := range []string{"connection reset", "http2: client connection lost", "TLS handshake timeout",
+		"stream error", "unexpected error when reading response body", "INTERNAL_ERROR", "GOAWAY"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // Backoff is the wait between attempts of a failing list call; tests shorten it.
