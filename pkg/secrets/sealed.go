@@ -47,7 +47,7 @@ func ParseCert(data []byte) (*rsa.PublicKey, error) {
 func FetchCert(ctx context.Context, kc kubernetes.Interface, namespace, name string) (*rsa.PublicKey, error) {
 	data, err := kc.CoreV1().Services(namespace).ProxyGet("http", name, "", "/v1/cert.pem", nil).DoRaw(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("fetching the sealed-secrets certificate from service %s/%s: %w", namespace, name, err)
+		return nil, fmt.Errorf("fetching the sealed-secrets certificate from service %s/%s through the API server: %w (is the controller installed there? Some clusters, such as private GKE ones, can't proxy to services: save it with `kubeseal --fetch-cert > cert.pem` and pass --sealed-secrets-cert cert.pem)", namespace, name, err)
 	}
 	return ParseCert(data)
 }

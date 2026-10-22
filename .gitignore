@@ -3,3 +3,4 @@
 /gitops/
 /.gitopsify-backup/
 /.secrets/
+/.env

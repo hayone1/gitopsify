@@ -3,6 +3,8 @@
 package group
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
@@ -35,12 +37,19 @@ var platformKinds = map[string]bool{
 
 var invalidName = regexp.MustCompile(`[^a-z0-9-]+`)
 
-// Name turns s into a DNS label usable as an app name.
+// reserved are app names gitopsify uses itself; namespaces and releases with
+// these names get a suffix.
+var reserved = map[string]bool{AppCRDs: true, AppNamespaces: true, AppCluster: true, "flux-system": true}
+
+// Name turns s into a DNS label usable as an app name. Names longer than 63
+// characters are shortened with a hash of the full name, so different long
+// names stay different.
 func Name(s string) string {
 	n := invalidName.ReplaceAllString(strings.ToLower(s), "-")
 	n = strings.Trim(n, "-")
 	if len(n) > 63 {
-		n = strings.TrimRight(n[:63], "-")
+		sum := sha256.Sum256([]byte(s))
+		n = strings.TrimRight(n[:56], "-") + "-" + hex.EncodeToString(sum[:])[:6]
 	}
 	if n == "" {
 		n = "app"
@@ -67,7 +76,7 @@ func Run(inv *model.Inventory, cfg *config.Config) error {
 			continue
 		}
 		name := Name(r.Name)
-		if a, taken := apps[name]; taken && a.Release != nil {
+		if a, taken := apps[name]; taken && a.Release != nil || reserved[name] {
 			name = Name(r.Name + "-" + r.Namespace)
 		}
 		a := get(name, model.AppHelm, r.Namespace)
@@ -137,10 +146,18 @@ func assign(o *model.Object, cfg *config.Config, releaseApp map[string]string) (
 		return "workloads", model.AppManifests, "", nil
 	case config.GroupByLabel:
 		if v := o.Live.GetLabels()[cfg.Grouping.Label]; v != "" {
-			return Name(v), model.AppManifests, "", nil
+			name := Name(v)
+			if reserved[name] {
+				name = Name(name + "-app")
+			}
+			return name, model.AppManifests, "", nil
 		}
 	}
-	return Name(o.Ref.Namespace), model.AppManifests, o.Ref.Namespace, nil
+	name := Name(o.Ref.Namespace)
+	if reserved[name] {
+		name = Name(name + "-ns")
+	}
+	return name, model.AppManifests, o.Ref.Namespace, nil
 }
 
 // commonNamespace returns the namespace shared by all namespaced objects, or

@@ -3,6 +3,8 @@
 package render
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path"
 	"sort"
@@ -220,7 +222,13 @@ func fileName(o *model.Object, a *model.App) string {
 	if o.Namespaced && a.Namespace == "" {
 		base = o.Ref.Namespace + "-" + base
 	}
-	return sanitizeFile(base) + ".yaml"
+	base = sanitizeFile(base)
+	// Names can be 253 characters long, file names only 255 bytes.
+	if len(base) > 180 {
+		sum := sha256.Sum256([]byte(base))
+		base = base[:170] + "-" + hex.EncodeToString(sum[:])[:8]
+	}
+	return base + ".yaml"
 }
 
 func sanitizeFile(s string) string {

@@ -261,10 +261,16 @@ func (c *Config) Validate() error {
 	if c.Output.Tool != ToolNone && c.Output.Repo.URL == "" && c.Output.Layout == LayoutFolderPerEnv {
 		add("output.repo.url (or --repo-url) is required for --tool %s: the generated %s objects point at it", c.Output.Tool, c.Output.Tool)
 	}
+	if err := c.Source.Access.Validate(); err != nil {
+		add("source: %v", err)
+	}
 	seen := map[string]bool{}
 	for i, e := range c.Environments {
 		if !dnsLabel.MatchString(e.Name) {
 			add("environments[%d].name %q must be a DNS label", i, e.Name)
+		}
+		if err := e.Cluster.Access.Validate(); err != nil {
+			add("environments[%d] (%s).cluster: %v", i, e.Name, err)
 		}
 		if seen[e.Name] {
 			add("environment %q is defined twice", e.Name)
@@ -345,9 +351,33 @@ func Load(path string) (*Config, error) {
 	}
 	c := &Config{}
 	if err := yaml.UnmarshalStrict(data, c); err != nil {
+		if strings.Contains(err.Error(), `unknown field "token"`) {
+			return nil, fmt.Errorf("parsing %s: tokens don't belong in gitopsify.yaml, which generate copies into the repository; use tokenFile, --token or a kubeconfig instead", path)
+		}
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return c, nil
+}
+
+// ExpandHome replaces a leading "~/" with the user's home directory, in every
+// element of a path list.
+func ExpandHome(p string) string {
+	if p == "" || !strings.Contains(p, "~") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	parts := filepath.SplitList(p)
+	for i, part := range parts {
+		if part == "~" {
+			parts[i] = home
+		} else if strings.HasPrefix(part, "~/") {
+			parts[i] = filepath.Join(home, part[2:])
+		}
+	}
+	return strings.Join(parts, string(os.PathListSeparator))
 }
 
 // Marshal renders the configuration as YAML.

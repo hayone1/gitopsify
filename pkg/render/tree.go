@@ -61,8 +61,10 @@ func (t *Tree) Write(dir string, force bool) (written, removed []string, err err
 	manifest := filepath.Join(dir, filepath.FromSlash(manifestFile))
 	if data, err := os.ReadFile(manifest); err == nil {
 		for _, l := range strings.Split(string(data), "\n") {
-			if l = strings.TrimSpace(l); l != "" {
-				prev[l] = true
+			// The manifest comes from the output directory, which may be a
+			// cloned repository: never let it name files outside of it.
+			if l = strings.TrimSpace(l); l != "" && filepath.IsLocal(filepath.FromSlash(l)) {
+				prev[path.Clean(l)] = true
 			}
 		}
 	} else if !force {

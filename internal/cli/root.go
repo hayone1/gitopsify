@@ -87,11 +87,13 @@ or all at once: gitopsify migrate`,
 		c.GroupID = "migrate"
 		root.AddCommand(c)
 	}
-	for _, c := range []*cobra.Command{newCheck(o), newDiff(o), newAdopt(o), newBootstrap(o)} {
+	for _, c := range []*cobra.Command{newCheck(o), newDiff(o), newAdopt(o), newBootstrap(o), newStatus(o)} {
 		c.GroupID = "target"
 		root.AddCommand(c)
 	}
-	root.AddCommand(newRules(o), newVersion())
+	root.AddCommand(newRules(o), newDoctor(o), newVersion())
+	root.SetUsageTemplate(usageTemplate)
+	registerCompletions(root, o)
 	return root
 }
 

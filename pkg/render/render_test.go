@@ -1,10 +1,15 @@
 package render
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/hayone1/gitopsify/pkg/model"
 )
 
 func TestDiffValues(t *testing.T) {
@@ -78,5 +83,50 @@ func TestFluxURL(t *testing.T) {
 		if got := FluxURL(in); got != want {
 			t.Errorf("FluxURL(%s) = %s", in, got)
 		}
+	}
+}
+
+func TestTreeWriteStaysInside(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(filepath.Dir(dir), "victim-"+filepath.Base(dir))
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(outside)
+	if err := os.MkdirAll(filepath.Join(dir, ".gitopsify"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	evil := "../" + filepath.Base(outside) + "\n" + outside + "\nold.yaml\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitopsify", "generated.txt"), []byte(evil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "old.yaml"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTree()
+	tr.Add("new.yaml", []byte("y"))
+	_, removed, err := tr.Write(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(removed, []string{"old.yaml"}) {
+		t.Errorf("removed %v", removed)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Errorf("a file outside the output was removed: %v", err)
+	}
+}
+
+func TestLongFileNames(t *testing.T) {
+	u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": strings.Repeat("a", 253), "namespace": "shop"}}}
+	o := &model.Object{Ref: model.RefOf(u), Namespaced: true, Out: u}
+	name := fileName(o, &model.App{Name: "shop"})
+	if len(name) > 200 || !strings.HasSuffix(name, ".yaml") {
+		t.Errorf("file name %d bytes: %s", len(name), name)
+	}
+	u2 := u.DeepCopy()
+	u2.SetName(strings.Repeat("a", 252) + "b")
+	if fileName(&model.Object{Ref: model.RefOf(u2), Namespaced: true, Out: u2}, &model.App{Name: "shop"}) == name {
+		t.Error("different long names must get different files")
 	}
 }

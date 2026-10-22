@@ -2,6 +2,13 @@
 // so it can be reviewed, committed and re-run.
 package config
 
+import (
+	"errors"
+	"fmt"
+	"net/url"
+	"time"
+)
+
 // APIVersion and Kind of the configuration file.
 const (
 	APIVersion = "gitopsify.io/v1alpha1"
@@ -80,10 +87,94 @@ type Config struct {
 
 // Source is the cluster gitopsify reads from.
 type Source struct {
-	// Kubeconfig path; empty uses KUBECONFIG or ~/.kube/config.
+	Access `json:",inline"`
+}
+
+// Access is how gitopsify reaches a cluster's API server. With nothing set it
+// behaves like kubectl: KUBECONFIG or ~/.kube/config and its current context,
+// including the credential plugins of EKS, GKE, AKS, OpenShift, Rancher,
+// Teleport and OIDC logins. The other fields override parts of the
+// kubeconfig, or replace it entirely (apiServer plus a token or a client
+// certificate).
+type Access struct {
+	// Kubeconfig file. Several files are separated like in KUBECONFIG
+	// (":" on Linux and macOS) and merged. Empty uses KUBECONFIG or
+	// ~/.kube/config.
 	Kubeconfig string `json:"kubeconfig,omitempty"`
 	// Context in the kubeconfig; empty uses the current context.
 	Context string `json:"context,omitempty"`
+	// InCluster uses the ServiceAccount of the pod gitopsify runs in.
+	InCluster bool `json:"inCluster,omitempty"`
+	// APIServer is the API server URL, overriding the kubeconfig's.
+	APIServer string `json:"apiServer,omitempty"`
+	// TokenFile holds a bearer token: a ServiceAccount token, an OIDC ID
+	// token, a cloud access token. It is re-read when it changes.
+	TokenFile string `json:"tokenFile,omitempty"`
+	// Token is a bearer token from the command line or the environment. It is
+	// never written to files, so it can't end up in Git.
+	Token string `json:"-"`
+	// ClientCertificate and ClientKey are PEM files for TLS client
+	// authentication.
+	ClientCertificate string `json:"clientCertificate,omitempty"`
+	ClientKey         string `json:"clientKey,omitempty"`
+	// CertificateAuthority is a PEM file with the CA that signed the API
+	// server's certificate.
+	CertificateAuthority string `json:"certificateAuthority,omitempty"`
+	// InsecureSkipTLSVerify doesn't verify the API server's certificate.
+	// Only for test clusters.
+	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
+	// TLSServerName is the name to verify the API server's certificate
+	// against, when it is reached by another address (an IP, a tunnel).
+	TLSServerName string `json:"tlsServerName,omitempty"`
+	// ProxyURL is an http(s) or socks5 proxy for the API server.
+	ProxyURL string `json:"proxyURL,omitempty"`
+	// Impersonate acts as another user, like kubectl --as.
+	Impersonate       string   `json:"impersonate,omitempty"`
+	ImpersonateGroups []string `json:"impersonateGroups,omitempty"`
+	ImpersonateUID    string   `json:"impersonateUID,omitempty"`
+	// Timeout of each API request, for example 30s. Empty means none.
+	Timeout string `json:"timeout,omitempty"`
+}
+
+// Configured reports whether any connection setting is present.
+func (a Access) Configured() bool {
+	return a.Kubeconfig != "" || a.Context != "" || a.InCluster || a.APIServer != ""
+}
+
+// Validate reports contradictory connection settings.
+func (a Access) Validate() error {
+	var errs []error
+	if a.InCluster && (a.Kubeconfig != "" || a.Context != "") {
+		errs = append(errs, errors.New("inCluster can't be combined with kubeconfig or context"))
+	}
+	if (a.ClientCertificate == "") != (a.ClientKey == "") {
+		errs = append(errs, errors.New("clientCertificate and clientKey go together"))
+	}
+	if a.InsecureSkipTLSVerify && a.CertificateAuthority != "" {
+		errs = append(errs, errors.New("insecureSkipTLSVerify can't be combined with certificateAuthority"))
+	}
+	if a.Token != "" && a.TokenFile != "" {
+		errs = append(errs, errors.New("a token and a tokenFile can't both be set"))
+	}
+	if a.APIServer != "" {
+		if u, err := url.Parse(a.APIServer); err != nil || u.Scheme == "" || u.Host == "" {
+			errs = append(errs, fmt.Errorf("apiServer %q must be a URL such as https://10.0.0.1:6443", a.APIServer))
+		}
+	}
+	if a.ProxyURL != "" {
+		if u, err := url.Parse(a.ProxyURL); err != nil || u.Scheme == "" || u.Host == "" {
+			errs = append(errs, fmt.Errorf("proxyURL %q must be a URL such as http://proxy:3128 or socks5://localhost:1080", a.ProxyURL))
+		}
+	}
+	if a.Timeout != "" {
+		if d, err := time.ParseDuration(a.Timeout); err != nil || d < 0 {
+			errs = append(errs, fmt.Errorf("timeout %q must be a duration such as 30s", a.Timeout))
+		}
+	}
+	if len(a.ImpersonateGroups) > 0 && a.Impersonate == "" {
+		errs = append(errs, errors.New("impersonateGroups needs impersonate"))
+	}
+	return errors.Join(errs...)
 }
 
 // Scope selects what to migrate.
@@ -342,13 +433,16 @@ type Environment struct {
 
 // Cluster is where an environment runs.
 type Cluster struct {
-	// Server is the API server URL Argo CD deploys to.
+	// Server is the API server URL Argo CD deploys to, as Argo CD sees it:
+	// https://kubernetes.default.svc when Argo CD runs in the environment's
+	// own cluster.
 	Server string `json:"server,omitempty"`
 	// Name is the Argo CD cluster name; used instead of Server when set.
 	Name string `json:"name,omitempty"`
-	// Context and Kubeconfig are used by check, diff, adopt and bootstrap.
-	Context    string `json:"context,omitempty"`
-	Kubeconfig string `json:"kubeconfig,omitempty"`
+	// Access is how gitopsify connects to the cluster for check, diff,
+	// adopt, status and bootstrap, and to fetch the sealed-secrets
+	// certificate.
+	Access `json:",inline"`
 }
 
 // Adopt configures taking over objects that already exist in the target.

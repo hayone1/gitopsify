@@ -12,20 +12,29 @@ import (
 
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/discovery"
+	"github.com/hayone1/gitopsify/pkg/kube"
 	"github.com/hayone1/gitopsify/pkg/pipeline"
 )
 
 // DefaultConfigFile is read when --config is not given and it exists.
 const DefaultConfigFile = "gitopsify.yaml"
 
+// Environment variables that hold bearer tokens, so they don't show up in
+// process listings.
+const (
+	envSourceToken = "GITOPSIFY_TOKEN"
+	envTargetToken = "GITOPSIFY_TARGET_TOKEN"
+)
+
 // options holds every flag; each command registers the groups it uses.
 type options struct {
 	configFile string
-	kubeconfig string
-	context    string
 	noInput    bool
 	noColor    bool
 	quiet      bool
+
+	source accessFlags
+	target accessFlags
 
 	fromFiles []string
 
@@ -82,17 +91,138 @@ type options struct {
 	interactive bool
 }
 
+// Flag groups shown as separate sections in --help.
+const (
+	groupScope     = "Scope"
+	groupHelm      = "Helm"
+	groupShape     = "Cleaning, grouping and ordering"
+	groupTransform = "Environment transforms"
+	groupSecrets   = "Secrets"
+	groupOutput    = "Output"
+	groupGit       = "Git"
+	groupSource    = "Source cluster access"
+	groupTarget    = "Target cluster access"
+	groupBootstrap = "Bootstrap"
+)
+
+const groupAnnotation = "gitopsify_group"
+
+// inGroup puts flags into a --help section.
+func inGroup(fs *pflag.FlagSet, group string, names ...string) {
+	for _, n := range names {
+		_ = fs.SetAnnotation(n, groupAnnotation, []string{group})
+	}
+}
+
+// accessFlags are the kubectl-style flags that say how to reach a cluster.
+type accessFlags struct {
+	prefix                       string
+	kubeconfig, context          string
+	server, token, tokenFile     string
+	ca, cert, key, tlsServerName string
+	proxyURL, as, asUID, timeout string
+	asGroups                     []string
+	insecure, inCluster          bool
+	// tokenEnv holds a token when --token isn't given; what and group
+	// describe the flags in --help.
+	tokenEnv, what, group string
+}
+
+func (a *accessFlags) add(fs *pflag.FlagSet) {
+	p, w := a.prefix, a.what
+	fs.StringVar(&a.kubeconfig, p+"kubeconfig", "", "kubeconfig of the "+w+" (several files separated like in KUBECONFIG)")
+	fs.StringVar(&a.context, p+"context", "", "kubeconfig context of the "+w+" (default: the current context)")
+	fs.StringVar(&a.server, p+"server", "", "API server URL of the "+w+", overriding the kubeconfig's")
+	fs.StringVar(&a.token, p+"token", "", "bearer token for the "+w+" (or $"+a.tokenEnv+"); never written to files")
+	fs.StringVar(&a.tokenFile, p+"token-file", "", "file with a bearer token for the "+w)
+	fs.StringVar(&a.cert, p+"client-certificate", "", "client certificate file (PEM) for the "+w)
+	fs.StringVar(&a.key, p+"client-key", "", "client key file (PEM) for the "+w)
+	fs.StringVar(&a.ca, p+"certificate-authority", "", "CA file (PEM) the "+w+"'s API server certificate is checked against")
+	fs.BoolVar(&a.insecure, p+"insecure-skip-tls-verify", false, "don't verify the "+w+"'s API server certificate (test clusters only)")
+	fs.StringVar(&a.tlsServerName, p+"tls-server-name", "", "server name to verify the "+w+"'s API server certificate against")
+	fs.StringVar(&a.proxyURL, p+"proxy-url", "", "http(s) or socks5 proxy for the "+w+"'s API server")
+	fs.StringVar(&a.as, p+"as", "", "impersonate this user on the "+w)
+	fs.StringArrayVar(&a.asGroups, p+"as-group", nil, "impersonate this group on the "+w+" (repeatable)")
+	fs.StringVar(&a.asUID, p+"as-uid", "", "impersonate this UID on the "+w)
+	fs.BoolVar(&a.inCluster, p+"in-cluster", false, "use the ServiceAccount of the pod gitopsify runs in for the "+w)
+	fs.StringVar(&a.timeout, p+"request-timeout", "", "timeout of each API request to the "+w+", e.g. 30s")
+	inGroup(fs, a.group, a.names()...)
+}
+
+func (a *accessFlags) names() []string {
+	var out []string
+	for _, n := range []string{"kubeconfig", "context", "server", "token", "token-file", "client-certificate", "client-key",
+		"certificate-authority", "insecure-skip-tls-verify", "tls-server-name", "proxy-url", "as", "as-group", "as-uid",
+		"in-cluster", "request-timeout"} {
+		out = append(out, a.prefix+n)
+	}
+	return out
+}
+
+// set reports whether any of the access flags was given.
+func (a *accessFlags) set(fs *pflag.FlagSet) bool {
+	for _, n := range a.names() {
+		if f := fs.Lookup(n); f != nil && f.Changed {
+			return true
+		}
+	}
+	return false
+}
+
+// applyTo copies the given access flags over the configuration.
+func (a *accessFlags) applyTo(fs *pflag.FlagSet, acc *config.Access) {
+	set := func(n string) bool { f := fs.Lookup(a.prefix + n); return f != nil && f.Changed }
+	str := func(n string, dst *string, v string) {
+		if set(n) {
+			*dst = v
+		}
+	}
+	str("kubeconfig", &acc.Kubeconfig, a.kubeconfig)
+	str("context", &acc.Context, a.context)
+	str("server", &acc.APIServer, a.server)
+	str("token-file", &acc.TokenFile, a.tokenFile)
+	str("client-certificate", &acc.ClientCertificate, a.cert)
+	str("client-key", &acc.ClientKey, a.key)
+	str("certificate-authority", &acc.CertificateAuthority, a.ca)
+	str("tls-server-name", &acc.TLSServerName, a.tlsServerName)
+	str("proxy-url", &acc.ProxyURL, a.proxyURL)
+	str("as", &acc.Impersonate, a.as)
+	str("as-uid", &acc.ImpersonateUID, a.asUID)
+	str("request-timeout", &acc.Timeout, a.timeout)
+	if set("as-group") {
+		acc.ImpersonateGroups = a.asGroups
+	}
+	if set("insecure-skip-tls-verify") {
+		acc.InsecureSkipTLSVerify = a.insecure
+	}
+	if set("in-cluster") {
+		acc.InCluster = a.inCluster
+	}
+	switch {
+	case set("token"):
+		acc.Token = a.token
+	case acc.Token == "" && acc.TokenFile == "" && os.Getenv(a.tokenEnv) != "":
+		acc.Token = os.Getenv(a.tokenEnv)
+	}
+}
+
 func (o *options) addGlobal(fs *pflag.FlagSet) {
 	fs.StringVarP(&o.configFile, "config", "c", "", "configuration file (default ./gitopsify.yaml when it exists)")
-	fs.StringVar(&o.kubeconfig, "kubeconfig", "", "kubeconfig of the source cluster")
-	fs.StringVar(&o.context, "context", "", "kubeconfig context of the source cluster (default: current context)")
 	fs.BoolVar(&o.noInput, "no-input", false, "never prompt; fail instead where a prompt would be needed")
 	fs.BoolVar(&o.noColor, "no-color", false, "disable colors (also honors NO_COLOR)")
 	fs.BoolVarP(&o.quiet, "quiet", "q", false, "only print results and errors")
+	o.source = accessFlags{what: "source cluster", group: groupSource, tokenEnv: envSourceToken}
+	o.source.add(fs)
+}
+
+// addTarget registers the access flags of the environment a command acts on.
+func (o *options) addTarget(fs *pflag.FlagSet) {
+	o.target = accessFlags{prefix: "target-", what: "target cluster", group: groupTarget, tokenEnv: envTargetToken}
+	o.target.add(fs)
 }
 
 func (o *options) addScope(fs *pflag.FlagSet) {
-	fs.StringArrayVar(&o.fromFiles, "from-file", nil, "read the source objects from YAML/JSON files or directories instead of a cluster, e.g. `kubectl get -A -o yaml` output (\"-\" for stdin; repeatable)")
+	fs.StringArrayVar(&o.fromFiles, "from-file", nil, "read the source objects from YAML/JSON files or directories instead of a cluster, e.g. kubectl get -A -o yaml output (\"-\" for stdin; repeatable)")
 	fs.StringSliceVarP(&o.namespaces, "namespace", "n", nil, "migrate only these namespaces (globs, repeatable)")
 	fs.StringSliceVar(&o.excludeNamespaces, "exclude-namespace", nil, "skip these namespaces (globs, repeatable)")
 	fs.StringVarP(&o.selector, "selector", "l", "", "migrate objects matching this label selector, plus what they need")
@@ -101,13 +231,16 @@ func (o *options) addScope(fs *pflag.FlagSet) {
 	fs.StringSliceVar(&o.kinds, "kind", nil, "migrate only these kinds (Deployment, ingress.networking.k8s.io, svc...)")
 	fs.StringSliceVar(&o.excludeKinds, "exclude-kind", nil, "never migrate these kinds")
 	fs.StringVar(&o.clusterScoped, "cluster-scoped", "", "cluster-scoped objects: auto, all or none")
-	fs.StringSliceVar(&o.disableRules, "disable-rule", nil, "disable a built-in exclusion rule (see `gitopsify rules`; \"*\" for all)")
+	fs.StringSliceVar(&o.disableRules, "disable-rule", nil, "disable a built-in exclusion rule (see \"gitopsify rules\"; \"*\" for all)")
 	fs.BoolVar(&o.includeManaged, "include-managed", false, "also migrate objects already managed by Argo CD or Flux")
 	fs.StringSliceVar(&o.excludeApps, "exclude-app", nil, "drop these apps (globs) after grouping")
+	inGroup(fs, groupScope, "from-file", "namespace", "exclude-namespace", "selector", "resource", "no-deps", "kind",
+		"exclude-kind", "cluster-scoped", "disable-rule", "include-managed", "exclude-app")
 
 	fs.StringVar(&o.helmMode, "helm-mode", "", "Helm releases: auto, chart, vendor or manifests")
 	fs.StringArrayVar(&o.helmRepos, "helm-repo", nil, "repository of a chart: chart=https://... or chart=oci://... (repeatable)")
 	fs.BoolVar(&o.artifactHub, "artifacthub", false, "look up unknown chart repositories on Artifact Hub")
+	inGroup(fs, groupHelm, "helm-mode", "helm-repo", "artifacthub")
 
 	fs.StringVar(&o.cleanStrategy, "clean", "", "cleaning strategy: auto, managed-fields, heuristic or minimal")
 	fs.StringVar(&o.groupBy, "group-by", "", "split objects into apps by namespace, label or single")
@@ -115,12 +248,20 @@ func (o *options) addScope(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.noOrder, "no-order", false, "don't order apps (no sync waves or dependsOn)")
 	fs.StringArrayVar(&o.waves, "wave", nil, "pin an app (glob) to a wave: app=N (repeatable)")
 	fs.StringArrayVar(&o.dependsOn, "depends-on", nil, "make an app depend on others: app=dep1,dep2 (repeatable)")
+	inGroup(fs, groupShape, "clean", "group-by", "group-label", "no-order", "wave", "depends-on")
 
 	fs.StringArrayVar(&o.replace, "replace", nil, "replace a string everywhere, also in Helm values: from=to (repeatable)")
 	fs.StringArrayVar(&o.imageMap, "image-registry", nil, "rewrite image prefixes: from=to, e.g. test.azurecr.io=uat.azurecr.io (repeatable)")
 	fs.StringArrayVar(&o.storageClassMap, "storage-class", nil, "map StorageClasses: from=to (repeatable)")
 	fs.StringArrayVar(&o.ingressClassMap, "ingress-class", nil, "map IngressClasses: from=to (repeatable)")
 	fs.StringArrayVar(&o.namespaceMap, "namespace-map", nil, "rename namespaces: from=to (repeatable)")
+	inGroup(fs, groupTransform, "replace", "image-registry", "storage-class", "ingress-class", "namespace-map")
+
+	complete(fs, "cluster-scoped", "auto", "all", "none")
+	complete(fs, "helm-mode", config.HelmAuto, config.HelmChart, config.HelmVendor, config.HelmManifests)
+	complete(fs, "clean", config.CleanAuto, config.CleanManagedFields, config.CleanHeuristic, config.CleanMinimal)
+	complete(fs, "group-by", config.GroupByNamespace, config.GroupByLabel, config.GroupSingle)
+	complete(fs, "disable-rule", append(ruleNames(), "*")...)
 }
 
 func (o *options) addSecrets(fs *pflag.FlagSet) {
@@ -130,6 +271,9 @@ func (o *options) addSecrets(fs *pflag.FlagSet) {
 	fs.StringVar(&o.sealedCert, "sealed-secrets-cert", "", "sealed-secrets controller certificate (default: fetched from the environment's cluster)")
 	fs.StringVar(&o.esoStore, "eso-store", "", "SecretStore name for --secrets external-secrets")
 	fs.StringVar(&o.esoStoreKind, "eso-store-kind", "", "SecretStore or ClusterSecretStore")
+	inGroup(fs, groupSecrets, "secrets", "allow-plain-secrets", "sops-age", "sealed-secrets-cert", "eso-store", "eso-store-kind")
+	complete(fs, "secrets", config.SecretsSkip, config.SecretsLocal, config.SecretsPlain, config.SecretsSOPS, config.SecretsSealedSecrets, config.SecretsExternalSecrets)
+	complete(fs, "eso-store-kind", "SecretStore", "ClusterSecretStore")
 }
 
 func (o *options) addOutput(fs *pflag.FlagSet) {
@@ -147,11 +291,17 @@ func (o *options) addOutput(fs *pflag.FlagSet) {
 	fs.StringVar(&o.fluxVersion, "flux-version", "", "Flux version to install (default "+config.DefaultFluxVersion+")")
 	fs.StringVar(&o.project, "project", "", "Argo CD project (default gitopsify)")
 	fs.BoolVar(&o.noAutoSync, "no-auto-sync", false, "don't enable automated sync on Argo CD applications")
+	inGroup(fs, groupOutput, "output", "tool", "pattern", "layout", "repo-url", "revision", "repo-path", "env", "adopt",
+		"force", "argocd-version", "flux-version", "project", "no-auto-sync")
+	complete(fs, "tool", config.ToolNone, config.ToolArgoCD, config.ToolFlux)
+	complete(fs, "pattern", config.PatternAppOfApps, config.PatternApplicationSet, config.PatternSingle)
+	complete(fs, "layout", config.LayoutFolderPerEnv, config.LayoutRepoPerEnv)
 }
 
 // addEnv registers --env for commands that act on one environment.
 func (o *options) addEnv(fs *pflag.FlagSet) {
-	fs.StringArrayVar(&o.envs, "env", nil, "environment to act on (default: the first one)")
+	fs.StringArrayVar(&o.envs, "env", nil, "environment to act on: name or name=kube-context (default: the first one)")
+	inGroup(fs, groupTarget, "env")
 }
 
 // load builds the configuration: the file (if any), then flags that were set.
@@ -173,17 +323,15 @@ func (o *options) load(cmd *cobra.Command) (*config.Config, error) {
 		return nil, err
 	}
 	cfg.Default()
+	if err := o.applyTarget(cmd.Flags(), cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
 func (o *options) apply(fs *pflag.FlagSet, cfg *config.Config) error {
 	set := func(name string) bool { f := fs.Lookup(name); return f != nil && f.Changed }
-	if set("kubeconfig") {
-		cfg.Source.Kubeconfig = o.kubeconfig
-	}
-	if set("context") {
-		cfg.Source.Context = o.context
-	}
+	o.source.applyTo(fs, &cfg.Source.Access)
 	sc := &cfg.Scope
 	if set("namespace") {
 		sc.Namespaces = o.namespaces
@@ -344,8 +492,13 @@ func (o *options) apply(fs *pflag.FlagSet, cfg *config.Config) error {
 	// selects one (see envName).
 	if set("env") && fs.Lookup("tool") != nil {
 		var envs []config.Environment
+		seen := map[string]bool{}
 		for _, e := range o.envs {
 			name, ctx, _ := strings.Cut(e, "=")
+			if seen[name] {
+				return fmt.Errorf("--env %s is given twice", name)
+			}
+			seen[name] = true
 			env := config.Environment{Name: name}
 			if existing, err := cfg.Env(name); err == nil {
 				env = *existing
@@ -357,6 +510,22 @@ func (o *options) apply(fs *pflag.FlagSet, cfg *config.Config) error {
 		}
 		cfg.Environments = envs
 	}
+	return nil
+}
+
+// applyTarget copies the --target-* flags of generating commands onto their
+// only environment. Commands acting on one environment apply them in envName.
+func (o *options) applyTarget(fs *pflag.FlagSet, cfg *config.Config) error {
+	if o.target.prefix == "" || fs.Lookup("tool") == nil {
+		return nil
+	}
+	if len(cfg.Environments) != 1 {
+		if o.target.set(fs) {
+			return errors.New("--target-* flags need exactly one environment; set the others' access in gitopsify.yaml (environments[].cluster)")
+		}
+		return nil
+	}
+	o.target.applyTo(fs, &cfg.Environments[0].Cluster.Access)
 	return nil
 }
 
@@ -402,14 +571,22 @@ func pair(flag, kv string) (string, string, error) {
 	return k, v, nil
 }
 
+// connectOptions are the options of every cluster connection.
+func (o *options) connectOptions() kube.ConnectOptions {
+	return kube.ConnectOptions{NoInput: !o.ui().Interactive}
+}
+
 // pipelineOptions returns the pipeline options for the source: a cluster, or
 // the --from-file objects.
 func (o *options) pipelineOptions(cfg *config.Config, log func(string, ...any)) (pipeline.Options, error) {
-	opts := pipeline.Options{Config: cfg, Log: log, Version: Version}
+	opts := pipeline.Options{Config: cfg, Log: log, Version: Version, Connect: o.connectOptions()}
 	if len(o.fromFiles) > 0 {
 		objs, err := discovery.ReadObjects(o.fromFiles)
 		if err != nil {
 			return opts, err
+		}
+		if len(objs) == 0 {
+			return opts, fmt.Errorf("no Kubernetes objects found in %s", strings.Join(o.fromFiles, ", "))
 		}
 		opts.Offline = objs
 		opts.OfflineName = strings.Join(o.fromFiles, ", ")
@@ -417,15 +594,17 @@ func (o *options) pipelineOptions(cfg *config.Config, log func(string, ...any)) 
 	return opts, nil
 }
 
-// envName returns the environment a single-environment command acts on.
-func (o *options) envName(cfg *config.Config) (*config.Environment, error) {
+// envName returns the environment a single-environment command acts on, with
+// the --target-* flags applied.
+func (o *options) envName(cmd *cobra.Command, cfg *config.Config) (*config.Environment, error) {
 	if len(o.envs) > 1 {
 		return nil, errors.New("--env can be given once for this command")
 	}
+	e := &cfg.Environments[0]
 	if len(o.envs) == 1 {
 		name, ctx, _ := strings.Cut(o.envs[0], "=")
-		e, err := cfg.Env(name)
-		if err != nil {
+		var err error
+		if e, err = cfg.Env(name); err != nil {
 			// Without configured environments, --env defines the one to use.
 			if len(cfg.Environments) != 1 || cfg.Environments[0].Name != "default" {
 				return nil, err
@@ -436,7 +615,20 @@ func (o *options) envName(cfg *config.Config) (*config.Environment, error) {
 		if ctx != "" {
 			e.Cluster.Context = ctx
 		}
-		return e, nil
 	}
-	return &cfg.Environments[0], nil
+	if o.target.prefix != "" {
+		o.target.applyTo(cmd.Flags(), &e.Cluster.Access)
+	}
+	if err := e.Cluster.Access.Validate(); err != nil {
+		return nil, fmt.Errorf("environment %s: %w", e.Name, err)
+	}
+	return e, nil
 }
+
+// complete records the fixed shell completions of a flag; registerCompletions
+// attaches them to the commands that have it.
+func complete(_ *pflag.FlagSet, name string, values ...string) {
+	completions[name] = values
+}
+
+var completions = map[string][]string{}

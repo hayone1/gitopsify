@@ -209,3 +209,39 @@ func TestParseResourceSpec(t *testing.T) {
 		}
 	}
 }
+
+func TestPlatformRules(t *testing.T) {
+	inv := objects(t,
+		`{apiVersion: v1, kind: ConfigMap, metadata: {name: old, namespace: shop, deletionTimestamp: "2026-01-01T00:00:00Z"}}`,
+		`{apiVersion: apiextensions.k8s.io/v1, kind: CustomResourceDefinition, metadata: {name: ciliumnetworkpolicies.cilium.io}, spec: {group: cilium.io}}`,
+		`{apiVersion: apiextensions.k8s.io/v1, kind: CustomResourceDefinition, metadata: {name: addons.k3s.cattle.io}, spec: {group: k3s.cattle.io}}`,
+		`{apiVersion: apiextensions.k8s.io/v1, kind: CustomResourceDefinition, metadata: {name: certificates.cert-manager.io}, spec: {group: cert-manager.io}}`,
+		`{apiVersion: v1, kind: ResourceQuota, metadata: {name: gke-resource-quotas, namespace: shop}}`,
+		`{apiVersion: v1, kind: ServiceAccount, metadata: {name: builder, namespace: shop, annotations: {openshift.io/internal-registry-pull-secret-ref: builder-dockercfg-abcde}}, imagePullSecrets: [{name: builder-dockercfg-abcde}]}`,
+		`{apiVersion: v1, kind: ServiceAccount, metadata: {name: pipeline, namespace: shop, annotations: {eks.amazonaws.com/role-arn: arn}}, imagePullSecrets: [{name: pipeline-dockercfg-abcde}]}`,
+		`{apiVersion: v1, kind: ServiceAccount, metadata: {name: default, namespace: shop}, imagePullSecrets: [{name: default-dockercfg-x1y2z}]}`,
+		`{apiVersion: v1, kind: Secret, type: kubernetes.io/dockercfg, metadata: {name: builder-dockercfg-abcde, namespace: shop, annotations: {kubernetes.io/service-account.name: builder}}}`,
+		`{apiVersion: v1, kind: ConfigMap, metadata: {name: synced, namespace: shop, annotations: {configmanagement.gke.io/managed: enabled}}}`,
+		`{apiVersion: v1, kind: ConfigMap, metadata: {name: app, namespace: cattle-monitoring-system}}`,
+		`{apiVersion: v1, kind: ConfigMap, metadata: {name: app, namespace: shop}}`,
+	)
+	run(t, inv, &config.Config{})
+	for ref, want := range map[string]string{
+		"ConfigMap/shop/old": "terminating:",
+		"CustomResourceDefinition.apiextensions.k8s.io/ciliumnetworkpolicies.cilium.io": "platform-crds:",
+		"CustomResourceDefinition.apiextensions.k8s.io/addons.k3s.cattle.io":            "platform-crds:",
+		"CustomResourceDefinition.apiextensions.k8s.io/certificates.cert-manager.io":    "included",
+		"ResourceQuota/shop/gke-resource-quotas":                                        "cluster-provided-config:",
+		"ServiceAccount/shop/builder":                                                   "platform-serviceaccounts:",
+		"ServiceAccount/shop/pipeline":                                                  "included", // customized
+		"ServiceAccount/shop/default":                                                   "default-serviceaccount:",
+		"Secret/shop/builder-dockercfg-abcde":                                           "platform-serviceaccounts:",
+		"ConfigMap/shop/synced":                                                         "already-gitops-managed:",
+		"ConfigMap/cattle-monitoring-system/app":                                        "system-namespaces:",
+		"ConfigMap/shop/app":                                                            "included",
+	} {
+		if got := reason(inv, ref); !strings.HasPrefix(got, want) {
+			t.Errorf("%s: got %q, want %q", ref, got, want)
+		}
+	}
+}

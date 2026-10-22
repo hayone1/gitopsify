@@ -32,6 +32,22 @@ var stripAnnotations = []string{
 	"field.cattle.io/publicEndpoints",
 	"cloud.google.com/neg-status",
 	"batch.kubernetes.io/job-tracking",
+	"deprecated.daemonset.template.generation",
+	// OpenShift allocates UID and SELinux ranges per namespace and records
+	// who requested a project and its generated pull secrets.
+	"openshift.io/sa.scc.*",
+	"openshift.io/requester",
+	"openshift.io/internal-registry-pull-secret-ref",
+	// Rancher's lifecycle bookkeeping and the project of the source cluster.
+	"cattle.io/status",
+	"lifecycle.cattle.io/*",
+	"field.cattle.io/projectId",
+	// GKE Autopilot's resource adjustments.
+	"autopilot.gke.io/*",
+	// Load balancers and addresses allocated in the source cluster.
+	"kubernetes.digitalocean.com/load-balancer-id",
+	"metallb.universe.tf/ip-allocated-from-pool",
+	"metallb.io/ip-allocated-from-pool",
 }
 
 // stripLabels are runtime labels removed from object metadata (globs).
@@ -47,6 +63,7 @@ var stripLabels = []string{
 	"argocd.argoproj.io/instance",
 	"kustomize.toolkit.fluxcd.io/*",
 	"helm.toolkit.fluxcd.io/*",
+	"field.cattle.io/projectId",
 }
 
 // templateAnnotations are removed from pod templates. They record a

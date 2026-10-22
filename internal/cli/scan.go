@@ -56,6 +56,7 @@ func newScan(o *options) *cobra.Command {
 	cmd.Flags().BoolVar(&showExcluded, "show-excluded", false, "list every excluded object and why")
 	cmd.Flags().BoolVar(&showObjects, "show-objects", false, "list the objects of every app")
 	cmd.Flags().StringVar(&format, "format", "table", "output format: table, json or yaml")
+	complete(cmd.Flags(), "format", "table", "json", "yaml")
 	return cmd
 }
 

@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/hayone1/gitopsify/internal/ui"
 	"github.com/hayone1/gitopsify/pkg/config"
@@ -75,11 +74,7 @@ var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // wizard fills the configuration interactively.
 func wizard(ctx context.Context, u *ui.UI, o *options, cfg *config.Config) error {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if cfg.Source.Kubeconfig != "" {
-		rules.ExplicitPath = cfg.Source.Kubeconfig
-	}
-	raw, err := rules.Load()
+	raw, err := kube.LoadingRules(cfg.Source.Kubeconfig).Load()
 	if err != nil {
 		return fmt.Errorf("reading kubeconfig: %w", err)
 	}
@@ -107,7 +102,7 @@ func wizard(ctx context.Context, u *ui.UI, o *options, cfg *config.Config) error
 
 	// Namespaces of the source cluster, without the system ones.
 	if len(cfg.Scope.Namespaces) == 0 && len(cfg.Scope.Resources) == 0 {
-		if c, err := kube.New(cfg.Source.Kubeconfig, cfg.Source.Context); err == nil {
+		if c, err := kube.Connect(cfg.Source.Access, o.connectOptions()); err == nil {
 			cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			list, err := c.Kubernetes.CoreV1().Namespaces().List(cctx, metav1.ListOptions{})
 			cancel()

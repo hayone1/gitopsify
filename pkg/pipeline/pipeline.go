@@ -45,6 +45,8 @@ type Options struct {
 	EnvClient func(env string) (*kube.Client, error)
 	// Resolver finds chart repositories; built from Config.Helm when nil.
 	Resolver *helm.Resolver
+	// Connect tunes connections to the source and environment clusters.
+	Connect kube.ConnectOptions
 	// Log receives progress messages.
 	Log func(format string, args ...any)
 	// Version of gitopsify, written into generated files.
@@ -158,11 +160,11 @@ func discover(ctx context.Context, opts *Options) (*model.Inventory, *discovery.
 	src := opts.Source
 	if src == nil {
 		var err error
-		if src, err = kube.New(cfg.Source.Kubeconfig, cfg.Source.Context); err != nil {
-			return nil, nil, err
+		if src, err = kube.Connect(cfg.Source.Access, opts.Connect); err != nil {
+			return nil, nil, fmt.Errorf("source cluster: %w", err)
 		}
 	}
-	version, err := src.ServerVersion()
+	version, err := src.Ping()
 	if err != nil {
 		return nil, nil, fmt.Errorf("connecting to the source cluster %s: %w", src.Server, err)
 	}
@@ -171,7 +173,19 @@ func discover(ctx context.Context, opts *Options) (*model.Inventory, *discovery.
 	if err != nil {
 		return nil, nil, err
 	}
-	opts.log("discovering objects in %s (%s)", src.Context, src.Server)
+	how := ""
+	if src.Auth != "" {
+		how = ", " + src.Auth
+	}
+	opts.log("discovering objects in %s (%s%s)", src.Context, src.Server, how)
+	quarter := 0
+	dopts.Progress = func(done, total int) {
+		// Large clusters take a while; say how far along the listing is.
+		if total >= 40 && done*4/total > quarter && done < total {
+			quarter = done * 4 / total
+			opts.log("listed %d of %d resource types", done, total)
+		}
+	}
 	dres, err := discovery.Discover(ctx, src, dopts)
 	return inv, dres, err
 }
@@ -486,7 +500,7 @@ func certSource(ctx context.Context, opts *Options) func(env string) (*rsa.Publi
 			}
 			s := cfg.Secrets.SealedSecrets
 			if key, err = secrets.FetchCert(ctx, c.Kubernetes, s.ControllerNamespace, s.ControllerName); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("environment %s (%s): %w", env, c.Context, c.Explain(err))
 			}
 		}
 		cache[env] = key
@@ -495,23 +509,27 @@ func certSource(ctx context.Context, opts *Options) func(env string) (*rsa.Publi
 }
 
 // ErrNoEnvCluster is returned when an environment has no cluster to connect to.
-var ErrNoEnvCluster = errors.New("the environment has no cluster.context or cluster.kubeconfig")
+var ErrNoEnvCluster = errors.New("the environment has no cluster to connect to (cluster.context, cluster.kubeconfig, cluster.apiServer or cluster.inCluster)")
 
 func envClient(opts *Options, env string) (*kube.Client, error) {
 	if opts.EnvClient != nil {
 		return opts.EnvClient(env)
 	}
-	return EnvClient(opts.Config, env)
+	return EnvClient(opts.Config, env, opts.Connect)
 }
 
 // EnvClient connects to an environment's cluster.
-func EnvClient(cfg *config.Config, env string) (*kube.Client, error) {
+func EnvClient(cfg *config.Config, env string, o kube.ConnectOptions) (*kube.Client, error) {
 	e, err := cfg.Env(env)
 	if err != nil {
 		return nil, err
 	}
-	if e.Cluster.Context == "" && e.Cluster.Kubeconfig == "" {
+	if !e.Cluster.Access.Configured() {
 		return nil, fmt.Errorf("environment %s: %w", env, ErrNoEnvCluster)
 	}
-	return kube.New(e.Cluster.Kubeconfig, e.Cluster.Context)
+	c, err := kube.Connect(e.Cluster.Access, o)
+	if err != nil {
+		return nil, fmt.Errorf("environment %s: %w", env, err)
+	}
+	return c, nil
 }

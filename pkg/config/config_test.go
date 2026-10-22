@@ -56,3 +56,70 @@ func TestLoadStrict(t *testing.T) {
 		t.Error("unknown field accepted")
 	}
 }
+
+func TestAccessInConfigFiles(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "access.yaml")
+	_ = os.WriteFile(p, []byte(`apiVersion: gitopsify.io/v1alpha1
+kind: Migration
+source:
+  kubeconfig: ~/.kube/test.yaml
+  context: test
+  impersonate: jane
+environments:
+  - name: uat
+    cluster:
+      server: https://kubernetes.default.svc
+      apiServer: https://uat.example.com:6443
+      tokenFile: /var/run/secrets/uat/token
+      certificateAuthority: uat-ca.pem
+`), 0o600)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Default()
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	e := c.Environments[0].Cluster
+	if e.Server != "https://kubernetes.default.svc" || e.APIServer != "https://uat.example.com:6443" || !e.Configured() {
+		t.Errorf("cluster access not parsed: %+v", e)
+	}
+	if c.Source.Context != "test" || c.Source.Impersonate != "jane" {
+		t.Errorf("source access not parsed: %+v", c.Source)
+	}
+
+	// A token never goes into the file, and so never into the repository.
+	c.Source.Token = "tok-3x4mpl3"
+	b, _ := c.Marshal()
+	if strings.Contains(string(b), "tok-3x4mpl3") {
+		t.Errorf("token written to the configuration:\n%s", b)
+	}
+	tok := filepath.Join(dir, "token.yaml")
+	_ = os.WriteFile(tok, []byte("apiVersion: gitopsify.io/v1alpha1\nkind: Migration\nsource:\n  token: abc\n"), 0o600)
+	if _, err := Load(tok); err == nil || !strings.Contains(err.Error(), "tokens don't belong") {
+		t.Errorf("token in file: %v", err)
+	}
+
+	bad := New()
+	bad.Source.InCluster, bad.Source.Context = true, "x"
+	bad.Environments[0].Cluster.APIServer = "uat:6443"
+	err = bad.Validate()
+	for _, want := range []string{"source: inCluster", "apiServer \"uat:6443\""} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %v", want, err)
+		}
+	}
+}
+
+func TestExpandHome(t *testing.T) {
+	t.Setenv("HOME", "/home/me")
+	sep := string(os.PathListSeparator)
+	if got := ExpandHome("~/a" + sep + "/b" + sep + "~"); got != "/home/me/a"+sep+"/b"+sep+"/home/me" {
+		t.Errorf("got %q", got)
+	}
+	if got := ExpandHome("a~b"); got != "a~b" {
+		t.Errorf("got %q", got)
+	}
+}

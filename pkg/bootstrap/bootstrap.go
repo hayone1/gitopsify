@@ -149,8 +149,64 @@ func argoRepoSecret(ctx context.Context, o Options) error {
 		"stringData": data,
 	}}
 	o.log("registering repository %s", data["url"])
-	_, err := o.Client.Apply(ctx, s, kube.ApplyOptions{Force: true})
+	if _, err := o.Client.Apply(ctx, s, kube.ApplyOptions{Force: true}); err != nil {
+		return err
+	}
+	if g.SSHKeyFile != "" && g.KnownHostsFile != "" {
+		return argoKnownHosts(ctx, o)
+	}
+	return nil
+}
+
+// argoKnownHosts adds the Git server's host keys to the ones Argo CD ships
+// with (GitHub, GitLab, Bitbucket, Azure DevOps).
+func argoKnownHosts(ctx context.Context, o Options) error {
+	extra, err := os.ReadFile(o.Git.KnownHostsFile)
+	if err != nil {
+		return err
+	}
+	ns := o.Config.Output.ArgoCD.Namespace
+	cm, err := o.Client.Kubernetes.CoreV1().ConfigMaps(ns).Get(ctx, "argocd-ssh-known-hosts-cm", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("reading Argo CD's known hosts: %w", err)
+	}
+	merged := MergeKnownHosts(cm.Data["ssh_known_hosts"], string(extra))
+	if merged == cm.Data["ssh_known_hosts"] {
+		return nil
+	}
+	o.log("adding %s to Argo CD's SSH known hosts", o.Git.KnownHostsFile)
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "argocd-ssh-known-hosts-cm", "namespace": ns},
+		"data":     map[string]any{"ssh_known_hosts": merged},
+	}}
+	_, err = o.Client.Apply(ctx, u, kube.ApplyOptions{Force: true, FieldManager: settingsFieldManager})
 	return err
+}
+
+// MergeKnownHosts appends the entries of extra that existing lacks, ignoring
+// comments and blank lines.
+func MergeKnownHosts(existing, extra string) string {
+	have := map[string]bool{}
+	for _, l := range strings.Split(existing, "\n") {
+		have[strings.TrimSpace(l)] = true
+	}
+	out := strings.TrimRight(existing, "\n")
+	for _, l := range strings.Split(extra, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || strings.HasPrefix(l, "#") || have[l] {
+			continue
+		}
+		have[l] = true
+		if out != "" {
+			out += "\n"
+		}
+		out += l
+	}
+	if out != "" {
+		out += "\n"
+	}
+	return out
 }
 
 func flux(ctx context.Context, o Options) error {

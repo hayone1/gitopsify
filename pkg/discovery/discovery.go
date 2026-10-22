@@ -5,13 +5,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -188,11 +192,21 @@ func Discover(ctx context.Context, c *kube.Client, opts Options) (*Result, error
 				opts.Progress(done, len(jobs))
 			}
 			if err != nil {
-				if apierrors.IsForbidden(err) || apierrors.IsNotFound(err) || apierrors.IsMethodNotSupported(err) {
+				switch {
+				case apierrors.IsForbidden(err):
+					res.Warnings = append(res.Warnings, fmt.Sprintf("not allowed to list %s%s, so none are migrated: %v", groupResource(j.r.GVR), inNS(j.ns), err))
+					return nil
+				case apierrors.IsNotFound(err) || apierrors.IsMethodNotSupported(err):
 					res.Warnings = append(res.Warnings, fmt.Sprintf("cannot list %s%s: %v", groupResource(j.r.GVR), inNS(j.ns), err))
 					return nil
+				case gctx.Err() == nil && !builtinGroup(j.r.GVR.Group):
+					// A custom or aggregated API that keeps failing (a
+					// conversion webhook or an API server that is down)
+					// shouldn't stop the whole export.
+					res.Warnings = append(res.Warnings, fmt.Sprintf("listing %s%s failed, so none are migrated: %v", groupResource(j.r.GVR), inNS(j.ns), err))
+					return nil
 				}
-				return fmt.Errorf("listing %s%s: %w", groupResource(j.r.GVR), inNS(j.ns), err)
+				return fmt.Errorf("listing %s%s: %w", groupResource(j.r.GVR), inNS(j.ns), c.Explain(err))
 			}
 			res.Objects = append(res.Objects, objs...)
 			return nil
@@ -206,6 +220,43 @@ func Discover(ctx context.Context, c *kube.Client, opts Options) (*Result, error
 	return res, nil
 }
 
+// builtinGroup reports whether an API group is served by Kubernetes itself.
+func builtinGroup(g string) bool {
+	return g == "" || !strings.Contains(g, ".") || strings.HasSuffix(g, ".k8s.io") && !strings.HasSuffix(g, ".x-k8s.io")
+}
+
+// retryable reports whether a list error is worth retrying: throttling,
+// overloaded or restarting API servers, dropped connections.
+func retryable(err error) bool {
+	if apierrors.IsTooManyRequests(err) || apierrors.IsServerTimeout(err) || apierrors.IsTimeout(err) ||
+		apierrors.IsServiceUnavailable(err) || apierrors.IsInternalError(err) || apierrors.IsUnexpectedServerError(err) {
+		return true
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection reset") || strings.Contains(msg, "http2: client connection lost") || strings.Contains(msg, "TLS handshake timeout")
+}
+
+// Backoff is the wait between attempts of a failing list call; tests shorten it.
+var Backoff = func(attempt int) time.Duration { return time.Duration(attempt*attempt) * time.Second }
+
+func listPage(ctx context.Context, ri dynamic.ResourceInterface, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	const attempts = 4
+	for i := 1; ; i++ {
+		ul, err := ri.List(ctx, opts)
+		if err == nil || i == attempts || !retryable(err) {
+			return ul, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(Backoff(i)):
+		}
+	}
+}
+
 func list(ctx context.Context, c *kube.Client, r Resource, ns string) ([]*model.Object, error) {
 	var ri dynamic.ResourceInterface = c.Dynamic.Resource(r.GVR)
 	if r.Namespaced && ns != "" {
@@ -213,8 +264,15 @@ func list(ctx context.Context, c *kube.Client, r Resource, ns string) ([]*model.
 	}
 	var out []*model.Object
 	opts := metav1.ListOptions{Limit: 500}
+	restarted := false
 	for {
-		ul, err := ri.List(ctx, opts)
+		ul, err := listPage(ctx, ri, opts)
+		if apierrors.IsResourceExpired(err) && opts.Continue != "" && !restarted {
+			// The continue token expired (a slow, very large list): start
+			// over once, from a fresh snapshot.
+			restarted, out, opts.Continue = true, nil, ""
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}

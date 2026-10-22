@@ -55,7 +55,7 @@ It asks before changing the target unless --yes is given.`,
 				return nil
 			}
 			if !skipCheck {
-				c, err := targetClient(cfg, env)
+				c, err := targetClient(o, cfg, env)
 				if err != nil {
 					return err
 				}
@@ -85,12 +85,13 @@ It asks before changing the target unless --yes is given.`,
 			if !g.push {
 				u.Warn("the repository was not pushed (--push); %s must already have this content for the sync to work", cfg.Output.Repo.URL)
 			}
-			return runBootstrap(cmd, u, cfg, env, b)
+			return runBootstrap(cmd, o, u, cfg, env, b)
 		},
 	}
 	o.addScope(cmd.Flags())
 	o.addSecrets(cmd.Flags())
 	o.addOutput(cmd.Flags())
+	o.addTarget(cmd.Flags())
 	g.add(cmd)
 	b.add(cmd)
 	cmd.Flags().BoolVarP(&o.interactive, "interactive", "i", false, "choose the apps to migrate interactively")

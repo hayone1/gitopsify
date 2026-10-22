@@ -5,6 +5,7 @@ package model
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -392,4 +393,12 @@ func SortObjects(objs []*Object) {
 		}
 		return a.Name < b.Name
 	})
+}
+
+var dockercfgSuffix = regexp.MustCompile(`-dockercfg-[a-z0-9]{5}$`)
+
+// GeneratedPullSecret reports whether a ServiceAccount's image pull secret was
+// generated for it by OpenShift (<serviceaccount>-dockercfg-xxxxx).
+func GeneratedPullSecret(serviceAccount, secret string) bool {
+	return strings.HasPrefix(secret, serviceAccount+"-dockercfg-") && dockercfgSuffix.MatchString(secret)
 }

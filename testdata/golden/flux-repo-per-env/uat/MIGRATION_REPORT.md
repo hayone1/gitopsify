@@ -55,7 +55,7 @@ Pods without an owner, usually created ad hoc with kubectl run; wrap them in a D
 
 ### cluster-provided-config (5)
 
-ConfigMaps every namespace receives automatically (kube-root-ca.crt, istio-ca-root-cert, openshift-service-ca.crt). Disable with `scope.disableDefaultRules: [cluster-provided-config]`.
+Objects every namespace receives automatically (the kube-root-ca.crt, istio-ca-root-cert and openshift-service-ca.crt ConfigMaps, GKE's gke-resource-quotas). Disable with `scope.disableDefaultRules: [cluster-provided-config]`.
 
 - `ConfigMap/default/kube-root-ca.crt` — injected into every namespace
 - `ConfigMap/payments/kube-root-ca.crt` — injected into every namespace
@@ -134,7 +134,7 @@ The default/kubernetes Service and its Endpoints. Disable with `scope.disableDef
 - `Endpoints/default/kubernetes` — API server Service
 - `Service/default/kubernetes` — API server Service
 
-### owned-by-controller (19)
+### owned-by-controller (18)
 
 Objects with a controller ownerReference (Pods of ReplicaSets, Jobs of CronJobs, objects created by operators); their owner recreates them. Disable with `scope.disableDefaultRules: [owned-by-controller]`.
 
@@ -144,7 +144,6 @@ Objects with a controller ownerReference (Pods of ReplicaSets, Jobs of CronJobs,
 - `ReplicaSet.apps/payments/api-8644ff5878` — owned by Deployment/api
 - `EndpointSlice.discovery.k8s.io/payments/api-cdwwz` — owned by Service/api
 - `Pod/podinfo/podinfo-854c8966f7-c5jbl` — owned by ReplicaSet/podinfo-854c8966f7
-- `Pod/podinfo/podinfo-8585b9d99b-2svkx` — owned by ReplicaSet/podinfo-8585b9d99b
 - `ReplicaSet.apps/podinfo/podinfo-854c8966f7` — owned by Deployment/podinfo
 - `ReplicaSet.apps/podinfo/podinfo-8585b9d99b` — owned by Deployment/podinfo
 - `EndpointSlice.discovery.k8s.io/podinfo/podinfo-pwkn6` — owned by Service/podinfo
@@ -496,4 +495,10 @@ RBAC objects created by Kubernetes and cloud providers (system:*, eks:*, gce:*, 
 - `ClusterRoleBinding.rbac.authorization.k8s.io/system:volume-scheduler` — Kubernetes default RBAC
 
 </details>
+
+### terminating (1)
+
+Objects being deleted (they have a deletionTimestamp, for example in a namespace that is terminating). Disable with `scope.disableDefaultRules: [terminating]`.
+
+- `Pod/podinfo/podinfo-8585b9d99b-2svkx` — being deleted since 2026-10-21T17:09:43Z
 

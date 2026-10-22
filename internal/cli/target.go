@@ -26,13 +26,19 @@ func filterRules() [][2]string {
 	return out
 }
 
-// targetClient connects to an environment's cluster.
-func targetClient(cfg *config.Config, env *config.Environment) (*kube.Client, error) {
-	c, err := pipeline.EnvClient(cfg, env.Name)
+// targetClient connects to an environment's cluster and checks it answers.
+func targetClient(o *options, cfg *config.Config, env *config.Environment) (*kube.Client, error) {
+	c, err := pipeline.EnvClient(cfg, env.Name, o.connectOptions())
 	if errors.Is(err, pipeline.ErrNoEnvCluster) {
-		return nil, fmt.Errorf("environment %s has no cluster to connect to: pass --env %s=<kube-context> or set environments[].cluster.context", env.Name, env.Name)
+		return nil, fmt.Errorf("environment %s has no cluster to connect to: pass --env %s=<kube-context> (or --target-context, --target-kubeconfig, --target-server), or set environments[].cluster in gitopsify.yaml", env.Name, env.Name)
 	}
-	return c, err
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.Ping(); err != nil {
+		return nil, fmt.Errorf("connecting to environment %s (%s): %w", env.Name, c.Context, err)
+	}
+	return c, nil
 }
 
 func newCheck(o *options) *cobra.Command {
@@ -54,11 +60,11 @@ Exits with status 1 when a check fails.`,
 			if err != nil {
 				return err
 			}
-			env, err := o.envName(cfg)
+			env, err := o.envName(cmd, cfg)
 			if err != nil {
 				return err
 			}
-			c, err := targetClient(cfg, env)
+			c, err := targetClient(o, cfg, env)
 			if err != nil {
 				return err
 			}
@@ -103,7 +109,9 @@ Exits with status 1 when a check fails.`,
 	o.addScope(cmd.Flags())
 	o.addSecrets(cmd.Flags())
 	o.addEnv(cmd.Flags())
+	o.addTarget(cmd.Flags())
 	cmd.Flags().StringVar(&format, "format", "table", "output format: table, json or yaml")
+	complete(cmd.Flags(), "format", "table", "json", "yaml")
 	return cmd
 }
 
@@ -124,11 +132,11 @@ no-op. Helm apps are rendered with helm template when helm is installed.`,
 			if err != nil {
 				return err
 			}
-			env, err := o.envName(cfg)
+			env, err := o.envName(cmd, cfg)
 			if err != nil {
 				return err
 			}
-			c, err := targetClient(cfg, env)
+			c, err := targetClient(o, cfg, env)
 			if err != nil {
 				return err
 			}
@@ -204,6 +212,7 @@ no-op. Helm apps are rendered with helm template when helm is installed.`,
 	o.addScope(cmd.Flags())
 	o.addSecrets(cmd.Flags())
 	o.addEnv(cmd.Flags())
+	o.addTarget(cmd.Flags())
 	cmd.Flags().BoolVar(&exitCode, "exit-code", false, "exit with status 2 when the sync would change anything")
 	cmd.Flags().BoolVar(&showUnchanged, "show-unchanged", false, "also list unchanged objects")
 	cmd.Flags().BoolVar(&noHelmTemplate, "no-helm-template", false, "compare Helm apps using their recorded release manifests")
@@ -231,7 +240,7 @@ Pair it with "generate --adopt", which writes takeover-safe sync settings.`,
 			if err != nil {
 				return err
 			}
-			env, err := o.envName(cfg)
+			env, err := o.envName(cmd, cfg)
 			if err != nil {
 				return err
 			}
@@ -240,7 +249,7 @@ Pair it with "generate --adopt", which writes takeover-safe sync settings.`,
 			default:
 				return fmt.Errorf("--helm-records must be keep, backup or backup-delete")
 			}
-			c, err := targetClient(cfg, env)
+			c, err := targetClient(o, cfg, env)
 			if err != nil {
 				return err
 			}
@@ -278,6 +287,7 @@ Pair it with "generate --adopt", which writes takeover-safe sync settings.`,
 	}
 	o.addScope(cmd.Flags())
 	o.addEnv(cmd.Flags())
+	o.addTarget(cmd.Flags())
 	cmd.Flags().StringVar(&helmRecords, "helm-records", target.HelmRecordsBackup, "keep, backup or backup-delete")
 	cmd.Flags().StringVar(&backupDir, "backup-dir", filepath.Join(".gitopsify-backup", "helm-records"), "where backups are written")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would happen")
@@ -294,20 +304,25 @@ type bootstrapFlags struct {
 	sopsAgeKey string
 	timeout    time.Duration
 	yes        bool
+	wait       bool
+	waitFor    time.Duration
 }
 
 func (b *bootstrapFlags) add(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&b.gitUser, "git-username", "", "username for an HTTPS repository (default git)")
 	cmd.Flags().StringVar(&b.gitToken, "git-token", "", "password or token for an HTTPS repository (or GITOPSIFY_GIT_TOKEN)")
 	cmd.Flags().StringVar(&b.sshKey, "ssh-key", "", "private key file for an SSH repository")
-	cmd.Flags().StringVar(&b.knownHosts, "known-hosts", "", "known_hosts file of the Git server (Flux over SSH)")
+	cmd.Flags().StringVar(&b.knownHosts, "known-hosts", "", "known_hosts file of the Git server, e.g. from ssh-keyscan (needed by Flux over SSH, and by Argo CD for hosts other than GitHub, GitLab, Bitbucket and Azure DevOps)")
 	cmd.Flags().StringVar(&b.sopsAgeKey, "sops-age-key", "", "age key file loaded as Flux's SOPS decryption key")
 	cmd.Flags().DurationVar(&b.timeout, "timeout", 10*time.Minute, "how long to wait for the GitOps tool to become ready")
 	cmd.Flags().BoolVarP(&b.yes, "yes", "y", false, "don't ask for confirmation")
+	cmd.Flags().BoolVar(&b.wait, "wait", false, "after bootstrapping, wait until every app is synced and healthy")
+	cmd.Flags().DurationVar(&b.waitFor, "wait-timeout", 20*time.Minute, "how long --wait waits")
+	inGroup(cmd.Flags(), groupBootstrap, "git-username", "git-token", "ssh-key", "known-hosts", "sops-age-key", "timeout", "yes", "wait", "wait-timeout")
 }
 
-func runBootstrap(cmd *cobra.Command, u *ui.UI, cfg *config.Config, env *config.Environment, b bootstrapFlags) error {
-	c, err := targetClient(cfg, env)
+func runBootstrap(cmd *cobra.Command, o *options, u *ui.UI, cfg *config.Config, env *config.Environment, b bootstrapFlags) error {
+	c, err := targetClient(o, cfg, env)
 	if err != nil {
 		return err
 	}
@@ -319,7 +334,7 @@ func runBootstrap(cmd *cobra.Command, u *ui.UI, cfg *config.Config, env *config.
 		version = cfg.Output.Flux.Version
 	}
 	if !b.yes {
-		ok, err := u.Confirm(fmt.Sprintf("Install %s %s into %s and sync %s?", cfg.Output.Tool, version, c.Context, cfg.Output.Repo.URL), "Context "+c.Context+" at "+c.Server, true)
+		ok, err := u.Confirm(fmt.Sprintf("Install %s %s into %s and sync %s?", cfg.Output.Tool, version, c.Context, repoURLOf(cfg, env)), "Context "+c.Context+" at "+c.Server, true)
 		if err != nil {
 			return err
 		}
@@ -341,8 +356,26 @@ func runBootstrap(cmd *cobra.Command, u *ui.UI, cfg *config.Config, env *config.
 	if err != nil {
 		return err
 	}
-	u.Success("%s is syncing %s into %s", cfg.Output.Tool, cfg.Output.Repo.URL, c.Context)
+	u.Success("%s is syncing %s into %s", cfg.Output.Tool, repoURLOf(cfg, env), c.Context)
+	if !b.wait {
+		u.Step("follow it with: gitopsify status --env %s", env.Name)
+		return nil
+	}
+	st, err := waitSynced(cmd.Context(), u, cfg, env, c, envDir(cfg, env.Name), b.waitFor)
+	if err != nil {
+		printStatus(u, st)
+		return &exitError{code: 1, msg: err.Error()}
+	}
+	u.Success("%d objects synced and healthy in %s", len(st), env.Name)
 	return nil
+}
+
+// repoURLOf returns the repository an environment syncs from.
+func repoURLOf(cfg *config.Config, env *config.Environment) string {
+	if cfg.Output.Layout == config.LayoutRepoPerEnv && env.RepoURL != "" {
+		return env.RepoURL
+	}
+	return cfg.Output.Repo.URL
 }
 
 func newBootstrap(o *options) *cobra.Command {
@@ -362,14 +395,15 @@ Push the generated repository first. Doesn't need the source cluster.`,
 			if err != nil {
 				return err
 			}
-			env, err := o.envName(cfg)
+			env, err := o.envName(cmd, cfg)
 			if err != nil {
 				return err
 			}
-			return runBootstrap(cmd, o.ui(), cfg, env, b)
+			return runBootstrap(cmd, o, o.ui(), cfg, env, b)
 		},
 	}
 	o.addEnv(cmd.Flags())
+	o.addTarget(cmd.Flags())
 	cmd.Flags().StringVarP(&o.output, "output", "o", "", "directory of the generated repository (default from the configuration)")
 	b.add(cmd)
 	return cmd

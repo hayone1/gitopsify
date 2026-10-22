@@ -26,10 +26,29 @@ type Rule struct {
 // SystemNamespaces are created and managed by Kubernetes distributions.
 var SystemNamespaces = []string{
 	"kube-system", "kube-public", "kube-node-lease", "local-path-storage",
-	"gke-managed-*", "gke-gmp-system", "gmp-system", "gmp-public",
-	"calico-system", "calico-apiserver", "tigera-operator", "kube-flannel",
-	"cattle-system", "cattle-impersonation-system", "cattle-fleet-system",
+	// GKE
+	"gke-managed-*", "gke-gmp-system", "gmp-system", "gmp-public", "gke-connect",
+	"config-management-system", "config-management-monitoring", "resource-group-system",
+	// AKS
+	"aks-command", "aks-istio-*", "app-routing-system",
+	// CNIs
+	"calico-system", "calico-apiserver", "tigera-operator", "kube-flannel", "cilium-secrets",
+	// Rancher and Fleet
+	"cattle-*", "fleet-default", "fleet-local",
+	// OpenShift
 	"openshift", "openshift-*",
+	// k0s
+	"k0s-autopilot",
+}
+
+// platformCRDGroups are API groups whose CRDs belong to the platform: the
+// distribution, the cloud provider or the CNI. The target platform brings its
+// own versions; applying the source's could break it.
+var platformCRDGroups = []string{
+	"k3s.cattle.io", "helm.cattle.io", "*.cattle.io", "*.k0sproject.io", "*.talos.dev",
+	"*.openshift.io", "*.k8s.aws", "*.amazonaws.com", "*.gke.io", "cloud.google.com", "*.cloud.google.com",
+	"*.googleapis.com", "*.azure.com", "*.azure.io",
+	"cilium.io", "*.cilium.io", "crd.projectcalico.org", "projectcalico.org", "*.tigera.io", "*.antrea.io",
 }
 
 // GitOpsNamespaces hold the source cluster's own GitOps tooling.
@@ -86,6 +105,16 @@ var legacyTokenName = regexp.MustCompile(`-token-[a-z0-9]{5}$`)
 // DefaultRules returns the built-in exclusion rules in evaluation order.
 func DefaultRules() []Rule {
 	return []Rule{
+		{
+			Name:        "terminating",
+			Description: "Objects being deleted (they have a deletionTimestamp, for example in a namespace that is terminating)",
+			Match: func(o *model.Object, _ *model.Inventory) (bool, string) {
+				if t := o.Live.GetDeletionTimestamp(); t != nil {
+					return true, "being deleted since " + t.UTC().Format("2006-01-02T15:04:05Z")
+				}
+				return false, ""
+			},
+		},
 		{
 			Name:        "system-namespaces",
 			Description: "Namespaces created by Kubernetes and its distributions (kube-system, kube-public, openshift-*, gke-managed-*, ...) and everything in them",
@@ -211,13 +240,35 @@ func DefaultRules() []Rule {
 		systemComponentRBAC(),
 		{
 			Name:        "cluster-provided-config",
-			Description: "ConfigMaps every namespace receives automatically (kube-root-ca.crt, istio-ca-root-cert, openshift-service-ca.crt)",
+			Description: "Objects every namespace receives automatically (the kube-root-ca.crt, istio-ca-root-cert and openshift-service-ca.crt ConfigMaps, GKE's gke-resource-quotas)",
 			Match: func(o *model.Object, _ *model.Inventory) (bool, string) {
-				if o.Ref.Group == "" && o.Ref.Kind == "ConfigMap" {
+				switch {
+				case o.Ref.Group == "" && o.Ref.Kind == "ConfigMap":
 					switch o.Ref.Name {
-					case "kube-root-ca.crt", "istio-ca-root-cert", "openshift-service-ca.crt":
+					case "kube-root-ca.crt", "istio-ca-root-cert", "openshift-service-ca.crt", "config-service-cabundle":
 						return true, "injected into every namespace"
 					}
+				case o.Ref.Group == "" && o.Ref.Kind == "ResourceQuota" && o.Ref.Name == "gke-resource-quotas":
+					return true, "created by GKE in every namespace"
+				}
+				return false, ""
+			},
+		},
+		{
+			Name:        "platform-serviceaccounts",
+			Description: "ServiceAccounts and registry pull Secrets OpenShift creates in every namespace (builder, deployer, pipeline, <sa>-dockercfg-*)",
+			Match:       platformServiceAccount,
+		},
+		{
+			Name:        "platform-crds",
+			Description: "CRDs of the distribution, cloud provider or CNI (k3s, Rancher, OpenShift, EKS, GKE, AKS, Cilium, Calico, ...); the target platform installs its own",
+			Match: func(o *model.Object, _ *model.Inventory) (bool, string) {
+				if !o.IsCRD() {
+					return false, ""
+				}
+				group, _, _ := unstructured.NestedString(o.Live.Object, "spec", "group")
+				if match.Glob(platformCRDGroups, group) {
+					return true, "platform API group " + group
 				}
 				return false, ""
 			},
@@ -459,18 +510,66 @@ func defaultServiceAccount(o *model.Object, _ *model.Inventory) (bool, string) {
 	if o.Ref.Group != "" || o.Ref.Kind != "ServiceAccount" || o.Ref.Name != "default" {
 		return false, ""
 	}
-	if ips, _, _ := unstructured.NestedSlice(o.Live.Object, "imagePullSecrets"); len(ips) > 0 {
+	if !uncustomizedServiceAccount(o) {
 		return false, ""
-	}
-	if _, found, _ := unstructured.NestedBool(o.Live.Object, "automountServiceAccountToken"); found {
-		return false, ""
-	}
-	for k := range o.Live.GetAnnotations() {
-		if k != "kubectl.kubernetes.io/last-applied-configuration" {
-			return false, ""
-		}
 	}
 	return true, "not customized"
+}
+
+// uncustomizedServiceAccount reports whether a ServiceAccount holds nothing a
+// person set: no pull secrets but generated ones, no token automount setting,
+// no annotations but bookkeeping.
+func uncustomizedServiceAccount(o *model.Object) bool {
+	ips, _, _ := unstructured.NestedSlice(o.Live.Object, "imagePullSecrets")
+	for _, s := range ips {
+		m, _ := s.(map[string]any)
+		name, _ := m["name"].(string)
+		if !model.GeneratedPullSecret(o.Ref.Name, name) {
+			return false
+		}
+	}
+	if _, found, _ := unstructured.NestedBool(o.Live.Object, "automountServiceAccountToken"); found {
+		return false
+	}
+	for k := range o.Live.GetAnnotations() {
+		switch k {
+		case "kubectl.kubernetes.io/last-applied-configuration", "openshift.io/internal-registry-pull-secret-ref":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// platformServiceAccount matches the ServiceAccounts OpenShift creates in
+// every namespace and the pull secrets it generates for ServiceAccounts.
+func platformServiceAccount(o *model.Object, _ *model.Inventory) (bool, string) {
+	switch {
+	case o.Ref.Group == "" && o.Ref.Kind == "ServiceAccount":
+		switch o.Ref.Name {
+		case "builder", "deployer", "pipeline":
+		default:
+			return false, ""
+		}
+		_, openshift := o.Live.GetAnnotations()["openshift.io/internal-registry-pull-secret-ref"]
+		ips, _, _ := unstructured.NestedSlice(o.Live.Object, "imagePullSecrets")
+		for _, s := range ips {
+			m, _ := s.(map[string]any)
+			if name, _ := m["name"].(string); model.GeneratedPullSecret(o.Ref.Name, name) {
+				openshift = true
+			}
+		}
+		if openshift && uncustomizedServiceAccount(o) {
+			return true, "created by OpenShift in every namespace"
+		}
+	case o.IsSecret():
+		a := o.Live.GetAnnotations()
+		sa := a["kubernetes.io/service-account.name"]
+		if a["openshift.io/internal-registry-auth-token.service-account"] != "" || sa != "" && model.GeneratedPullSecret(sa, o.Ref.Name) {
+			return true, "registry pull secret generated by OpenShift"
+		}
+	}
+	return false, ""
 }
 
 var gitopsGroups = map[string]string{
@@ -482,10 +581,16 @@ var gitopsGroups = map[string]string{
 	"image.toolkit.fluxcd.io":        "Flux",
 	"source.extensions.fluxcd.io":    "Flux",
 	"fluxcd.controlplane.io":         "Flux Operator",
+	"configsync.gke.io":              "Config Sync",
+	"configmanagement.gke.io":        "Config Sync",
+	"kpt.dev":                        "Config Sync",
 }
 
 func alreadyManaged(o *model.Object, _ *model.Inventory) (bool, string) {
 	a, l := o.Live.GetAnnotations(), o.Live.GetLabels()
+	if a["configmanagement.gke.io/managed"] == "enabled" || a["configsync.gke.io/resource-id"] != "" {
+		return true, "managed by Config Sync"
+	}
 	if id := a["argocd.argoproj.io/tracking-id"]; id != "" {
 		app, _, _ := strings.Cut(id, ":")
 		return true, "managed by Argo CD application " + app

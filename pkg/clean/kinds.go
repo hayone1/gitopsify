@@ -55,8 +55,20 @@ func cleanKind(u *unstructured.Unstructured, o *model.Object, kc kindContext) {
 			delIfEq(obj, "Filesystem", "spec", "volumeMode")
 		}
 	case "ServiceAccount":
-		// Token Secrets listed here are generated per cluster.
+		// Token Secrets listed here are generated per cluster, and so are
+		// OpenShift's registry pull secrets.
 		del(obj, "secrets")
+		if ips := asSlice(nested(obj, "imagePullSecrets")); len(ips) > 0 {
+			var keep []any
+			for _, s := range ips {
+				m, _ := s.(map[string]any)
+				name, _ := m["name"].(string)
+				if !model.GeneratedPullSecret(u.GetName(), name) {
+					keep = append(keep, s)
+				}
+			}
+			setOrDelete(obj, "imagePullSecrets", keep)
+		}
 	case "Secret":
 		if t, _, _ := unstructured.NestedString(obj, "type"); t == "kubernetes.io/service-account-token" {
 			// The token controller fills these in for the target cluster.
