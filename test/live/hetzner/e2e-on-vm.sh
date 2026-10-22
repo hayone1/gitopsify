@@ -10,6 +10,8 @@
 #   SERVER_TYPE=cx53 ./e2e-on-vm.sh  a bigger machine (default cx33: 4 vCPU, 8 GB)
 #   LOCATIONS="nbg1 hel1"           where to try, in order (default fsn1 nbg1 hel1)
 #   ./e2e-on-vm.sh destroy         remove what an interrupted run left behind
+#   RUN="make gifs" FETCH=docs/images ./e2e-on-vm.sh
+#                                  run another command there and copy files back
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -93,5 +95,12 @@ log "uploading the source"
 (cd "$root" && git ls-files --cached --others --exclude-standard | grep -v '^testdata/golden/' | tar -cz -T -) |
   ssh_ "rm -rf /src && mkdir /src && tar -xz -C /src"
 
-log "running test/e2e/run.sh on the runner"
-ssh_ "cd /src && STAGES='${STAGES:-}' SKIP='${SKIP:-}' ./test/e2e/run.sh" 2>&1 | tee "$state/e2e.log"
+run=${RUN:-./test/e2e/run.sh}
+log "running $run on the runner"
+set -o pipefail
+ssh_ "cd /src && PATH=/usr/local/go/bin:\$PATH STAGES='${STAGES:-}' SKIP='${SKIP:-}' $run" 2>&1 | tee "$state/e2e.log"
+if [[ -n "${FETCH:-}" ]]; then
+  log "fetching $FETCH"
+  # shellcheck disable=SC2086
+  ssh_ "cd /src && tar -cz $FETCH" | tar -xz -C "$root"
+fi

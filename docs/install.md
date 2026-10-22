@@ -58,6 +58,19 @@ sudo rpm -i https://github.com/hayone1/gitopsify/releases/download/v0.1.0/gitops
 
 Homebrew, Scoop and winget packages are planned.
 
+## Docker
+
+```sh
+docker run --rm -v ~/.kube:/home/gitopsify/.kube:ro -v "$PWD:/work" hayone/gitopsify scan
+```
+
+Images for `linux/amd64` and `linux/arm64` are on Docker Hub
+(`hayone/gitopsify`) and GHCR (`ghcr.io/hayone1/gitopsify`), tagged with the
+version (`0.1.1`, `0.1`). They include `git`, `ssh`, `helm` and `kubectl`, run
+as a non-root user and work in `/work`. Kubeconfigs that run credential
+plugins (`aws`, `gke-gcloud-auth-plugin`, `kubelogin`) need those in the image:
+build on top of it, or pass a token with `GITOPSIFY_TOKEN`.
+
 ## Other ways
 
 - **Archives**: download from the [releases page](https://github.com/hayone1/gitopsify/releases),

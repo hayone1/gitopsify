@@ -34,6 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/hayone1/gitopsify/main/install.sh |
 ```
 
 Windows: `irm https://raw.githubusercontent.com/hayone1/gitopsify/main/install.ps1 | iex`.
+Docker: `docker run --rm -v ~/.kube:/home/gitopsify/.kube:ro hayone/gitopsify scan`.
 Debian, RPM, Alpine and Arch packages, archives and `go install` are in
 [docs/install.md](docs/install.md).
 
@@ -54,7 +55,8 @@ gitopsify diff --env uat                 # what will the first sync change?
 gitopsify bootstrap --env uat --wait     # install Argo CD and let it sync
 ```
 
-[Getting started](docs/getting-started.md) walks through a whole migration.
+[Getting started](docs/getting-started.md) walks through a whole migration, and
+[examples](docs/examples.md) has recipes for most situations.
 
 ## With an AI coding agent
 
@@ -77,6 +79,7 @@ More in [docs/ai-agents.md](docs/ai-agents.md).
 | | |
 |---|---|
 | [Getting started](docs/getting-started.md) | A first migration, step by step |
+| [Examples](docs/examples.md) | Recipes: scopes, tools, environments, Secrets, access, CI, Docker |
 | [How it works](docs/concepts.md) | Cleaning, exclusions, apps, ordering, output |
 | [Cluster access](docs/authentication.md) | EKS, GKE, AKS, OpenShift, k3s, tokens, CI |
 | [Helm releases](docs/helm.md) | Charts, repositories, drift |

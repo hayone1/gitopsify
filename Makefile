@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/hayone1/gitopsify/internal/cli.Version=$(VERSION)
 
-.PHONY: build test golden docs lint e2e e2e-vm live clean
+.PHONY: build test golden docs gifs lint e2e e2e-vm live clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/gitopsify ./cmd/gitopsify
@@ -21,6 +21,13 @@ golden:
 docs:
 	UPDATE_DOCS=1 go test ./internal/cli -run TestCommandReferenceIsCurrent
 	UPDATE_DOCS=1 go test ./pkg/config -run TestSchemaIsCurrent
+
+# Terminal recordings in docs/images, from docs/tapes, with VHS in Docker.
+gifs:
+	CGO_ENABLED=0 go build -o bin/gitopsify ./cmd/gitopsify
+	for t in scan generate interactive init; do \
+	  docker run --rm -v "$$PWD:/vhs" ghcr.io/charmbracelet/vhs docs/tapes/$$t.tape || exit 1; \
+	done
 
 lint:
 	go vet ./...

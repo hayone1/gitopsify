@@ -1,0 +1,8 @@
+.git
+.env
+.logs
+bin
+dist
+gitops
+testdata/golden
+test/live/hetzner/.state*
