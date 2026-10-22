@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/hayone1/gitopsify/internal/cli.Version=$(VERSION)
 
-.PHONY: build test golden docs lint e2e live clean
+.PHONY: build test golden docs lint e2e e2e-vm live clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/gitopsify ./cmd/gitopsify
@@ -34,6 +34,10 @@ e2e:
 # TF_VAR_hcloud_token. About 30 minutes; destroys what it creates.
 live:
 	./test/live/hetzner/run.sh
+
+# test/e2e/run.sh on a throwaway Hetzner machine; needs TF_VAR_hcloud_token.
+e2e-vm:
+	./test/live/hetzner/e2e-on-vm.sh
 
 clean:
 	rm -rf bin dist

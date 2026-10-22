@@ -28,8 +28,9 @@ make test      # unit, golden and CLI tests; needs kubectl and helm for the Kust
 make lint      # go vet and gofmt
 make golden    # regenerate testdata/golden after an intended output change
 make docs      # regenerate docs/commands.md after changing a command or flag
-make e2e       # kind clusters: auth, round trip, plain, Argo CD, Flux, SOPS, takeover (~45 min)
-make live      # Hetzner k3s clusters and a private GitHub repository (~30 min)
+make e2e       # kind clusters on this machine: auth, round trip, plain, Argo CD, Flux, SOPS, takeover
+make e2e-vm    # the same suite on a throwaway Hetzner machine (needs TF_VAR_hcloud_token)
+make live      # Hetzner k3s clusters and a private GitHub repository (~40 min)
 ```
 
 The golden trees contain generated `.gitignore` files that ignore `.secrets/`;
@@ -42,9 +43,14 @@ Helm 4 those few builds are skipped; CI pins Helm 3 for them.
 
 ## End-to-end tests
 
-`test/e2e/run.sh` needs docker, kind, kubectl, helm, jq, git, curl and go.
-Select stages with `STAGES="auth argocd"` or `SKIP="sops takeover"`; `KEEP=1`
-keeps the clusters. It downloads `sops` and `age` when missing.
+`test/e2e/run.sh` needs docker, kind, kubectl, helm, jq, git, curl and go, and
+more CPU and memory than a laptop or WSL comfortably gives it (two clusters,
+Argo CD, Flux). Prefer `make e2e-vm`, which runs it on a Hetzner `cx33`
+created for the run and destroyed afterwards (`LOCATIONS`, `SERVER_TYPE` to
+choose; `test/live/hetzner/e2e-on-vm.sh destroy` cleans up after an
+interruption). Select stages with `STAGES="auth argocd"` or `SKIP="sops
+takeover"`; `KEEP=1` keeps the clusters. It downloads `sops` and `age` when
+missing. The CI workflow runs it too, on demand and weekly.
 
 `test/live/hetzner/run.sh` needs terraform, gh (with `repo` scope) and
 `TF_VAR_hcloud_token` (it reads `.env` at the repository root, which is
@@ -52,7 +58,11 @@ git-ignored). It creates three `cx33` servers with k3s, reachable only from
 your IP, and a private `<you>/gitopsify-e2e-live` repository with per-run
 deploy keys and branches. Everything is destroyed at the end, also on failure;
 `./run.sh destroy` cleans up after an interrupted run, including anything
-labelled `gitopsify-e2e` that Terraform lost track of. A run costs a few cents.
+labelled `gitopsify-e2e` that Terraform lost track of. `STAGES="argocd"` runs
+some of argocd, flux and takeover on fewer servers; `KEEP=1` keeps them; on
+failure, reports, scans and diffs are kept in `.state/last-run`. Its cluster
+traffic goes through your connection, so on a slow link prefer `make e2e-vm`.
+A run costs a few cents.
 
 ## Releasing
 

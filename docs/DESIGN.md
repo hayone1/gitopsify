@@ -244,6 +244,12 @@ wave plus explicit dependencies, and `wait: true` on crds/platform apps.
 | `--server` with the current context's credentials sends them to another server | An explicit server without a kubeconfig or context ignores the kubeconfig |
 | `generate --push` into a new directory can't push onto a remote branch with history | The remote branch is checked out into the empty output directory first |
 | A crafted `.gitopsify/generated.txt` could name files outside the output | Stale-file cleanup only removes local paths |
+| Charts render unset values as null (`ingressClassName:`); Helm drops them, so k3s's default IngressClass fills the field in, and applying the null would remove it in a takeover | Rendered chart objects lose their null values before they're compared or written |
+| k3s applies its packaged add-ons with Wrangler's objectset, and metrics-server's APIService points into `kube-system` | objectset-applied objects count as platform-managed; registrations served from system namespaces aren't migrated |
+| Over slow links, large list pages (Helm release Secrets reach 1 MB each) outlast the API server's 60-second request limit and arrive as HTTP/2 stream resets | Lists use pages of 100, retry stream resets and halve the page on each retry |
+| kubelet pulls images one at a time; Flux's seven images took over 10 minutes on a slow registry link | `bootstrap` waits 15 minutes by default and names the pods still pulling, crash-looping or unschedulable |
+| Argo CD 3 keeps resource health out of the Application, so "Degraded" came without a reason, and an HPA without CPU requests stays Degraded forever | `status` inspects the app's HPAs, PVCs, Ingresses and workloads to say why; `--wait` gives up once apps stay Degraded; `--wait-for synced` for clusters without metrics or ingress controllers; scan warns about such HPAs |
+| Fresh CI runners have no Git identity | Commits fall back to `gitopsify <gitopsify@users.noreply.github.com>` |
 | Object names may be 253 characters; file names only 255 bytes | Long file names are shortened with a hash; long app names too, so they stay unique |
 
 The end-to-end test (`test/e2e/run.sh`) checks the parts that unit tests can't,
