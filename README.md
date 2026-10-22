@@ -40,6 +40,8 @@ Debian, RPM, Alpine and Arch packages, archives and `go install` are in
 
 ## Try it
 
+![gitopsify scan](docs/images/scan.gif)
+
 ```sh
 gitopsify doctor                         # can gitopsify reach your cluster?
 gitopsify scan                           # what would be migrated, and what is left out

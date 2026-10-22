@@ -24,8 +24,11 @@ platform and error.
 ## 2. Describe the migration
 
 You can pass everything as flags, but a small `gitopsify.yaml` is easier to
-review and re-run. `gitopsify init` asks a few questions and writes it; or
-write it yourself:
+review and re-run. `gitopsify init` asks a few questions and writes it:
+
+![gitopsify init](images/init.gif)
+
+Or write it yourself:
 
 ```yaml
 apiVersion: gitopsify.io/v1alpha1
