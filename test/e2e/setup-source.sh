@@ -22,13 +22,14 @@ k -n shop create deployment web --image=nginx:1.27 --replicas=2 --port=80
 k -n shop set env deployment/web --from=configmap/web-config
 k -n shop set env deployment/web --from=secret/web-db
 k -n shop set serviceaccount deployment/web web
+k -n shop set resources deployment/web --requests=cpu=50m,memory=32Mi
 k -n shop expose deployment web --port=80 --target-port=80
 k -n shop create ingress web --rule="web.test.example.com/*=web:80"
 k -n shop autoscale deployment web --min=2 --max=5 --cpu-percent=80
 k -n shop create role widget-editor --verb=get,list,update --resource=widgets.example.com
 k -n shop create rolebinding web-widget-editor --role=widget-editor --serviceaccount=shop:web
 k -n shop create cronjob cleanup --image=busybox:1.36 --schedule="0 * * * *" -- echo cleanup
-k -n shop create job migrate-once --image=busybox:1.36 -- echo done
+k -n shop create job migrate-once --image=busybox:1.36 -- echo "done"
 k -n shop run debug --image=busybox:1.36 --restart=Never -- sleep 3600
 
 # payments: server-side apply
@@ -50,4 +51,5 @@ helm --kube-context "$CTX" install inhouse "$tmp/inhouse" -n tools --create-name
 rm -rf "$tmp"
 
 k -n shop wait --for=condition=complete job/migrate-once --timeout=120s
+k -n shop rollout status deployment/cache --timeout=180s
 echo "source cluster ready"

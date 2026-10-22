@@ -89,7 +89,16 @@ gitopsify status --env uat --wait --timeout 15m   # in CI
 
 `status` lists every Application, or every Kustomization and HelmRelease,
 that the generated repository declares, with its sync state, health and the
-first error, and reports the ones that don't exist yet as Missing.
+first error, and reports the ones that don't exist yet as Missing. For an
+unhealthy Argo CD app it names the resource that holds it back: an HPA without
+metrics, an unbound PVC, an Ingress without an address, pods that aren't
+ready.
+
+`--wait` (on `status` and `bootstrap`) waits for every app to be synced and
+healthy, and stops early when everything is synced but some apps stay
+Degraded. On clusters where some resources can't become healthy, for example
+without an ingress controller, `--wait-for synced` waits for Argo CD to apply
+everything and reports health without waiting for it.
 
 ## Regenerating
 

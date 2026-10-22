@@ -224,9 +224,19 @@ func TestPlatformRules(t *testing.T) {
 		`{apiVersion: v1, kind: ConfigMap, metadata: {name: synced, namespace: shop, annotations: {configmanagement.gke.io/managed: enabled}}}`,
 		`{apiVersion: v1, kind: ConfigMap, metadata: {name: app, namespace: cattle-monitoring-system}}`,
 		`{apiVersion: v1, kind: ConfigMap, metadata: {name: app, namespace: shop}}`,
+		`{apiVersion: rbac.authorization.k8s.io/v1, kind: ClusterRole, metadata: {name: metrics-reader, annotations: {objectset.rio.cattle.io/owner-gvk: "k3s.cattle.io/v1, Kind=Addon", objectset.rio.cattle.io/owner-name: metrics-server, objectset.rio.cattle.io/owner-namespace: kube-system}}}`,
+		`{apiVersion: apiregistration.k8s.io/v1, kind: APIService, metadata: {name: v1beta1.metrics.k8s.io}, spec: {service: {name: metrics-server, namespace: kube-system}}}`,
+		`{apiVersion: apiregistration.k8s.io/v1, kind: APIService, metadata: {name: v1.acme.io}, spec: {service: {name: acme-api, namespace: acme}}}`,
+		`{apiVersion: admissionregistration.k8s.io/v1, kind: ValidatingWebhookConfiguration, metadata: {name: cni}, webhooks: [{name: a.cni.io, clientConfig: {service: {name: cni, namespace: calico-system}}}]}`,
+		`{apiVersion: admissionregistration.k8s.io/v1, kind: ValidatingWebhookConfiguration, metadata: {name: mixed}, webhooks: [{name: a.x.io, clientConfig: {service: {name: x, namespace: kube-system}}}, {name: b.x.io, clientConfig: {url: "https://x.example.com"}}]}`,
 	)
 	run(t, inv, &config.Config{})
 	for ref, want := range map[string]string{
+		"ClusterRole.rbac.authorization.k8s.io/metrics-reader":              "addon-managed:",
+		"APIService.apiregistration.k8s.io/v1beta1.metrics.k8s.io":          "system-served-registrations:",
+		"APIService.apiregistration.k8s.io/v1.acme.io":                      "included",
+		"ValidatingWebhookConfiguration.admissionregistration.k8s.io/cni":   "system-served-registrations:",
+		"ValidatingWebhookConfiguration.admissionregistration.k8s.io/mixed": "included",
 		"ConfigMap/shop/old": "terminating:",
 		"CustomResourceDefinition.apiextensions.k8s.io/ciliumnetworkpolicies.cilium.io": "platform-crds:",
 		"CustomResourceDefinition.apiextensions.k8s.io/addons.k3s.cattle.io":            "platform-crds:",

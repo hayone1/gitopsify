@@ -351,7 +351,7 @@ func DefaultRules() []Rule {
 		},
 		{
 			Name:        "addon-managed",
-			Description: "Objects reconciled by the cluster's addon manager or cloud provider (addonmanager.kubernetes.io/mode, eks.amazonaws.com/component, kubernetes.azure.com/managedby)",
+			Description: "Objects reconciled by the cluster's addon manager, cloud provider or distribution (addonmanager.kubernetes.io/mode, eks.amazonaws.com/component, kubernetes.azure.com/managedby, k3s and Rancher's objectset apply)",
 			Match: func(o *model.Object, _ *model.Inventory) (bool, string) {
 				l := o.Live.GetLabels()
 				for _, k := range []string{"addonmanager.kubernetes.io/mode", "eks.amazonaws.com/component", "kubernetes.azure.com/managedby"} {
@@ -359,8 +359,23 @@ func DefaultRules() []Rule {
 						return true, fmt.Sprintf("managed by the platform (%s=%s)", k, v)
 					}
 				}
+				// k3s deploys its packaged add-ons (CoreDNS, metrics-server,
+				// local-path) and Rancher its own objects with Wrangler's
+				// objectset apply, which records the owner.
+				a := o.Live.GetAnnotations()
+				if gvk := a["objectset.rio.cattle.io/owner-gvk"]; gvk != "" {
+					return true, fmt.Sprintf("applied by k3s/Rancher for %s %s/%s", gvk, a["objectset.rio.cattle.io/owner-namespace"], a["objectset.rio.cattle.io/owner-name"])
+				}
+				if _, ok := l["objectset.rio.cattle.io/hash"]; ok {
+					return true, "applied by k3s/Rancher (objectset)"
+				}
 				return false, ""
 			},
+		},
+		{
+			Name:        "system-served-registrations",
+			Description: "APIServices and admission webhooks served by components in system namespaces (metrics-server, cloud and CNI webhooks); without their server they would break the target's API",
+			Match:       systemServedRegistration,
 		},
 		{
 			Name:        "default-storageclass",
@@ -608,6 +623,41 @@ func alreadyManaged(o *model.Object, _ *model.Inventory) (bool, string) {
 			return false, ""
 		}
 		return true, tool + " configuration object"
+	}
+	return false, ""
+}
+
+// systemServedRegistration matches APIServices and webhook configurations
+// whose server runs in a system or GitOps namespace, which isn't migrated: the
+// registration alone would make the target's API fail (an unavailable
+// aggregated API, or webhooks that reject requests).
+func systemServedRegistration(o *model.Object, _ *model.Inventory) (bool, string) {
+	excluded := func(ns string) bool {
+		return ns != "" && (match.Glob(SystemNamespaces, ns) || match.Glob(GitOpsNamespaces, ns))
+	}
+	switch o.Ref.GroupKind() {
+	case "APIService.apiregistration.k8s.io":
+		ns, _, _ := unstructured.NestedString(o.Live.Object, "spec", "service", "namespace")
+		name, _, _ := unstructured.NestedString(o.Live.Object, "spec", "service", "name")
+		if excluded(ns) {
+			return true, "served by " + ns + "/" + name
+		}
+	case "ValidatingWebhookConfiguration.admissionregistration.k8s.io", "MutatingWebhookConfiguration.admissionregistration.k8s.io":
+		hooks, _, _ := unstructured.NestedSlice(o.Live.Object, "webhooks")
+		if len(hooks) == 0 {
+			return false, ""
+		}
+		var served string
+		for _, h := range hooks {
+			m, _ := h.(map[string]any)
+			ns, _, _ := unstructured.NestedString(m, "clientConfig", "service", "namespace")
+			name, _, _ := unstructured.NestedString(m, "clientConfig", "service", "name")
+			if !excluded(ns) {
+				return false, ""
+			}
+			served = ns + "/" + name
+		}
+		return true, "served by " + served
 	}
 	return false, ""
 }

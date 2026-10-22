@@ -13,7 +13,7 @@ Source: offline (clickops.yaml). Target environments: uat.
 | Helm releases skipped | 2 |
 | Apps | 3 |
 | Secrets that need action | 1 |
-| Warnings | 0 |
+| Warnings | 1 |
 
 ## Helm releases
 
@@ -38,7 +38,7 @@ Modes: **chart** pulls the chart from its repository; **vendor** writes the char
 
 ## Warnings
 
-None.
+- `HorizontalPodAutoscaler.autoscaling/shop/web`: scales Deployment web on cpu utilization, but its container nginx requests no cpu, so the HPA can't compute it and never scales (Argo CD shows it Degraded); add a cpu request, in the source or with a set transform
 
 ## Excluded objects
 

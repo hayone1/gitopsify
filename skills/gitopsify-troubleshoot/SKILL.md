@@ -7,6 +7,12 @@ description: Diagnose and fix Argo CD Applications or Flux Kustomizations and He
 
 Start with what gitopsify sees, then go one level down:
 
+`gitopsify status` names the resource that keeps an app from being healthy
+(an HPA without metrics, an unbound PVC, an Ingress without an address, pods
+not ready). `--wait-for synced` waits for Argo CD to apply everything without
+requiring health, for clusters without an ingress controller or metrics
+server; `--wait` stops early once apps stay Degraded.
+
 ```sh
 gitopsify status --env uat                    # every app, with the first error
 kubectl --context uat -n argocd get applications

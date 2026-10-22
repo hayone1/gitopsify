@@ -32,6 +32,7 @@ unexplained.
 | `runs image <x> from a registry local to the source cluster` | Push the image to a registry the target can pull from, then add an `image` transform (`--image-registry localhost:5000=ghcr.io/acme`) |
 | `requests load balancer IP`, `has externalIPs` | Addresses belong to the source network. Change per environment with a `set` transform, or remove them |
 | `is bound to an AWS IAM role (IRSA)` / `a Google service account` / `an Azure managed identity` | Create the identity in the target account, then add an `annotations` transform per environment with its ARN/email/client ID |
+| `scales ... on cpu utilization, but its container ... requests no cpu` | The HPA can't work, in the source either; Argo CD will show the app Degraded. Add requests (in the source, or a `set` transform on `spec.template.spec.containers[name=x].resources.requests.cpu`) |
 | `Secret data is written unencrypted` | Only with `--secrets plain --allow-plain-secrets`. Make sure that is really intended |
 
 ## Inventory warnings
@@ -59,8 +60,12 @@ look with the person:
 - `scope`: outside the selected namespaces or resources, as intended?
 - `already-gitops-managed`: already in Git through Argo CD, Flux or Config
   Sync. gitopsify doesn't convert between tools; their source is already Git.
-- `platform-crds`, `system-namespaces`: owned by the distribution or cloud;
-  the target platform brings its own.
+- `platform-crds`, `system-namespaces`, `addon-managed`: owned by the
+  distribution or cloud (including k3s's packaged add-ons); the target
+  platform brings its own.
+- `system-served-registrations`: APIServices and webhooks whose server runs
+  in a system namespace (metrics-server, CNI webhooks). Migrating them without
+  the server would break the target's API; the target needs its own server.
 - `completed-jobs`, `bare-pods`: one-off runs. A bare Pod someone depends on
   should become a Deployment or Job first.
 - `default-storageclass`: the target provides its own default. Map classes

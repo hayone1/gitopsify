@@ -6,6 +6,7 @@
 #   GITOPSIFY_VERSION      version to install, e.g. v0.2.0 (default: the latest release)
 #   GITOPSIFY_INSTALL_DIR  where to put gitopsify.exe (default: %LOCALAPPDATA%\gitopsify\bin)
 #   GITHUB_TOKEN           token for private repositories or to avoid API rate limits
+#   GITOPSIFY_NO_MODIFY_PATH  set to 1 to leave your PATH alone
 $ErrorActionPreference = 'Stop'
 $repo = 'hayone1/gitopsify'
 
@@ -57,7 +58,7 @@ try {
     Copy-Item (Join-Path $tmp 'gitopsify.exe') (Join-Path $dir 'gitopsify.exe') -Force
 
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not ($userPath -split ';' | Where-Object { $_ -eq $dir })) {
+    if ($env:GITOPSIFY_NO_MODIFY_PATH -ne '1' -and -not ($userPath -split ';' | Where-Object { $_ -eq $dir })) {
         [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User')
         Write-Host "Added $dir to your user PATH; open a new terminal to use it."
     }

@@ -304,8 +304,9 @@ type bootstrapFlags struct {
 	sopsAgeKey string
 	timeout    time.Duration
 	yes        bool
-	wait       bool
-	waitFor    time.Duration
+	wait        bool
+	waitTimeout time.Duration
+	waitFor     string
 }
 
 func (b *bootstrapFlags) add(cmd *cobra.Command) {
@@ -317,8 +318,10 @@ func (b *bootstrapFlags) add(cmd *cobra.Command) {
 	cmd.Flags().DurationVar(&b.timeout, "timeout", 10*time.Minute, "how long to wait for the GitOps tool to become ready")
 	cmd.Flags().BoolVarP(&b.yes, "yes", "y", false, "don't ask for confirmation")
 	cmd.Flags().BoolVar(&b.wait, "wait", false, "after bootstrapping, wait until every app is synced and healthy")
-	cmd.Flags().DurationVar(&b.waitFor, "wait-timeout", 20*time.Minute, "how long --wait waits")
-	inGroup(cmd.Flags(), groupBootstrap, "git-username", "git-token", "ssh-key", "known-hosts", "sops-age-key", "timeout", "yes", "wait", "wait-timeout")
+	cmd.Flags().DurationVar(&b.waitTimeout, "wait-timeout", 20*time.Minute, "how long --wait waits")
+	cmd.Flags().StringVar(&b.waitFor, "wait-for", "healthy", "what --wait waits for: healthy, or synced (applied, health aside)")
+	inGroup(cmd.Flags(), groupBootstrap, "git-username", "git-token", "ssh-key", "known-hosts", "sops-age-key", "timeout", "yes", "wait", "wait-timeout", "wait-for")
+	complete(cmd.Flags(), "wait-for", "healthy", "synced")
 }
 
 func runBootstrap(cmd *cobra.Command, o *options, u *ui.UI, cfg *config.Config, env *config.Environment, b bootstrapFlags) error {
@@ -361,7 +364,7 @@ func runBootstrap(cmd *cobra.Command, o *options, u *ui.UI, cfg *config.Config, 
 		u.Step("follow it with: gitopsify status --env %s", env.Name)
 		return nil
 	}
-	st, err := waitSynced(cmd.Context(), u, cfg, env, c, envDir(cfg, env.Name), b.waitFor)
+	st, err := waitSynced(cmd.Context(), u, cfg, env, c, envDir(cfg, env.Name), b.waitTimeout, b.waitFor)
 	if err != nil {
 		printStatus(u, st)
 		return &exitError{code: 1, msg: err.Error()}

@@ -39,8 +39,9 @@ irm https://raw.githubusercontent.com/hayone1/gitopsify/main/install.ps1 | iex
 ```
 
 It installs to `%LOCALAPPDATA%\gitopsify\bin` and adds that to your user
-`PATH`. The same `GITOPSIFY_VERSION`, `GITOPSIFY_INSTALL_DIR` and
-`GITHUB_TOKEN` variables apply.
+`PATH` (set `GITOPSIFY_NO_MODIFY_PATH=1` to skip that). The same
+`GITOPSIFY_VERSION`, `GITOPSIFY_INSTALL_DIR` and `GITHUB_TOKEN` variables
+apply.
 
 ## Linux packages
 

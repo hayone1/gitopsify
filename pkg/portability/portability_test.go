@@ -72,3 +72,28 @@ func TestCheck(t *testing.T) {
 		}
 	}
 }
+
+func TestAutoscalerWithoutRequests(t *testing.T) {
+	inv := inventory(t,
+		`{apiVersion: apps/v1, kind: Deployment, metadata: {name: web, namespace: shop}, spec: {template: {spec: {containers: [{name: web, image: nginx}]}}}}`,
+		`{apiVersion: autoscaling/v2, kind: HorizontalPodAutoscaler, metadata: {name: web, namespace: shop}, spec: {scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: web}, metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 80}}}]}}`,
+		`{apiVersion: apps/v1, kind: Deployment, metadata: {name: api, namespace: shop}, spec: {template: {spec: {containers: [{name: api, image: api, resources: {requests: {cpu: 100m}}}]}}}}`,
+		`{apiVersion: autoscaling/v1, kind: HorizontalPodAutoscaler, metadata: {name: api, namespace: shop}, spec: {scaleTargetRef: {kind: Deployment, name: api}, targetCPUUtilizationPercentage: 80}}`,
+	)
+	cfg := config.New()
+	cfg.Adopt.Enabled = true // applies to takeovers too
+	Check(inv, cfg)
+	for _, o := range inv.Objects {
+		w := strings.Join(o.Warnings, " ")
+		switch o.Ref.String() {
+		case "HorizontalPodAutoscaler.autoscaling/shop/web":
+			if !strings.Contains(w, "requests no cpu") {
+				t.Errorf("web HPA: %q", w)
+			}
+		default:
+			if w != "" {
+				t.Errorf("%s: unexpected %q", o.Ref, w)
+			}
+		}
+	}
+}

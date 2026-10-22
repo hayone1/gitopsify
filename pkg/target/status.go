@@ -67,32 +67,87 @@ func Status(ctx context.Context, cfg *config.Config, env *config.Environment, c 
 	return out, nil
 }
 
+// WaitOptions tune Wait.
+type WaitOptions struct {
+	Timeout time.Duration
+	// SyncedOnly waits for Argo CD to sync (Flux: Ready) without requiring
+	// health, for clusters where some resources can't become healthy (no
+	// ingress controller or metrics server).
+	SyncedOnly bool
+	// DegradedGrace ends the wait early, with an error, once everything is
+	// synced and the only unready apps have stayed Degraded this long.
+	// Default 2 minutes.
+	DegradedGrace time.Duration
+	// Interval between polls (default 5 seconds).
+	Interval time.Duration
+	// Progress receives every poll's result.
+	Progress func([]AppStatus)
+}
+
 // Wait polls Status until every object is ready, the timeout passes or the
-// context ends. progress receives every poll's result.
-func Wait(ctx context.Context, cfg *config.Config, env *config.Environment, c *kube.Client, dir string, timeout time.Duration, progress func([]AppStatus)) ([]AppStatus, error) {
-	deadline := time.Now().Add(timeout)
+// context ends.
+func Wait(ctx context.Context, cfg *config.Config, env *config.Environment, c *kube.Client, dir string, o WaitOptions) ([]AppStatus, error) {
+	if o.DegradedGrace == 0 {
+		o.DegradedGrace = 2 * time.Minute
+	}
+	if o.Interval == 0 {
+		o.Interval = 5 * time.Second
+	}
+	deadline := time.Now().Add(o.Timeout)
+	var degradedSince time.Time
 	for {
 		st, err := Status(ctx, cfg, env, c, dir)
 		if err != nil && !isTransient(err) {
 			return nil, err
 		}
 		if err == nil {
-			if progress != nil {
-				progress(st)
+			if o.SyncedOnly {
+				for i := range st {
+					st[i].Ready = st[i].Ready || st[i].Kind == "Application" && st[i].Sync == "Synced"
+				}
+			}
+			if o.Progress != nil {
+				o.Progress(st)
 			}
 			if len(st) > 0 && AllReady(st) {
 				return st, nil
 			}
+			if stuckDegraded(st) {
+				if degradedSince.IsZero() {
+					degradedSince = time.Now()
+				} else if time.Since(degradedSince) >= o.DegradedGrace {
+					return st, fmt.Errorf("%d of %d synced but degraded for %s; see the messages (or wait for sync only with --wait-for synced)", len(st)-countReady(st), len(st), o.DegradedGrace)
+				}
+			} else {
+				degradedSince = time.Time{}
+			}
 		}
 		if time.Now().After(deadline) {
-			return st, fmt.Errorf("timed out after %s: %d of %d not ready", timeout, len(st)-countReady(st), len(st))
+			return st, fmt.Errorf("timed out after %s: %d of %d not ready", o.Timeout, len(st)-countReady(st), len(st))
 		}
 		select {
 		case <-ctx.Done():
 			return st, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(o.Interval):
 		}
 	}
+}
+
+// stuckDegraded reports whether everything that isn't ready is synced and
+// Degraded: Argo CD has done its part and something in the cluster is wrong.
+// Applications that only wait for their children don't count.
+func stuckDegraded(st []AppStatus) bool {
+	found := false
+	for _, s := range st {
+		if s.Ready {
+			continue
+		}
+		if s.Kind != "Application" || s.Sync != "Synced" || s.Health != "Degraded" {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // AllReady reports whether every object is ready.
@@ -167,9 +222,109 @@ func argoStatus(ctx context.Context, cfg *config.Config, env *config.Environment
 			continue
 		}
 		delete(want, u.GetName())
-		out = append(out, applicationStatus(u))
+		s := applicationStatus(u)
+		if !s.Ready && s.Message == "" {
+			s.Message = explainResources(ctx, c, u)
+		}
+		out = append(out, s)
 	}
 	return append(out, missing("Application", ns, want)...), nil
+}
+
+// explainResources says why an Application isn't healthy by looking at the
+// resources that commonly keep apps from becoming healthy. Argo CD 3 no
+// longer records resource health in the Application.
+func explainResources(ctx context.Context, c *kube.Client, app *unstructured.Unstructured) string {
+	if c.Mapper == nil {
+		return ""
+	}
+	res, _, _ := unstructured.NestedSlice(app.Object, "status", "resources")
+	var reasons []string
+	for _, r := range res {
+		m, _ := r.(map[string]any)
+		group, _ := m["group"].(string)
+		version, _ := m["version"].(string)
+		kind, _ := m["kind"].(string)
+		ns, _ := m["namespace"].(string)
+		name, _ := m["name"].(string)
+		switch kind {
+		case "HorizontalPodAutoscaler", "PersistentVolumeClaim", "Ingress", "Service", "Deployment", "StatefulSet", "DaemonSet", "Application":
+		default:
+			continue
+		}
+		apiVersion := version
+		if group != "" {
+			apiVersion = group + "/" + version
+		}
+		stub := &unstructured.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"name": name, "namespace": ns}}}
+		live, err := c.Get(ctx, stub)
+		if err != nil || live == nil {
+			continue
+		}
+		if why := unhealthyReason(live); why != "" {
+			reasons = append(reasons, kind+" "+ns+"/"+name+": "+why)
+		}
+		if len(reasons) == 3 {
+			break
+		}
+	}
+	return strings.Join(reasons, "; ")
+}
+
+// unhealthyReason explains why a resource isn't healthy, or returns "".
+func unhealthyReason(u *unstructured.Unstructured) string {
+	obj := u.Object
+	desired := func(path ...string) int64 {
+		v, found, _ := unstructured.NestedInt64(obj, path...)
+		if !found {
+			return 1
+		}
+		return v
+	}
+	count := func(path ...string) int64 {
+		v, _, _ := unstructured.NestedInt64(obj, path...)
+		return v
+	}
+	switch u.GetKind() {
+	case "Application":
+		// The root app of app-of-apps waits for its children.
+		if h, _, _ := unstructured.NestedString(obj, "status", "health", "status"); h != "" && h != "Healthy" {
+			return h
+		}
+	case "HorizontalPodAutoscaler":
+		conds, _, _ := unstructured.NestedSlice(obj, "status", "conditions")
+		for _, c := range conds {
+			m, _ := c.(map[string]any)
+			if (m["type"] == "ScalingActive" || m["type"] == "AbleToScale") && m["status"] == "False" {
+				return fmt.Sprintf("%v (%v): %v", m["type"], m["reason"], m["message"])
+			}
+		}
+	case "PersistentVolumeClaim":
+		if phase, _, _ := unstructured.NestedString(obj, "status", "phase"); phase == "Pending" {
+			sc, _, _ := unstructured.NestedString(obj, "spec", "storageClassName")
+			return fmt.Sprintf("Pending with StorageClass %q; it binds once its StorageClass provisions a volume (for WaitForFirstConsumer classes, once a pod uses it)", sc)
+		}
+	case "Ingress":
+		if lb, _, _ := unstructured.NestedSlice(obj, "status", "loadBalancer", "ingress"); len(lb) == 0 {
+			return "no address yet; is an ingress controller running for its class?"
+		}
+	case "Service":
+		t, _, _ := unstructured.NestedString(obj, "spec", "type")
+		if lb, _, _ := unstructured.NestedSlice(obj, "status", "loadBalancer", "ingress"); t == "LoadBalancer" && len(lb) == 0 {
+			return "no external address yet; does the cluster provision load balancers?"
+		}
+	case "Deployment", "StatefulSet":
+		want, ready := desired("spec", "replicas"), count("status", "readyReplicas")
+		if ready < want {
+			return fmt.Sprintf("%d of %d replicas ready", ready, want)
+		}
+	case "DaemonSet":
+		want, ready := count("status", "desiredNumberScheduled"), count("status", "numberReady")
+		if ready < want {
+			return fmt.Sprintf("%d of %d pods ready", ready, want)
+		}
+	}
+	return ""
 }
 
 func applicationStatus(u *unstructured.Unstructured) AppStatus {

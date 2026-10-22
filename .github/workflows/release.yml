@@ -22,3 +22,36 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Installs the release just published the way users do, on every platform.
+  verify-install:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh
+        if: runner.os != 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITOPSIFY_VERSION: ${{ github.ref_name }}
+          GITOPSIFY_INSTALL_DIR: ${{ runner.temp }}/bin
+        run: |
+          sh install.sh
+          "$GITOPSIFY_INSTALL_DIR/gitopsify" version | grep -F "${GITOPSIFY_VERSION#v}"
+          "$GITOPSIFY_INSTALL_DIR/gitopsify" skills list
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITOPSIFY_VERSION: ${{ github.ref_name }}
+          GITOPSIFY_INSTALL_DIR: ${{ runner.temp }}\bin
+          GITOPSIFY_NO_MODIFY_PATH: "1"
+        run: |
+          ./install.ps1
+          & "$env:GITOPSIFY_INSTALL_DIR\gitopsify.exe" version
+          & "$env:GITOPSIFY_INSTALL_DIR\gitopsify.exe" skills list

@@ -6,6 +6,7 @@
 #             TLS, impersonation, an exec credential plugin, in-cluster
 #   roundtrip the generated manifests, dry-run against the source itself, leave
 #             every object unchanged except the deliberate Helm drift
+#   artifacthub  chart repositories found on artifacthub.io (no cluster needed)
 #   plain     --tool none on a fresh cluster with the generated apply script
 #   argocd    generate --push to a local Git server, bootstrap --wait, status
 #   flux      the same with Flux and Secrets sealed in-process
@@ -76,6 +77,18 @@ new_dst() {
 
 log "building"
 (cd "$root" && CGO_ENABLED=0 go build -o "$bin" ./cmd/gitopsify && go build -o "$work/githttp" ./test/e2e/githttp)
+
+if want artifacthub; then
+  log "Artifact Hub"
+  # With no local Helm repositories, podinfo can only be found on Artifact Hub;
+  # the unpublished in-house chart stays vendored.
+  mkdir -p "$work/nohelm"
+  HELM_REPOSITORY_CONFIG="$work/nohelm/repositories.yaml" HELM_REPOSITORY_CACHE="$work/nohelm/cache" \
+    g scan --from-file "$root/testdata/clusters/clickops.yaml" --artifacthub --format json > "$work/ah.json"
+  [[ $(jq -r '.helmReleases[] | select(.release == "podinfo/podinfo") | .repository' "$work/ah.json") == https://stefanprodan.github.io/podinfo ]] || fail "podinfo not resolved on Artifact Hub: $(jq -c .helmReleases "$work/ah.json")"
+  [[ $(jq -r '.helmReleases[] | select(.release == "tools/inhouse") | .mode' "$work/ah.json") == vendor ]] || fail "inhouse should stay vendored"
+  pass "Artifact Hub resolves published charts, vendoring keeps the rest"
+fi
 
 log "source cluster"
 kind create cluster --name "$src" --wait 180s
@@ -199,9 +212,15 @@ if want argocd; then
   (cd "$work" && g check -c argocd/gitopsify.yaml)
   kubectl --context "kind-$dst" create namespace shop
   kubectl --context "kind-$dst" apply -f "$work/argocd/.secrets/shop/web-db.yaml"
-  (cd "$work" && g bootstrap -o argocd --yes --wait --wait-timeout 20m) || fail "bootstrap --wait"
-  (cd "$work" && g status -o argocd --format json) > "$work/argocd-status.json" || fail "status"
-  [[ $(jq '[.[] | select(.ready)] | length' "$work/argocd-status.json") -ge 8 ]] || fail "too few ready applications"
+  # kind has no ingress controller or metrics server: Ingresses and the HPA
+  # can't become healthy, so wait for the sync and check the explanations.
+  (cd "$work" && g bootstrap -o argocd --yes --wait --wait-for synced --wait-timeout 20m) || fail "bootstrap --wait"
+  (cd "$work" && g status -o argocd --format json) > "$work/argocd-status.json" || true
+  [[ $(jq 'length' "$work/argocd-status.json") -ge 8 ]] || fail "too few applications"
+  jq -e 'all(.[]; .sync == "Synced")' "$work/argocd-status.json" >/dev/null || fail "not every application synced"
+  unexplained=$(jq -r '.[] | select(.ready | not) | select((.message // "") == "") | .name' "$work/argocd-status.json")
+  [[ -z "$unexplained" ]] || fail "unhealthy applications without an explanation: $unexplained"
+  jq -r '.[] | select(.ready | not) | "  \(.name): \(.message)"' "$work/argocd-status.json"
   kubectl --context "kind-$dst" -n shop get widget blue >/dev/null || fail "custom resource missing"
   kubectl --context "kind-$dst" -n shop rollout status deploy/web --timeout=300s
   pass "Argo CD: every application synced and healthy"
@@ -260,7 +279,7 @@ if want takeover; then
   pods > "$work/pods-before.txt"
   (cd "$work" && g adopt -c takeover/gitopsify.yaml --helm-records backup-delete --yes --backup-dir helm-backup)
   ls "$work/helm-backup"/*/sh.helm.release.v1.* >/dev/null || fail "no Helm record backups"
-  (cd "$work" && g bootstrap -o takeover --yes --wait --wait-timeout 20m) || fail "bootstrap --wait"
+  (cd "$work" && g bootstrap -o takeover --yes --wait --wait-for synced --wait-timeout 20m) || fail "bootstrap --wait"
   pods > "$work/pods-after.txt"
   restarted=$(comm -23 "$work/pods-before.txt" "$work/pods-after.txt" | grep -v '^podinfo/' | grep -v '^shop/debug=' || true)
   [[ -z "$restarted" ]] || fail "pods restarted or deleted during the takeover: $restarted"

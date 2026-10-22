@@ -157,6 +157,7 @@ Usage: `gitopsify bootstrap [flags]`
 | `--ssh-key` |  | private key file for an SSH repository |
 | `--timeout` | `10m0s` | how long to wait for the GitOps tool to become ready |
 | `--wait` |  | after bootstrapping, wait until every app is synced and healthy |
+| `--wait-for` | `healthy` | what --wait waits for: healthy, or synced (applied, health aside) |
 | `--wait-timeout` | `20m0s` | how long --wait waits |
 | `-y`, `--yes` |  | don't ask for confirmation |
 
@@ -895,6 +896,7 @@ Usage: `gitopsify migrate [flags]`
 | `--ssh-key` |  | private key file for an SSH repository |
 | `--timeout` | `10m0s` | how long to wait for the GitOps tool to become ready |
 | `--wait` |  | after bootstrapping, wait until every app is synced and healthy |
+| `--wait-for` | `healthy` | what --wait waits for: healthy, or synced (applied, health aside) |
 | `--wait-timeout` | `20m0s` | how long --wait waits |
 | `-y`, `--yes` |  | don't ask for confirmation |
 
@@ -1093,6 +1095,7 @@ Usage: `gitopsify status [flags]`
 | `-o`, `--output` |  | directory of the generated repository (default from the configuration) |
 | `--timeout` | `15m0s` | how long --wait waits |
 | `--wait` |  | wait until everything is synced and healthy |
+| `--wait-for` | `healthy` | what --wait waits for: healthy, or synced (Argo CD applied everything, health aside) |
 
 **Target cluster access**
 

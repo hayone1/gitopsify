@@ -14,7 +14,7 @@ import (
 )
 
 func newStatus(o *options) *cobra.Command {
-	var format string
+	var format, waitFor string
 	var wait bool
 	var timeout time.Duration
 	cmd := &cobra.Command{
@@ -47,7 +47,7 @@ time).`,
 			dir := envDir(cfg, env.Name)
 			var st []target.AppStatus
 			if wait {
-				st, err = waitSynced(cmd.Context(), u, cfg, env, c, dir, timeout)
+				st, err = waitSynced(cmd.Context(), u, cfg, env, c, dir, timeout, waitFor)
 			} else {
 				st, err = target.Status(cmd.Context(), cfg, env, c, dir)
 			}
@@ -77,7 +77,9 @@ time).`,
 	cmd.Flags().StringVar(&format, "format", "table", "output format: table, json or yaml")
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait until everything is synced and healthy")
 	cmd.Flags().DurationVar(&timeout, "timeout", 15*time.Minute, "how long --wait waits")
+	cmd.Flags().StringVar(&waitFor, "wait-for", "healthy", "what --wait waits for: healthy, or synced (Argo CD applied everything, health aside)")
 	complete(cmd.Flags(), "format", "table", "json", "yaml")
+	complete(cmd.Flags(), "wait-for", "healthy", "synced")
 	return cmd
 }
 
@@ -108,13 +110,22 @@ func printStatus(u *ui.UI, st []target.AppStatus) {
 
 // waitSynced waits for an environment's GitOps objects, reporting progress
 // whenever the number of ready objects changes.
-func waitSynced(ctx context.Context, u *ui.UI, cfg *config.Config, env *config.Environment, c *kube.Client, dir string, timeout time.Duration) ([]target.AppStatus, error) {
+func waitSynced(ctx context.Context, u *ui.UI, cfg *config.Config, env *config.Environment, c *kube.Client, dir string, timeout time.Duration, waitFor string) ([]target.AppStatus, error) {
+	switch waitFor {
+	case "healthy", "synced":
+	default:
+		return nil, fmt.Errorf("--wait-for must be healthy or synced, not %q", waitFor)
+	}
 	last := -1
-	u.Step("waiting up to %s for %s to sync %s", timeout, cfg.Output.Tool, env.Name)
-	return target.Wait(ctx, cfg, env, c, dir, timeout, func(st []target.AppStatus) {
-		if n := ready(st); n != last {
-			last = n
-			u.Step("%d of %d ready", n, len(st))
-		}
+	u.Step("waiting up to %s for %s to sync %s (%s)", timeout, cfg.Output.Tool, env.Name, waitFor)
+	return target.Wait(ctx, cfg, env, c, dir, target.WaitOptions{
+		Timeout:    timeout,
+		SyncedOnly: waitFor == "synced",
+		Progress: func(st []target.AppStatus) {
+			if n := ready(st); n != last {
+				last = n
+				u.Step("%d of %d ready", n, len(st))
+			}
+		},
 	})
 }

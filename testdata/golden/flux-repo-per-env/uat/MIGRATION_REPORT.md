@@ -13,7 +13,7 @@ Source: offline (clickops.yaml). Target environments: uat.
 | Helm releases skipped | 0 |
 | Apps | 7 |
 | Secrets that need action | 1 |
-| Warnings | 2 |
+| Warnings | 3 |
 
 ## Helm releases
 
@@ -44,6 +44,7 @@ Modes: **chart** pulls the chart from its repository; **vendor** writes the char
 
 - Helm release `podinfo/podinfo`: Deployment.apps/podinfo/podinfo differs from the chart's manifest at spec.template.spec.containers[0].env[1].value; the GitOps tool will reset it to the chart's value
 - Helm release `tools/inhouse`: chart repository unknown; the chart is vendored from the release. Set helm.repositories.inhouse to reference the upstream chart instead
+- `HorizontalPodAutoscaler.autoscaling/shop/web`: scales Deployment web on cpu utilization, but its container nginx requests no cpu, so the HPA can't compute it and never scales (Argo CD shows it Degraded); add a cpu request, in the source or with a set transform
 
 ## Excluded objects
 

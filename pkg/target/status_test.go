@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,8 +72,48 @@ func TestArgoStatus(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := Wait(ctx, cfg, &cfg.Environments[0], c, dir, time.Second, nil); err == nil {
+	if _, err := Wait(ctx, cfg, &cfg.Environments[0], c, dir, WaitOptions{Timeout: time.Second}); err == nil {
 		t.Error("Wait must fail while apps are not ready")
+	}
+}
+
+func TestWaitFailsFastWhenDegraded(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.New()
+	cfg.Output.Tool = config.ToolArgoCD
+	cfg.Environments[0].Name = "uat"
+	env := map[string]any{"gitopsify.io/env": "uat"}
+	c := fakeClient(
+		obj("argoproj.io/v1alpha1", "Application", "argocd", "uat-ok", env, map[string]any{"sync": map[string]any{"status": "Synced"}, "health": map[string]any{"status": "Healthy"}}),
+		obj("argoproj.io/v1alpha1", "Application", "argocd", "uat-shop", env, map[string]any{"sync": map[string]any{"status": "Synced"}, "health": map[string]any{"status": "Degraded"}}),
+	)
+	start := time.Now()
+	_, err := Wait(context.Background(), cfg, &cfg.Environments[0], c, dir, WaitOptions{Timeout: time.Minute, DegradedGrace: 50 * time.Millisecond, Interval: 10 * time.Millisecond})
+	if err == nil || !strings.Contains(err.Error(), "degraded") || time.Since(start) > 10*time.Second {
+		t.Errorf("expected a quick degraded error, got %v after %s", err, time.Since(start))
+	}
+	st, err := Wait(context.Background(), cfg, &cfg.Environments[0], c, dir, WaitOptions{Timeout: time.Minute, SyncedOnly: true, Interval: 10 * time.Millisecond})
+	if err != nil || !AllReady(st) {
+		t.Errorf("synced only: %v %+v", err, st)
+	}
+}
+
+func TestUnhealthyReasons(t *testing.T) {
+	for _, c := range []struct {
+		obj  map[string]any
+		want string
+	}{
+		{map[string]any{"kind": "HorizontalPodAutoscaler", "status": map[string]any{"conditions": []any{map[string]any{"type": "ScalingActive", "status": "False", "reason": "FailedGetResourceMetric", "message": "no metrics"}}}}, "FailedGetResourceMetric"},
+		{map[string]any{"kind": "PersistentVolumeClaim", "spec": map[string]any{"storageClassName": "fast"}, "status": map[string]any{"phase": "Pending"}}, `StorageClass "fast"`},
+		{map[string]any{"kind": "Ingress", "status": map[string]any{}}, "ingress controller"},
+		{map[string]any{"kind": "Application", "status": map[string]any{"health": map[string]any{"status": "Degraded"}}}, "Degraded"},
+		{map[string]any{"kind": "Deployment", "spec": map[string]any{"replicas": int64(3)}, "status": map[string]any{"readyReplicas": int64(1)}}, "1 of 3"},
+		{map[string]any{"kind": "Deployment", "spec": map[string]any{"replicas": int64(2)}, "status": map[string]any{"readyReplicas": int64(2)}}, ""},
+	} {
+		got := unhealthyReason(&unstructured.Unstructured{Object: c.obj})
+		if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
+			t.Errorf("%v: got %q, want %q", c.obj["kind"], got, c.want)
+		}
 	}
 }
 

@@ -328,7 +328,11 @@ func (d *doctor) git(ctx context.Context, envs []config.Environment) {
 	for u := range urls {
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		cmd := exec.CommandContext(cctx, "git", "ls-remote", "--heads", u)
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15")
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		if os.Getenv("GIT_SSH_COMMAND") == "" {
+			// Fail instead of asking for a passphrase or a host key.
+			cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15")
+		}
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()

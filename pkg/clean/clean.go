@@ -44,6 +44,8 @@ var stripAnnotations = []string{
 	"field.cattle.io/projectId",
 	// GKE Autopilot's resource adjustments.
 	"autopilot.gke.io/*",
+	// k3s and Rancher's objectset apply bookkeeping.
+	"objectset.rio.cattle.io/*",
 	// Load balancers and addresses allocated in the source cluster.
 	"kubernetes.digitalocean.com/load-balancer-id",
 	"metallb.universe.tf/ip-allocated-from-pool",
@@ -64,6 +66,7 @@ var stripLabels = []string{
 	"kustomize.toolkit.fluxcd.io/*",
 	"helm.toolkit.fluxcd.io/*",
 	"field.cattle.io/projectId",
+	"objectset.rio.cattle.io/*",
 }
 
 // templateAnnotations are removed from pod templates. They record a

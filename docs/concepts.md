@@ -52,6 +52,7 @@ name, a reason in the report, and can be switched off with `--disable-rule`:
 | `helm-release-storage` | Helm's release records; releases are migrated as charts |
 | `completed-jobs`, `bare-pods`, `terminating` | One-off runs and objects being deleted |
 | `system-rbac`, `system-component-rbac` | Kubernetes' and platform components' RBAC |
+| `addon-managed`, `system-served-registrations` | Objects the platform's addon manager applies (GKE, EKS, AKS, k3s add-ons), and APIServices and webhooks whose server runs in a system namespace |
 | `default-serviceaccount`, `platform-serviceaccounts`, `legacy-token-secrets` | Accounts and tokens every cluster creates itself |
 | `cert-manager-secrets` | TLS Secrets cert-manager will issue again |
 | `already-gitops-managed` | Objects Argo CD, Flux or Config Sync already manage |
@@ -74,7 +75,9 @@ Some objects work in the source cluster only. gitopsify warns about workloads
 pinned to node names, `hostPath` and local volumes, images from a registry only
 the source can reach, statically provisioned PVs, fixed load-balancer IPs and
 cloud workload identities (IRSA, GKE and Azure Workload Identity). Each warning
-says what to change, usually with a [transform](environments.md).
+says what to change, usually with a [transform](environments.md). It also
+warns about HPAs that scale on CPU or memory utilization of containers that
+request none: they can't scale anywhere, and Argo CD reports them Degraded.
 
 ## Apps
 
