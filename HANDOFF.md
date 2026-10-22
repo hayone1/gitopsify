@@ -25,7 +25,8 @@ sync. User docs: `README.md` → `docs/`. Design and rationale:
 - `install.sh`, `install.ps1`, `.goreleaser.yaml` (archives, deb/rpm/apk/arch,
   completions via `scripts/completions.sh`), `scripts/set-version.sh`
 - `testdata/clusters/clickops.yaml` fixture; `testdata/golden/*` snapshots
-- `test/e2e/run.sh` kind suite; `test/live/hetzner/` Terraform + live suite
+- `test/e2e/run.sh` kind suite; `test/live/hetzner/` Terraform, the live suite
+  (`run.sh`) and the e2e runner (`e2e-on-vm.sh`)
 
 ## Day to day
 ```sh
@@ -33,12 +34,15 @@ make build    # bin/gitopsify
 make test     # unit + golden + CLI tests (needs kubectl; helm for vendored charts)
 make golden   # after an intended output change; also git add -f's .secrets fixtures
 make docs     # regenerates docs/commands.md and docs/gitopsify.schema.json (tests enforce)
-make e2e      # kind; stages via STAGES=/SKIP=, KEEP=1 keeps clusters (~45 min)
+make e2e-vm   # kind suite on a throwaway Hetzner cx33 (~40 min); STAGES=/SKIP=
 make live     # Hetzner k3s x3 + private GitHub repo; needs TF_VAR_hcloud_token in .env
 ```
 Toolchain: Go 1.27.3 in `~/.local/go`, kind in `~/go/bin`. `.env` (Hetzner
-token) is git-ignored; never commit it. Run long suites detached
-(`setsid nohup ... &`): an editor crash killed in-process runs once.
+token) is git-ignored; never commit it. **Don't run kind clusters locally**:
+WSL here has 2 CPUs/5 GB and Windows killed it twice; use `make e2e-vm`. The
+link to Hetzner can be very slow (~20 KB/s seen), so `make live` may hit
+timeouts that aren't bugs; run long suites detached (`setsid nohup ... &`).
+Don't `pkill -f` with patterns from the agent shell: it kills itself.
 
 ## Done in this round
 - Cluster access: kubeconfig lists, context, in-cluster, `--server` +
@@ -56,6 +60,10 @@ token) is git-ignored; never commit it. Run long suites detached
   Helm revisions; `generate --push` onto existing remote history.
 - `--tool none` apply script: Helm apps via `helm upgrade --install` (Helm 3/4),
   `--context/--kubeconfig/--dry-run`, waits for platform apps.
+- Found live and fixed: k3s objectset add-ons, system-served APIServices and
+  webhooks, chart nulls removing defaulted fields, HTTP/2 resets on big lists,
+  slow image pulls in bootstrap, Degraded apps without reasons, no Git
+  identity in CI.
 - Grouped `--help`, shell completion (contexts, envs, enums), JSON Schema for
   `gitopsify.yaml`, parallel diff/check.
 - Docs rewritten as guides; README lean.
@@ -65,7 +73,22 @@ token) is git-ignored; never commit it. Run long suites detached
   troubleshoot), validated with `claude plugin validate`.
 
 ## Verified
-RESULTS_PLACEHOLDER
+All on 2026-10-22, on the final code:
+- `make test` (unit, golden, CLI, skills) and CI on every push.
+- `make e2e-vm` (kind suite on a Hetzner runner): Artifact Hub resolution;
+  8 auth paths (token file/flag/env + CA + TLS server name, kubeconfig lists,
+  exec plugin, doctor identity, impersonation, in-cluster explicit and
+  automatic); round trip; plain apply script; Argo CD synced with health
+  explanations; Flux + Sealed Secrets; Flux + SOPS/age; Argo CD takeover with
+  no pod restarts. PASS.
+- `make live` (3x k3s cx33 + private GitHub repo over SSH deploy keys): remote
+  scans by client cert and SA token, k3s components excluded, `migrate` to Argo
+  CD + Sealed Secrets fully healthy, Flux from GitHub, takeover of the k3s
+  source without restarts. PASS; account left with zero servers.
+- Release pipeline (tag v0.1.0-rc.1): archives, deb/rpm/apk/arch, installers
+  verified on Linux/macOS/Windows in CI, plus by hand on Alpine (wget),
+  Debian (curl) and Windows PowerShell 5.1.
+- `claude plugin validate` passes for the plugin and marketplace.
 
 ## Gotchas
 - Golden trees contain generated `.gitignore`s ignoring `.secrets/`; commit
