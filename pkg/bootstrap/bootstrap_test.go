@@ -34,7 +34,7 @@ func TestWaitReadyExplainsTimeouts(t *testing.T) {
 		},
 		&corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "helm-controller-xyz", Namespace: "flux-system"},
-			Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Message: "0/1 nodes are available: 1 Insufficient memory."}}},
+			Status:     corev1.PodStatus{Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Message: "0/1 nodes are available: 1 Insufficient memory."}}},
 		},
 	)
 	err := waitReady(context.Background(), &kube.Client{Kubernetes: kc}, "flux-system", []string{"kustomize-controller"}, nil, time.Millisecond)
