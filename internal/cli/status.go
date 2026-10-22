@@ -67,7 +67,11 @@ time).`,
 			if !target.AllReady(st) || len(st) == 0 {
 				return &exitError{code: 1, msg: fmt.Sprintf("%d of %d not ready in %s", len(st)-ready(st), len(st), env.Name)}
 			}
-			u.Success("%d objects synced and healthy in %s", len(st), env.Name)
+			what := "synced and healthy"
+			if wait && waitFor == "synced" {
+				what = "synced"
+			}
+			u.Success("%d objects %s in %s", len(st), what, env.Name)
 			return nil
 		},
 	}

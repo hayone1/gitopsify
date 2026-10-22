@@ -369,7 +369,7 @@ func runBootstrap(cmd *cobra.Command, o *options, u *ui.UI, cfg *config.Config, 
 		printStatus(u, st)
 		return &exitError{code: 1, msg: err.Error()}
 	}
-	u.Success("%d objects synced and healthy in %s", len(st), env.Name)
+	u.Success("%d objects %s in %s", len(st), map[string]string{"synced": "synced", "healthy": "synced and healthy"}[b.waitFor], env.Name)
 	return nil
 }
 
