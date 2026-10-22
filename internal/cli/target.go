@@ -296,14 +296,14 @@ Pair it with "generate --adopt", which writes takeover-safe sync settings.`,
 }
 
 type bootstrapFlags struct {
-	dir        string
-	gitUser    string
-	gitToken   string
-	sshKey     string
-	knownHosts string
-	sopsAgeKey string
-	timeout    time.Duration
-	yes        bool
+	dir         string
+	gitUser     string
+	gitToken    string
+	sshKey      string
+	knownHosts  string
+	sopsAgeKey  string
+	timeout     time.Duration
+	yes         bool
 	wait        bool
 	waitTimeout time.Duration
 	waitFor     string
