@@ -35,10 +35,20 @@ build() {
   fi
 }
 
+# A dry run creates nothing, so later waves can fail for want of the CRDs and
+# namespaces of earlier ones; it reports them and goes on.
+dry_run_failed() {
+  echo "!! dry run of $1 failed; expected if it needs CRDs or namespaces from earlier waves" >&2
+}
+
 # apply DIR: builds a Kustomization and server-side applies it.
 apply() {
   echo ">> $1"
-  build "$1" | k apply --server-side --field-manager=gitopsify --force-conflicts ${dry_run:+--dry-run=server} -f -
+  if [[ -n "${dry_run}" ]]; then
+    build "$1" | k apply --server-side --field-manager=gitopsify --force-conflicts --dry-run=server -f - || dry_run_failed "$1"
+  else
+    build "$1" | k apply --server-side --field-manager=gitopsify --force-conflicts -f -
+  fi
 }
 
 # apply_helm DIR RELEASE NAMESPACE CHART [helm flags...]: installs or upgrades
@@ -47,8 +57,13 @@ apply_helm() {
   local dir=$1 release=$2 namespace=$3 chart=$4
   shift 4
   echo ">> ${dir} (Helm release ${namespace}/${release})"
-  h upgrade --install "${release}" "${chart}" --namespace "${namespace}" --create-namespace \
-    -f "${dir}/values.yaml" ${dry_run:+--dry-run=server} "$@"
+  if [[ -n "${dry_run}" ]]; then
+    h upgrade --install "${release}" "${chart}" --namespace "${namespace}" --create-namespace \
+      -f "${dir}/values.yaml" --dry-run=server "$@" >/dev/null || dry_run_failed "${dir}"
+  else
+    h upgrade --install "${release}" "${chart}" --namespace "${namespace}" --create-namespace \
+      -f "${dir}/values.yaml" "$@"
+  fi
 }
 
 # wait_crds and wait_available let CRDs and the Deployments of operators and

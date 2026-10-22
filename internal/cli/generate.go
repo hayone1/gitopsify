@@ -72,6 +72,11 @@ Re-running it updates the files it generated and keeps files you added.`,
 				}
 				return nil
 			}
+			if g.commit || g.push {
+				if err := checkoutRemote(u, cfg); err != nil {
+					return err
+				}
+			}
 			if err := writeOutput(u, cfg, res, o.force); err != nil {
 				return err
 			}
@@ -191,6 +196,24 @@ func envDir(cfg *config.Config, env string) string {
 		return filepath.Join(cfg.Output.Dir, env)
 	}
 	return cfg.Output.Dir
+}
+
+// checkoutRemote checks out the remote branch into output directories that
+// aren't repositories yet, so pushes continue the remote's history.
+func checkoutRemote(u *ui.UI, cfg *config.Config) error {
+	if cfg.Output.Repo.Path != "" {
+		return nil
+	}
+	for dir, remote := range layoutDirs(cfg) {
+		done, err := gitrepo.Checkout(dir, remote, cfg.Output.Repo.Revision)
+		if err != nil {
+			return fmt.Errorf("checking out %s into %s: %w", remote, dir, err)
+		}
+		if done {
+			u.Step("checked out %s (%s) into %s", remote, cfg.Output.Repo.Revision, dir)
+		}
+	}
+	return nil
 }
 
 func publish(u *ui.UI, cfg *config.Config, g gitFlags) error {

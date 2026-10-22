@@ -131,7 +131,7 @@ or all at once: gitopsify migrate`,
 		c.GroupID = "target"
 		root.AddCommand(c)
 	}
-	root.AddCommand(newRules(o), newDoctor(o), newSkills(o), newVersion())
+	root.AddCommand(newRules(o), newDoctor(o), newSkills(o), newVersion(), newGenDocs(o))
 	root.SetUsageTemplate(usageTemplate)
 	registerCompletions(root, o)
 	return root

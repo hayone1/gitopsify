@@ -1,17 +1,39 @@
 # gitopsify.yaml reference
 
 Every field is optional; the values shown are the defaults unless the comment
-says otherwise. Flags override the file. `gitopsify generate` writes the
+says otherwise. Flags override the file, and unknown fields are errors, so a
+typo can't silently fall back to a default. `gitopsify generate` writes the
 effective configuration, with every default filled in, to
-`<output>/gitopsify.yaml`.
+`<output>/gitopsify.yaml`; `gitopsify generate -c <output>/gitopsify.yaml`
+regenerates the same repository.
+
+Editors with the YAML language server (VS Code's YAML extension, JetBrains,
+Neovim) complete and check the file from its JSON Schema,
+[gitopsify.schema.json](gitopsify.schema.json); the files gitopsify writes
+point at it in their first line. Every command also validates the file and
+names the field that's wrong.
 
 ```yaml
 apiVersion: gitopsify.io/v1alpha1
 kind: Migration
 
-source:
-  kubeconfig: ""          # default: KUBECONFIG or ~/.kube/config     (--kubeconfig)
+source:                   # how to reach the source cluster; see docs/authentication.md
+  kubeconfig: ""          # default: KUBECONFIG or ~/.kube/config; a:b merges files (--kubeconfig)
   context: ""             # default: the current context              (--context)
+  inCluster: false        # the ServiceAccount of the pod gitopsify runs in (--in-cluster)
+  apiServer: ""           # API server URL; alone, the kubeconfig is ignored (--server)
+  tokenFile: ""           # bearer token file; tokens themselves never go here (--token-file;
+                          # --token or $GITOPSIFY_TOKEN for the value)
+  clientCertificate: ""   #                                            (--client-certificate)
+  clientKey: ""           #                                            (--client-key)
+  certificateAuthority: ""  #                                          (--certificate-authority)
+  insecureSkipTLSVerify: false  #                                      (--insecure-skip-tls-verify)
+  tlsServerName: ""       #                                            (--tls-server-name)
+  proxyURL: ""            # http(s):// or socks5://                    (--proxy-url)
+  impersonate: ""         #                                            (--as)
+  impersonateGroups: []   #                                            (--as-group)
+  impersonateUID: ""      #                                            (--as-uid)
+  timeout: ""             # per request, e.g. 30s                      (--request-timeout)
 
 scope:
   namespaces: []          # globs; empty = every namespace            (-n)
@@ -134,10 +156,15 @@ environments:             # default: one environment named "default"
   - name: uat             #                                          (--env uat=context)
     repoURL: ""           # with layout repo-per-env
     cluster:
-      server: https://kubernetes.default.svc   # Argo CD destination
+      server: https://kubernetes.default.svc   # Argo CD destination, as Argo CD sees it
       name: ""            # Argo CD cluster name, instead of server
-      context: ""         # kube context for check/diff/adopt/bootstrap
+      # How gitopsify reaches the cluster for check/diff/adopt/status/bootstrap
+      # and the sealed-secrets certificate: the same fields as source, set with
+      # --env name=context or the --target-* flags.
+      context: ""
       kubeconfig: ""
+      apiServer: ""
+      tokenFile: ""       # or --target-token / $GITOPSIFY_TARGET_TOKEN
     transforms: []        # this environment only
 
 adopt:
@@ -147,6 +174,7 @@ adopt:
 
 ## Transforms
 
+[Environments and transforms](environments.md) explains them with examples.
 Every transform can have a `target` selector (`kinds`, `namespaces`,
 `names`, `labelSelector`, `apps`); without one it applies to everything.
 Global transforms change the base. Environment transforms become Kustomize

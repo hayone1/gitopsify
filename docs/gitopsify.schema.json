@@ -1,0 +1,902 @@
+{
+  "$id": "https://raw.githubusercontent.com/hayone1/gitopsify/main/docs/gitopsify.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "gitopsify.yaml: describes a migration of a Kubernetes cluster to GitOps. Reference: https://github.com/hayone1/gitopsify/blob/main/docs/configuration.md",
+  "properties": {
+    "adopt": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "protectKinds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "apiVersion": {
+      "enum": [
+        "gitopsify.io/v1alpha1"
+      ],
+      "type": "string"
+    },
+    "clean": {
+      "additionalProperties": false,
+      "properties": {
+        "controllerManagers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "strategy": {
+          "enum": [
+            "auto",
+            "managed-fields",
+            "heuristic",
+            "minimal"
+          ],
+          "type": "string"
+        },
+        "stripAnnotations": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stripLabels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "environments": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "cluster": {
+            "additionalProperties": false,
+            "properties": {
+              "apiServer": {
+                "type": "string"
+              },
+              "certificateAuthority": {
+                "type": "string"
+              },
+              "clientCertificate": {
+                "type": "string"
+              },
+              "clientKey": {
+                "type": "string"
+              },
+              "context": {
+                "type": "string"
+              },
+              "impersonate": {
+                "type": "string"
+              },
+              "impersonateGroups": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "impersonateUID": {
+                "type": "string"
+              },
+              "inCluster": {
+                "type": "boolean"
+              },
+              "insecureSkipTLSVerify": {
+                "type": "boolean"
+              },
+              "kubeconfig": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "proxyURL": {
+                "type": "string"
+              },
+              "server": {
+                "type": "string"
+              },
+              "timeout": {
+                "type": "string"
+              },
+              "tlsServerName": {
+                "type": "string"
+              },
+              "tokenFile": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "repoURL": {
+            "type": "string"
+          },
+          "transforms": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "helmValues": {
+                  "type": "boolean"
+                },
+                "map": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "patch": {
+                  "items": {
+                    "additionalProperties": {},
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "regex": {
+                  "type": "boolean"
+                },
+                "remove": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "set": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "target": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "apps": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "kinds": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "labelSelector": {
+                      "type": "string"
+                    },
+                    "names": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "namespaces": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "replace",
+                    "image",
+                    "storageClass",
+                    "ingressClass",
+                    "namespace",
+                    "set",
+                    "remove",
+                    "jsonPatch",
+                    "labels",
+                    "annotations"
+                  ],
+                  "type": "string"
+                },
+                "value": {}
+              },
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "grouping": {
+      "additionalProperties": false,
+      "properties": {
+        "apps": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "apps": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kinds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "labelSelector": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "names": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "namespaces": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "by": {
+          "enum": [
+            "namespace",
+            "label",
+            "single"
+          ],
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "helm": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "auto",
+            "chart",
+            "vendor",
+            "manifests"
+          ],
+          "type": "string"
+        },
+        "releases": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "chart": {
+                "type": "string"
+              },
+              "include": {
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "auto",
+                  "chart",
+                  "vendor",
+                  "manifests"
+                ],
+                "type": "string"
+              },
+              "repo": {
+                "type": "string"
+              },
+              "skip": {
+                "type": "boolean"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "repositories": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "resolvers": {
+          "items": {
+            "enum": [
+              "local",
+              "artifacthub"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "kind": {
+      "enum": [
+        "Migration"
+      ],
+      "type": "string"
+    },
+    "ordering": {
+      "additionalProperties": false,
+      "properties": {
+        "dependsOn": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "inferDependencies": {
+          "type": "boolean"
+        },
+        "waves": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "output": {
+      "additionalProperties": false,
+      "properties": {
+        "argocd": {
+          "additionalProperties": false,
+          "properties": {
+            "autoSync": {
+              "type": "boolean"
+            },
+            "createProject": {
+              "type": "boolean"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "pattern": {
+              "enum": [
+                "app-of-apps",
+                "applicationset",
+                "single"
+              ],
+              "type": "string"
+            },
+            "project": {
+              "type": "string"
+            },
+            "prune": {
+              "type": "boolean"
+            },
+            "selfHeal": {
+              "type": "boolean"
+            },
+            "selfManage": {
+              "type": "boolean"
+            },
+            "serverSideApply": {
+              "type": "boolean"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "flux": {
+          "additionalProperties": false,
+          "properties": {
+            "interval": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "prune": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "layout": {
+          "enum": [
+            "folder-per-env",
+            "repo-per-env"
+          ],
+          "type": "string"
+        },
+        "repo": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "tool": {
+          "enum": [
+            "none",
+            "argocd",
+            "flux"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "scope": {
+      "additionalProperties": false,
+      "properties": {
+        "clusterScoped": {
+          "enum": [
+            "auto",
+            "all",
+            "none"
+          ],
+          "type": "string"
+        },
+        "disableDefaultRules": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "excludeApps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "excludeKinds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "excludeNamespaces": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "includeAlreadyManaged": {
+          "type": "boolean"
+        },
+        "includeDependencies": {
+          "type": "boolean"
+        },
+        "kinds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "labelSelector": {
+          "type": "string"
+        },
+        "namespaces": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "resources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rules": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "include",
+                  "exclude"
+                ],
+                "type": "string"
+              },
+              "apps": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kinds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "labelSelector": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "names": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "namespaces": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "secrets": {
+      "additionalProperties": false,
+      "properties": {
+        "allowPlain": {
+          "type": "boolean"
+        },
+        "externalSecrets": {
+          "additionalProperties": false,
+          "properties": {
+            "apiVersion": {
+              "type": "string"
+            },
+            "keyTemplate": {
+              "type": "string"
+            },
+            "propertyPerKey": {
+              "type": "boolean"
+            },
+            "refreshInterval": {
+              "type": "string"
+            },
+            "storeKind": {
+              "enum": [
+                "SecretStore",
+                "ClusterSecretStore"
+              ],
+              "type": "string"
+            },
+            "storeName": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "overrides": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "names": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "namespaces": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "strategy": {
+                "enum": [
+                  "skip",
+                  "local",
+                  "plain",
+                  "sops",
+                  "sealed-secrets",
+                  "external-secrets"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sealedSecrets": {
+          "additionalProperties": false,
+          "properties": {
+            "certFile": {
+              "type": "string"
+            },
+            "controllerName": {
+              "type": "string"
+            },
+            "controllerNamespace": {
+              "type": "string"
+            },
+            "scope": {
+              "enum": [
+                "strict",
+                "namespace-wide",
+                "cluster-wide"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "sops": {
+          "additionalProperties": false,
+          "properties": {
+            "age": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "azureKv": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "decryptionSecret": {
+              "type": "string"
+            },
+            "encryptedRegex": {
+              "type": "string"
+            },
+            "gcpKms": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kms": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pgp": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "strategy": {
+          "enum": [
+            "skip",
+            "local",
+            "plain",
+            "sops",
+            "sealed-secrets",
+            "external-secrets"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "apiServer": {
+          "type": "string"
+        },
+        "certificateAuthority": {
+          "type": "string"
+        },
+        "clientCertificate": {
+          "type": "string"
+        },
+        "clientKey": {
+          "type": "string"
+        },
+        "context": {
+          "type": "string"
+        },
+        "impersonate": {
+          "type": "string"
+        },
+        "impersonateGroups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "impersonateUID": {
+          "type": "string"
+        },
+        "inCluster": {
+          "type": "boolean"
+        },
+        "insecureSkipTLSVerify": {
+          "type": "boolean"
+        },
+        "kubeconfig": {
+          "type": "string"
+        },
+        "proxyURL": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "string"
+        },
+        "tlsServerName": {
+          "type": "string"
+        },
+        "tokenFile": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "transforms": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "helmValues": {
+            "type": "boolean"
+          },
+          "map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "patch": {
+            "items": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          },
+          "regex": {
+            "type": "boolean"
+          },
+          "remove": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "set": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "target": {
+            "additionalProperties": false,
+            "properties": {
+              "apps": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kinds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "labelSelector": {
+                "type": "string"
+              },
+              "names": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "namespaces": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "to": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "replace",
+              "image",
+              "storageClass",
+              "ingressClass",
+              "namespace",
+              "set",
+              "remove",
+              "jsonPatch",
+              "labels",
+              "annotations"
+            ],
+            "type": "string"
+          },
+          "value": {}
+        },
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "title": "gitopsify migration",
+  "type": "object"
+}

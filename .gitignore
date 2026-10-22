@@ -5,3 +5,11 @@
 /.secrets/
 /.env
 /completions/
+
+# Hetzner live tests
+/test/live/hetzner/.state/
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+/.logs/

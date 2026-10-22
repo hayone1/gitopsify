@@ -241,3 +241,19 @@ func TestVersionAndRules(t *testing.T) {
 		t.Errorf("rules: %d\n%s", code, out)
 	}
 }
+
+// TestCommandReferenceIsCurrent keeps docs/commands.md in step with the
+// commands; run `make docs` after changing a command or flag.
+func TestCommandReferenceIsCurrent(t *testing.T) {
+	want := commandReference(newRoot(&options{}))
+	got, err := os.ReadFile("../../docs/commands.md")
+	if err != nil || string(got) != want {
+		if os.Getenv("UPDATE_DOCS") != "" {
+			if err := os.WriteFile("../../docs/commands.md", []byte(want), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		t.Error("docs/commands.md is out of date: run make docs")
+	}
+}

@@ -41,6 +41,9 @@ It asks before changing the target unless --yes is given.`,
 			if err != nil {
 				return err
 			}
+			if err := checkoutRemote(u, cfg); err != nil {
+				return err
+			}
 			if err := writeOutput(u, cfg, res, o.force); err != nil {
 				return err
 			}

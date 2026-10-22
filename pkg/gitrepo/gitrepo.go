@@ -28,6 +28,49 @@ type Result struct {
 	Commit      string
 }
 
+// Checkout prepares an output directory that isn't a Git repository yet for a
+// remote that already has the branch: it clones the branch into it, so the
+// generated files are written on top of the remote's history (and files
+// people added there survive) instead of on an unrelated root commit that
+// can't be pushed. It does nothing when the directory already is a
+// repository, holds files, or the remote has no such branch. It reports
+// whether it checked anything out.
+func Checkout(dir, remote, branch string) (bool, error) {
+	if remote == "" {
+		return false, nil
+	}
+	if branch == "" {
+		branch = "main"
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		return false, nil
+	}
+	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
+		return false, nil
+	}
+	out, err := git("", "ls-remote", "--heads", remote, branch)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return false, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, err
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "-b", branch},
+		{"remote", "add", "origin", remote},
+		{"fetch", "-q", "origin", branch},
+		{"checkout", "-q", "-B", branch, "FETCH_HEAD"},
+	} {
+		if _, err := git(dir, args...); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 // Publish initializes the repository if needed, commits every change and
 // optionally pushes it.
 func Publish(o Options) (*Result, error) {
@@ -83,6 +126,8 @@ func Publish(o Options) (*Result, error) {
 func git(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	// Fail instead of waiting for a password nobody will type.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

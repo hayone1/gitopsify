@@ -52,7 +52,7 @@ reads gitopsify.yaml from the current directory.`,
 			if err != nil {
 				return err
 			}
-			header := "# gitopsify migration. Reference: https://github.com/hayone1/gitopsify/blob/main/docs/configuration.md\n"
+			header := config.SchemaHeader + "# gitopsify migration. Reference: https://github.com/hayone1/gitopsify/blob/main/docs/configuration.md\n"
 			if err := os.WriteFile(file, append([]byte(header), b...), 0o644); err != nil {
 				return err
 			}

@@ -73,6 +73,8 @@ kubectl-neat, argocd-autopilot), and how gitopsify handles each one.
    ├───────────────────────┤                                    │
    │ clean                 │ managed-fields or heuristic        │
    ├───────────────────────┤                                    │
+   │ portability           │ warn about source-bound objects    │
+   ├───────────────────────┤                                    │
    │ group                 │ apps: Helm releases, namespaces,   │
    │                       │ labels; crds / namespaces / cluster│
    ├───────────────────────┤                                    │
@@ -87,8 +89,16 @@ kubectl-neat, argocd-autopilot), and how gitopsify handles each one.
    │                       │ × folder-per-env | repo-per-env    │
    └───────────┬───────────┘                                    │
                ▼                                                │
-         output directory ── git push ── check / diff / adopt / bootstrap
+         output directory ── git push ── check / diff / adopt / bootstrap / status
 ```
+
+Every cluster connection goes through `kube.Connect`, which resolves an
+`Access` (kubeconfig files and context, or an explicit server with a token,
+token file or client certificate, CA and TLS settings, proxy, impersonation,
+in-cluster) the way kubectl does, and explains failures per platform (missing
+credential plugins, expired logins, untrusted certificates, unreachable
+servers). The source and every environment use the same type, in the
+configuration and on the command line (`--x` and `--target-x`).
 
 The source can also be a set of files (`--from-file`: `kubectl get -A -o
 yaml` dumps or manifest directories), which replaces discovery; resource
@@ -198,6 +208,9 @@ wave plus explicit dependencies, and `wait: true` on crds/platform apps.
 | `adopt` | Prepare a target for takeover (Helm release secrets backup/delete) |
 | `bootstrap` | Install Argo CD or Flux, configure repository access, apply the root object |
 | `migrate` | `generate` → git commit/push → `check` → `bootstrap`, with confirmations |
+| `status` | Sync and health of an environment's Argo CD or Flux objects; `--wait` |
+| `doctor` | Tools, configuration, cluster access, identity and permissions, Git remotes |
+| `skills` | Installs the agent skills for AI coding agents |
 
 ## 10. Prior art
 
@@ -223,15 +236,41 @@ wave plus explicit dependencies, and `wait: true` on crds/platform apps.
 | `yaml.v3` writes YAML 1.2, kubectl reads YAML 1.1 (`n`, `on`, `yes` become booleans) | Those words are always quoted |
 | Kubernetes 1.37 bumps a Deployment's `generation` on annotation changes | A takeover shows generation bumps from the tracking annotation without a rollout; the takeover test compares pod UIDs, not generations |
 | Helm test hooks appear in `helm template` output but are never installed | `diff` renders charts with `--skip-tests` and ignores hook objects |
+| kustomize's Helm support runs `helm version -c`, which Helm 4 removed | The plain apply script installs Helm apps with `helm upgrade --install`; it also defaults namespaces and keeps hooks, which `helmCharts:` rendering didn't |
+| A dry run creates nothing, so CRs fail when their CRDs come from an earlier wave | The apply script's `--dry-run` reports such waves and continues |
+| k3s installs its own CRDs (`addons.k3s.cattle.io`, `helmcharts.helm.cattle.io`) without Helm annotations, and CNIs create theirs at runtime | The `platform-crds` rule excludes CRDs of distribution, cloud and CNI API groups; applying the source's copies could break the target's platform |
+| client-go no longer registers the `oidc` auth provider by itself | gitopsify imports the auth plugins, so `auth-provider: oidc` kubeconfigs work, and the removed gcp/azure providers fail with a pointer to their replacement |
+| An exec credential plugin can wait for terminal input forever | `--no-input` marks stdin unavailable to plugins, so they fail instead of hanging |
+| `--server` with the current context's credentials sends them to another server | An explicit server without a kubeconfig or context ignores the kubeconfig |
+| `generate --push` into a new directory can't push onto a remote branch with history | The remote branch is checked out into the empty output directory first |
+| A crafted `.gitopsify/generated.txt` could name files outside the output | Stale-file cleanup only removes local paths |
+| Object names may be 253 characters; file names only 255 bytes | Long file names are shortened with a hash; long app names too, so they stay unique |
 
-The end-to-end test (`test/e2e/run.sh`) checks the parts that unit tests can't:
-the round trip (generated manifests dry-run against the source change nothing
-but deliberate Helm drift), an Argo CD migration to a fresh cluster, and a Flux
-migration with Secrets sealed in-process and unsealed by the real controller.
-A takeover of the source cluster by Argo CD was verified by hand: no pod was
-restarted or deleted, only the drifted Helm release was corrected.
+The end-to-end test (`test/e2e/run.sh`) checks the parts that unit tests can't,
+on kind: every authentication method (tokens, CAs, impersonation, an exec
+plugin, in-cluster), the round trip (generated manifests dry-run against the
+source change nothing but deliberate Helm drift), the plain apply script on a
+fresh cluster, Argo CD and Flux migrations synced with `bootstrap --wait`,
+Secrets sealed in-process and encrypted with SOPS and decrypted by the real
+controllers, and an Argo CD takeover of the source in which no pod restarts
+except the drifted Helm release. The live test (`test/live/hetzner/run.sh`)
+repeats the migrations and the takeover on remote k3s clusters pulling from a
+private GitHub repository over SSH.
 
-## 12. Known limitations
+## 12. AI agents
+
+The CLI deliberately stops where judgement, organization permissions or other
+systems start: creating Git repositories and deploy keys on a host, installing
+operators, loading secret managers, enabling pruning. The agent skills in
+`skills/` encode those steps for AI coding agents, with a recommended default
+for each decision and the alternatives, and with hard rules: no cluster change
+or repository creation without the person's yes, no Secret values in output,
+the source cluster is never touched. They use the Agent Skills format, are
+embedded in the binary (`gitopsify skills install`), and are packaged as a
+Claude Code plugin marketplace and a Gemini CLI extension from the repository
+root.
+
+## 13. Known limitations
 
 * The heuristic cleaner removes the defaults it knows; unusual defaults from
   newer Kubernetes versions stay in the output until the table learns them.

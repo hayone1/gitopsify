@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,5 +122,36 @@ func TestExpandHome(t *testing.T) {
 	}
 	if got := ExpandHome("a~b"); got != "a~b" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// TestSchemaIsCurrent keeps docs/gitopsify.schema.json in step with Config;
+// run make docs after changing the configuration.
+func TestSchemaIsCurrent(t *testing.T) {
+	want, err := Schema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var probe map[string]any
+	if err := json.Unmarshal(want, &probe); err != nil {
+		t.Fatal(err)
+	}
+	props := probe["properties"].(map[string]any)
+	src := props["source"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := src["token"]; ok {
+		t.Error("token must not be part of the schema")
+	}
+	if _, ok := src["apiServer"]; !ok {
+		t.Error("inline access fields missing from source")
+	}
+	got, err := os.ReadFile("../../docs/gitopsify.schema.json")
+	if err != nil || string(got) != string(want) {
+		if os.Getenv("UPDATE_DOCS") != "" {
+			if err := os.WriteFile("../../docs/gitopsify.schema.json", want, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		t.Error("docs/gitopsify.schema.json is out of date: run make docs")
 	}
 }
