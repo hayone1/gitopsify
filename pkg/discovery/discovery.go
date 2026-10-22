@@ -255,6 +255,11 @@ func listPage(ctx context.Context, ri dynamic.ResourceInterface, opts metav1.Lis
 		if err == nil || i == attempts || !retryable(err) {
 			return ul, err
 		}
+		// Large pages (Helm release Secrets can be 1 MB each) are what
+		// flaky connections drop; ask for smaller ones.
+		if opts.Limit > 20 {
+			opts.Limit /= 2
+		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -269,7 +274,7 @@ func list(ctx context.Context, c *kube.Client, r Resource, ns string) ([]*model.
 		ri = c.Dynamic.Resource(r.GVR).Namespace(ns)
 	}
 	var out []*model.Object
-	opts := metav1.ListOptions{Limit: 500}
+	opts := metav1.ListOptions{Limit: 100}
 	restarted := false
 	for {
 		ul, err := listPage(ctx, ri, opts)

@@ -143,8 +143,9 @@ users:
     exec: {apiVersion: client.authentication.k8s.io/v1, command: fake-cred-plugin, interactiveMode: Never}
 EOF
   scan_as exec-plugin --kubeconfig "$work/exec.yaml"
-  g doctor --kubeconfig "$work/exec.yaml" | grep -q "credential plugin fake-cred-plugin" || fail "doctor doesn't name the credential plugin"
-  g doctor --kubeconfig "$work/exec.yaml" | grep -q "system:serviceaccount:kube-system:gitopsify-reader" || fail "doctor doesn't show the identity"
+  g doctor --kubeconfig "$work/exec.yaml" > "$work/doctor-exec.txt" || true
+  grep -q "credential plugin fake-cred-plugin" "$work/doctor-exec.txt" || fail "doctor doesn't name the credential plugin"
+  grep -q "system:serviceaccount:kube-system:gitopsify-reader" "$work/doctor-exec.txt" || fail "doctor doesn't show the identity"
   pass "doctor with an exec plugin shows the plugin and the identity"
 
   # Impersonating a ServiceAccount that may read nothing.

@@ -130,7 +130,8 @@ export HELM_REPOSITORY_CONFIG="$work/helm/repositories.yaml" HELM_REPOSITORY_CAC
 "$root/test/e2e/setup-source.sh" hz-src
 
 log "cluster access"
-g doctor --context hz-src | tee "$work/doctor.txt" | grep -q "client certificate" || fail "doctor"
+g doctor --context hz-src > "$work/doctor.txt" || true
+grep -q "client certificate" "$work/doctor.txt" || fail "doctor"
 src_ip=$(jq -r .src "$state/ips.json")
 kubectl config view --raw -o jsonpath='{.clusters[?(@.name=="hz-src")].cluster.certificate-authority-data}' | base64 -d > "$work/ca.pem"
 kubectl --context hz-src create serviceaccount gitopsify-reader -n kube-system
