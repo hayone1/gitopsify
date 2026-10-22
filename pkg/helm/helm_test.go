@@ -200,3 +200,15 @@ func TestSplitDocsSkipsCommentOnlyDocs(t *testing.T) {
 		t.Errorf("docs = %q", docs)
 	}
 }
+
+func TestManifestObjectsDropNulls(t *testing.T) {
+	objs := ManifestObjects("apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata: {name: web}\nspec:\n  ingressClassName:\n  rules: [{host: a, http: {paths: [{path: /, backend: null}]}}]\n")
+	spec := objs[0].Object["spec"].(map[string]any)
+	if _, ok := spec["ingressClassName"]; ok {
+		t.Error("null ingressClassName kept")
+	}
+	path := spec["rules"].([]any)[0].(map[string]any)["http"].(map[string]any)["paths"].([]any)[0].(map[string]any)
+	if _, ok := path["backend"]; ok {
+		t.Error("nested null kept")
+	}
+}

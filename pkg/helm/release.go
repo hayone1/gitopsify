@@ -223,6 +223,10 @@ func ManifestObjects(manifest string) []*unstructured.Unstructured {
 		if err := yaml.Unmarshal([]byte(doc), &m); err != nil || len(m) == 0 {
 			continue
 		}
+		// Charts render unset values as null (ingressClassName: with an empty
+		// value). Helm drops them when it installs; applying them would remove
+		// what the cluster defaulted.
+		dropNulls(m)
 		u := &unstructured.Unstructured{Object: m}
 		if u.GetKind() == "" {
 			continue
@@ -293,4 +297,22 @@ func orUnknown(s string) string {
 		return "unknown status"
 	}
 	return s
+}
+
+// dropNulls removes null values from maps, recursively.
+func dropNulls(v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, c := range t {
+			if c == nil {
+				delete(t, k)
+				continue
+			}
+			dropNulls(c)
+		}
+	case []any:
+		for _, c := range t {
+			dropNulls(c)
+		}
+	}
 }
