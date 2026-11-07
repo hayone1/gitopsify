@@ -1,13 +1,16 @@
 # Handoff: gitopsify
 
-State as of 2026-11-07. Repo: https://github.com/hayone1/gitopsify (private;
-written to go public as is). Latest release: v0.1.1. `main` is committed,
-pushed and green. **Branch `providers`** (pushed; draft PR #1) holds the
-provider system described below. Sibling repositories:
+State as of 2026-11-07. Repo: https://github.com/hayone1/gitopsify (public
+since 2026-11-07; history scanned for credentials first: clean). Latest release: v0.1.1. `main` is committed,
+pushed and green. **Branch `providers`** (PR #1, CI green, waiting for the
+user to merge: auto mode refuses merges by the agent) holds the provider
+system described below. Sibling repositories:
 `../gitopsify-provider-grafana` (github.com/hayone1/gitopsify-provider-grafana,
 private) holds the first provider; `../gitopsify-provider-template`
-(github.com/hayone1/gitopsify-provider-template, private, a GitHub template
-repository) is the starting point for new providers.
+(github.com/hayone1/gitopsify-provider-template, private, marked as a GitHub
+template) is the starting point for new providers. Both have green CI; until
+sdk/v0.1.0 exists their go.mod replaces the SDK with ../gitopsify/sdk and CI
+checks out gitopsify at ff93001 (the providers head that has it).
 
 ## What it is
 Go CLI (cobra + Charm huh/lipgloss) that turns a running cluster (or a
@@ -139,7 +142,16 @@ guide `docs/writing-providers.md`.
   EXPORT_REPORT.md; export.json held hashes of secret files (GitGuardian
   flagged one on PR #1: a false positive as a secret, but a real offline
   guessing leak); the pkg/iac golden secret fixtures were never committed
-  (git-ignored; `make golden` now force-adds them).
+  (git-ignored; `make golden` now force-adds them). Two review rounds by a
+  fresh-context subagent on the template, the core fixes and Grafana: round
+  2 found everything from round 1 fixed; its new findings were fixed too
+  (record asks before replacing testdata and fixture names are lowercase
+  and escaped consistently; report lines per attribute path; prepare from
+  any subdirectory, module path checks). Accepted: Grafana's fixtureName
+  still uses url.PathEscape (in its HANDOFF), terraform vs tofu provider
+  addresses differ in the schema JSON, list items sharing a secret name
+  and path are one report line, releases on `go-version: stable` (not
+  reproducible over time).
 
 ## Day to day (providers)
 ```sh
@@ -245,19 +257,33 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
 - New Docker Hub repos are public on free accounts.
 
 ## Open / next (providers), in order
-1. Decide visibility: while hayone1/gitopsify is private, the provider and
-   template repos' CI can't check out the SDK (`github.token` can't read
-   another private repo; fails with "Not Found") and `go get` of the SDK
-   needs auth. Either make gitopsify public or add a `GITOPSIFY_READ_TOKEN`
-   secret (fine-grained, contents:read on gitopsify) to both repos. Their CI
-   also needs the SDK on gitopsify's default branch (merge PR #1 first).
-2. PR #1: GitGuardian incident 39798306 is a false positive (a SHA-256 file
-   hash in an old golden export.json, since removed); mark it so in the
-   GitGuardian dashboard, or squash-merge so main never holds it.
-3. Merge PR #1, tag `sdk/v0.1.0`, require it (drop the replace directives
-   and the gitopsify checkout step in the provider and template repos),
-   release the provider v0.1.0, add its `repoId` to `providers/index.yaml`,
-   then release gitopsify.
+1. The user squash-merges PR #1 (GitGuardian's failure there is a false
+   positive: a SHA-256 file hash in an old commit's golden export.json; mark
+   incident 39798306 as such in the GitGuardian dashboard. The squash keeps
+   it out of main).
+2. Then, on main (reviewed plan, round 2 of the review):
+   - `git tag sdk/v0.1.0 <merge commit> && git push origin sdk/v0.1.0`
+     (never move an sdk tag once pushed: sum.golang.org remembers it).
+   - Root go.mod: `go mod edit -dropreplace github.com/hayone1/gitopsify/sdk`,
+     `GOWORK=off go get github.com/hayone1/gitopsify/sdk@v0.1.0`, tidy.
+     Without this, `go install github.com/hayone1/gitopsify/cmd/gitopsify@latest`
+     (docs/install.md) breaks at the next release (replace directives).
+   - Commit a `go.work` (`use . ./sdk`, go 1.27.3) so development and CI keep
+     building against sdk/ (one pull request for protocol + CLI changes).
+   - Dockerfile: drop `COPY sdk/go.mod sdk/`, set `ENV GOWORK=off` before the
+     build. release.yml: `GOWORK: "off"` for GoReleaser and a check that
+     `git diff --quiet sdk/$(GOWORK=off go list -m -f '{{.Version}}'
+     github.com/hayone1/gitopsify/sdk) HEAD -- sdk/` (the release must be
+     what go install builds). docs/development.md "The SDK module": describe
+     go.work and tag-then-require instead of toggling replace.
+   - Provider and template repos: `go mod edit -dropreplace ...`,
+     `go get github.com/hayone1/gitopsify/sdk@v0.1.0`, remove the CI steps
+     that check gitopsify out, the template README's "clone gitopsify next
+     to it" note and the go.mod comment; `make lint test`; push.
+3. Release the Grafana provider v0.1.0 (make the repo public first, so
+   installs work), add its `repoId` to `providers/index.yaml`, release
+   gitopsify (v0.2.0: new commands and config form). Make the template repo
+   public too so third parties can use it.
 4. Continuous use: three-way merge of re-exports with hand edits (the base
    is in export.json's file hashes), then a `gitopsify sync` loop or a
    controller reconciling `Export` resources (DESIGN-providers §11).
@@ -266,8 +292,6 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
 6. Signature verification of provider releases (artifact attestations).
 
 ## Open / next
-- Make the repo public (`gh repo edit hayone1/gitopsify --visibility public`);
-  until then installers need `GITHUB_TOKEN`.
 - Package managers: create homebrew-tap / scoop-bucket repos + a
   TAP_GITHUB_TOKEN secret, then uncomment the blocks in `.goreleaser.yaml`.
 - Optional: CI workflow for `make live` (needs an HCLOUD token secret).
