@@ -53,13 +53,14 @@ type WorkspaceReport struct {
 // left out.
 const secretNotReturned = "the tool doesn't return this secret"
 
-// leaveOut records a secret left out of the output: once per object and
-// secret, though both formats may leave it out (under different paths: an
-// explicit Crossplane body uses Crossplane's field names). reason is
-// secretNotReturned or why Crossplane couldn't write it.
+// leaveOut records a secret left out of the output: once per object, secret
+// and attribute path, though both formats may leave it out. An explicit
+// Crossplane body names its fields differently, so for those kinds the
+// secret's name alone identifies it. reason is secretNotReturned or why
+// Crossplane couldn't write it.
 func (r *Report) leaveOut(kind *sdk.Kind, w *workspace, res *sdk.Resource, path string, s sdk.SecretValue, reason string) {
 	id := w.id + "\x00" + res.Key + "\x00" + s.Secret
-	if s.Secret == "" {
+	if s.Secret == "" || kind.Crossplane == nil || !kind.Crossplane.Explicit {
 		id += "\x00" + path
 	}
 	if r.missing == nil {

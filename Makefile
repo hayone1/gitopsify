@@ -19,7 +19,7 @@ test:
 golden:
 	go test ./pkg/pipeline -run TestGolden -update
 	go test ./pkg/iac -run TestGolden -update
-	git add -f testdata/golden/*/.secrets pkg/iac/testdata/golden/*/.secrets pkg/iac/testdata/golden/*/terraform/*/*/*.secrets.auto.tfvars
+	find testdata/golden pkg/iac/testdata/golden \( -type d -name .secrets -print -prune \) -o -name '*.secrets.auto.tfvars' -print | xargs -r git add -f
 
 # Regenerate docs/commands.md and docs/gitopsify.schema.json after changing a
 # command, a flag or the configuration.

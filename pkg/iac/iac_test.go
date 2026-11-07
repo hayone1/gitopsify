@@ -468,10 +468,11 @@ func TestMissingSecretListedOnce(t *testing.T) {
 		sdk.Resource{Key: "datasource/1/loki", Kind: "DataSource", Partition: "1", Name: "Loki", ImportID: "1:loki", Attributes: map[string]any{
 			"name": "Loki", "type": "loki", "uid": "loki",
 			"http_headers": sdk.Secret("http_headers", map[string]string{"X-Key": "k"}, "", "headers")}},
-		// Not returned, inside a block.
+		// Not returned, inside blocks: two attributes, one secret name.
 		sdk.Resource{Key: "contactpoint/1/pager", Kind: "ContactPoint", Partition: "1", Name: "Pager", ImportID: "1:pager", Attributes: map[string]any{
 			"name":  "Pager",
-			"slack": []any{map[string]any{"url": sdk.Secret("url", nil, "urlSecretRef", "Slack webhook URL")}}}},
+			"slack": []any{map[string]any{"url": sdk.Secret("url", nil, "urlSecretRef", "Slack webhook URL")}},
+			"email": []any{map[string]any{"url": sdk.Secret("url", nil, "urlSecretRef", "mail relay URL")}}}},
 	)
 	res, _, _ := export(t, t.TempDir(), inv, Options{Adopt: true})
 	count := func(sub string) int {
@@ -489,10 +490,10 @@ func TestMissingSecretListedOnce(t *testing.T) {
 	if n := count(`DataSource "Loki" (default / Main Org.): http_headers (headers): Crossplane: the Crossplane resource has no secret reference for it`); n != 1 {
 		t.Errorf("crossplane-only: %d lines: %q", n, res.Report.MissingSecrets)
 	}
-	if n := count(`ContactPoint "Pager"`); n != 1 {
-		t.Errorf("secret in a block: %d lines: %q", n, res.Report.MissingSecrets)
+	if n := count(`ContactPoint "Pager"`); n != 2 {
+		t.Errorf("secrets in blocks: %d lines, want one per attribute: %q", n, res.Report.MissingSecrets)
 	}
-	if len(res.Report.MissingSecrets) != 4 {
+	if len(res.Report.MissingSecrets) != 5 {
 		t.Errorf("missing secrets: %q", res.Report.MissingSecrets)
 	}
 }

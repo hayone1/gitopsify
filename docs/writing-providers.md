@@ -183,7 +183,7 @@ What makes the first plan clean:
 
 1. **Conformance**, against a fake API (`httptest`):
    ```go
-   sdktest.Conformance(t, provider.New(), sdk.Request{Settings: map[string]string{"url": srv.URL}})
+   sdktest.Conformance(t, provider.New("test"), sdk.Request{Settings: map[string]string{"url": srv.URL}})
    ```
 2. **Upstream schemas**: keep `terraform providers schema -json` (trimmed to
    your types) and the Crossplane CRDs of the pinned versions in `testdata/`
@@ -193,8 +193,9 @@ What makes the first plan clean:
    sdktest.ValidateCrossplane(crds, d, inv)    // derived fields, *Ref / *SecretRef names, types
    ```
 3. **Real answers**: record what the real tool returns and replay it in unit
-   tests (`make record` in the template; the Grafana provider records with
-   `GITOPSIFY_GRAFANA_RECORD=dir`).
+   tests (`make record` in the template and the Grafana provider: the
+   client saves every answer while `GITOPSIFY_<NAME>_RECORD` names a
+   directory).
 4. **Live**: the real tool in Docker, `gitopsify export`, `terraform plan`
    (imports only), `apply`, `plan` again (no changes), and Crossplane objects
    that become Ready and Synced while observing and while managing, without
