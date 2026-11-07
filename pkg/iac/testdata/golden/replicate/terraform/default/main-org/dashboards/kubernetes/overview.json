@@ -1,0 +1,11 @@
+{
+  "uid": "k8s",
+  "title": "Kubernetes / Overview",
+  "templating": {
+    "list": [
+      {
+        "query": "${DS}"
+      }
+    ]
+  }
+}

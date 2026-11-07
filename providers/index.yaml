@@ -1,0 +1,26 @@
+# The gitopsify provider index: the providers people can install by name with
+# "gitopsify provider install <name>" and find with "gitopsify provider search".
+#
+# To list your provider, open a pull request that adds an entry (keep the list
+# sorted by name). A provider is listed when:
+#   - its repository is public and named gitopsify-provider-<name>;
+#   - it has a GitHub release with gitopsify-provider-<name>_<version>_<os>_<arch>.tar.gz
+#     archives (.zip on Windows) and a checksums file (GoReleaser's default);
+#   - it passes the conformance test in github.com/hayone1/gitopsify/sdk/sdktest;
+#   - the entry records repoId (gh api repos/OWNER/REPO --jq .id), so the name
+#     keeps pointing at that repository even if the account changes hands.
+# Versions are not listed here: they come from the repository's releases.
+# Anyone can also install an unlisted provider with
+# "gitopsify provider install <owner>/<name>".
+# Reference: docs/writing-providers.md
+apiVersion: gitopsify.io/v1alpha1
+kind: ProviderIndex
+providers:
+  - name: grafana
+    source: hayone1/grafana
+    description: "Grafana OSS and Enterprise: organizations, folders, dashboards, library panels, data sources, teams, playlists and alerting"
+    homepage: https://github.com/hayone1/gitopsify-provider-grafana
+    maturity: alpha
+    outputs: [terraform, crossplane]
+    maintainers: [hayone1]
+    # repoId: set once github.com/hayone1/gitopsify-provider-grafana exists

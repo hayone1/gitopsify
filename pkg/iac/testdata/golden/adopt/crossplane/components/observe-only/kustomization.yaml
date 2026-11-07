@@ -1,0 +1,13 @@
+# While this component is listed in ../../kustomization.yaml, every managed
+# resource only observes: Crossplane reads the objects it adopts and changes
+# nothing. When they are all Ready and Synced (kubectl get managed -A), remove
+# the component from the list to let Crossplane manage them.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      labelSelector: gitopsify.io/provider=grafana
+    patch: |-
+      - op: replace
+        path: /spec/managementPolicies
+        value: ["Observe"]

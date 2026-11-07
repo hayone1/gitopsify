@@ -1,0 +1,30 @@
+apiVersion: alerting.grafana.m.crossplane.io/v1alpha1
+kind: ContactPoint
+metadata:
+  name: on-call
+  namespace: grafana-main-org
+  labels:
+    gitopsify.io/provider: grafana
+spec:
+  forProvider:
+    email:
+      - addresses:
+          - a@example.com
+        singleEmail: false
+    name: On call
+    slack:
+      - recipient: '#alerts'
+        text: |
+          {{ template "x" . }}
+          line two
+        urlSecretRef:
+          key: url
+          name: contactpoint-on-call
+  managementPolicies:
+    - Observe
+    - Create
+    - Update
+    - Delete
+  providerConfigRef:
+    kind: ClusterProviderConfig
+    name: grafana-main-org

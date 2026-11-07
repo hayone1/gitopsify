@@ -1,0 +1,192 @@
+{
+  "apiVersion": "gitopsify.io/v1alpha1",
+  "provider": "grafana",
+  "workspaces": {
+    "default/1": {
+      "dir": "default/main-org",
+      "namespace": "grafana-main-org"
+    },
+    "default/2": {
+      "dir": "default/team-unicode",
+      "namespace": "grafana-team-unicode"
+    }
+  },
+  "resources": {
+    "default/contactpoint/1/oncall": {
+      "kind": "ContactPoint",
+      "workspace": "default/1",
+      "terraform": "grafana_contact_point.on_call",
+      "crossplane": "on-call",
+      "secrets": {
+        "": "contactpoint-on-call"
+      }
+    },
+    "default/dashboard/1/home": {
+      "kind": "Dashboard",
+      "workspace": "default/1",
+      "terraform": "grafana_dashboard.home",
+      "crossplane": "home",
+      "files": {
+        "dashboards/general/home.json": "dashboards/general/home.json"
+      }
+    },
+    "default/dashboard/1/k8s": {
+      "kind": "Dashboard",
+      "workspace": "default/1",
+      "terraform": "grafana_dashboard.kubernetes_overview",
+      "crossplane": "kubernetes-overview",
+      "files": {
+        "dashboards/kubernetes/overview.json": "dashboards/kubernetes/overview.json"
+      }
+    },
+    "default/datasource/1/prom": {
+      "kind": "DataSource",
+      "workspace": "default/1",
+      "terraform": "grafana_data_source.prometheus",
+      "crossplane": "prometheus"
+    },
+    "default/folder/1/sre": {
+      "kind": "Folder",
+      "workspace": "default/1",
+      "terraform": "grafana_folder.sre",
+      "crossplane": "sre"
+    },
+    "default/folder/1/sre-k8s": {
+      "kind": "Folder",
+      "workspace": "default/1",
+      "terraform": "grafana_folder.kubernetes",
+      "crossplane": "kubernetes"
+    },
+    "default/folder/2/apps": {
+      "kind": "Folder",
+      "workspace": "default/2",
+      "terraform": "grafana_folder.r_de10ae",
+      "crossplane": "r-de10ae"
+    }
+  },
+  "files": {
+    "": {
+      "": {}
+    },
+    "crossplane": {
+      "": {
+        "": [
+          "crossplane/README.md",
+          "crossplane/kustomization.yaml",
+          "crossplane/setup/kustomization.yaml",
+          "crossplane/setup/provider.yaml"
+        ]
+      },
+      "default/*": {
+        "": [
+          ".secrets/crossplane/setup/grafana-default-credentials.yaml"
+        ]
+      },
+      "default/1": {
+        "": [
+          "crossplane/default/main-org/kustomization.yaml",
+          "crossplane/default/main-org/namespace.yaml",
+          "crossplane/default/main-org/providerconfig.yaml"
+        ],
+        "ContactPoint": [
+          ".secrets/crossplane/default/main-org/contactpoint-on-call.yaml",
+          "crossplane/default/main-org/contact-points/on-call.yaml"
+        ],
+        "Dashboard": [
+          "crossplane/default/main-org/dashboards/home.yaml",
+          "crossplane/default/main-org/dashboards/kubernetes-overview.yaml"
+        ],
+        "DataSource": [
+          "crossplane/default/main-org/data-sources/prometheus.yaml"
+        ],
+        "Folder": [
+          "crossplane/default/main-org/folders/kubernetes.yaml",
+          "crossplane/default/main-org/folders/sre.yaml"
+        ]
+      },
+      "default/2": {
+        "": [
+          "crossplane/default/team-unicode/kustomization.yaml",
+          "crossplane/default/team-unicode/namespace.yaml",
+          "crossplane/default/team-unicode/providerconfig.yaml"
+        ],
+        "Folder": [
+          "crossplane/default/team-unicode/folders/r-de10ae.yaml"
+        ]
+      }
+    },
+    "terraform": {
+      "": {
+        "": [
+          "terraform/README.md"
+        ]
+      },
+      "default/1": {
+        "": [
+          "terraform/default/main-org/providers.tf",
+          "terraform/default/main-org/versions.tf"
+        ],
+        "ContactPoint": [
+          "terraform/default/main-org/contact_points.secrets.auto.tfvars",
+          "terraform/default/main-org/contact_points.tf"
+        ],
+        "Dashboard": [
+          "terraform/default/main-org/dashboards.tf",
+          "terraform/default/main-org/dashboards/general/home.json",
+          "terraform/default/main-org/dashboards/kubernetes/overview.json"
+        ],
+        "DataSource": [
+          "terraform/default/main-org/data_sources.tf"
+        ],
+        "Folder": [
+          "terraform/default/main-org/folders.tf"
+        ]
+      },
+      "default/2": {
+        "": [
+          "terraform/default/team-unicode/providers.tf",
+          "terraform/default/team-unicode/versions.tf"
+        ],
+        "Folder": [
+          "terraform/default/team-unicode/folders.tf"
+        ]
+      }
+    }
+  },
+  "hashes": {
+    ".gitignore": "4e1a965c310519c38f70ebc3793b38b80f3edaef9043fb05f03f0e0579b4ae2b",
+    ".secrets/crossplane/default/main-org/contactpoint-on-call.yaml": "e848959fabb5aef938b185d3a3839ab6e279d505eb6950545ca57224dceda4fb",
+    ".secrets/crossplane/setup/grafana-default-credentials.yaml": "710df4dda72ec6cca9df77bae2d5e739a21998830d66ebec3e8028087bebe7f8",
+    "EXPORT_REPORT.md": "1b0a126f7213028bb8571af576a44bc67dcf090548c281a09ed92ef44b72663f",
+    "crossplane/README.md": "41789a9789d397f1fe1001c969b052cb89e716e694a6dd4455c18bad5ea1b915",
+    "crossplane/default/main-org/contact-points/on-call.yaml": "2e69bbe3421b8275749027d62ef928ce0d5769eaa5e037a1528fc8c3dec18113",
+    "crossplane/default/main-org/dashboards/home.yaml": "b6c5651d223da271b211ec792e7282a6b0163325fc8b571349ba90e330600df4",
+    "crossplane/default/main-org/dashboards/kubernetes-overview.yaml": "e05602a02ade4f8fd7795006e24e3cc67a32887969102de658f197d09439b3ff",
+    "crossplane/default/main-org/data-sources/prometheus.yaml": "fe52a576b41dbe57517c06550f0fb290d3270035c09a145fceba5840ae253244",
+    "crossplane/default/main-org/folders/kubernetes.yaml": "7020e80b8d01fe24410799f92a1a60b5837d26d4750ff7639dbff3b122ca3a43",
+    "crossplane/default/main-org/folders/sre.yaml": "b4b1281bb73704f21f9ca38fae1e4595f86aee506e9d97757304054109ac4c6f",
+    "crossplane/default/main-org/kustomization.yaml": "4d7864d1783eb70c5ddab4dc7b42c688d69f59a87da41d535dff90adfe984a3f",
+    "crossplane/default/main-org/namespace.yaml": "d4b403c8033075a26ed470f6b373e9e34dc354038406949d94e61786fd562fc8",
+    "crossplane/default/main-org/providerconfig.yaml": "468d69989ecbec3f3c871de0616572e45ccb3f6a1a14e6fbe828f168aa8b40b2",
+    "crossplane/default/team-unicode/folders/r-de10ae.yaml": "b118c7820fdfadf5497ca8a62c316f9b22af7c5e62cb7a429516ab73674436ca",
+    "crossplane/default/team-unicode/kustomization.yaml": "7c9ae38e3e1d538a3a6bc184d4deef8af1c7ff510a27e4b254c99de683a2f58d",
+    "crossplane/default/team-unicode/namespace.yaml": "5df5a73b5cc59df71e381f925f61b9d8069f31ef1e776f272dbd8ea8bf7c622a",
+    "crossplane/default/team-unicode/providerconfig.yaml": "12dc3833cd0c81efd5ae9f184dfd26d2b60eba0395a2879060151475b84902a7",
+    "crossplane/kustomization.yaml": "f6db88b3f8273e2434181259de829bc4a81ed06ea91ebc0fd440d2e4844d4a98",
+    "crossplane/setup/kustomization.yaml": "219e3359fc6f17c734ceedfb40e40e5207e502756026de3545a99ef60f41dc14",
+    "crossplane/setup/provider.yaml": "c027f30f6651180cb2eb5bcc03b4d77ca3bd88736d1508a036886a419b8a4246",
+    "terraform/README.md": "77da611abf7b86fd08d88f1c555b929790298efa8d7eaeb55a54f8926ec331d9",
+    "terraform/default/main-org/contact_points.secrets.auto.tfvars": "247cac42851f9c742422798badd1bb9b3a6a4c94b87361c1bd3442f29585a9ac",
+    "terraform/default/main-org/contact_points.tf": "5487fc40ca798d5f0fb0233910fec163233764fc4dcf38339b8f4269781f1466",
+    "terraform/default/main-org/dashboards.tf": "6aab1a227622c9720e81e6811b7bf31d2e15c524a12c7309f7865707432fcdaa",
+    "terraform/default/main-org/dashboards/general/home.json": "865765cd525a351bc81e02a90bc3288333b8a130e000192f7b35ed0a16450a6f",
+    "terraform/default/main-org/dashboards/kubernetes/overview.json": "4d3a9e26217b791cee636189fe56e7d94f552f87164046bab4b481439893a835",
+    "terraform/default/main-org/data_sources.tf": "301f544619746f1393b556d10027d5bc47086b125a24d54508b0298efe92a933",
+    "terraform/default/main-org/folders.tf": "b866b507dda72565670df1c3b7d54544b0556e1cd0857907d8c38498885d385a",
+    "terraform/default/main-org/providers.tf": "1b1341a18cb928814bb0c31bf3ba99b5af2fbec47453a8b12a588cf0435d271a",
+    "terraform/default/main-org/versions.tf": "67e40a895bdb8b875395b23a3728c7576298603f071acb8cf99eb5fed7305f78",
+    "terraform/default/team-unicode/folders.tf": "2a11349f8904903e6617d2b4c048f826da495fb399933e6470bb71d3c10623aa",
+    "terraform/default/team-unicode/providers.tf": "e0ba372424607603e4af9e1ee29a484df112532a0b9bbea3d5f174fb43eff741",
+    "terraform/default/team-unicode/versions.tf": "a3d5da5c3feb808fa599aa4be416242eaded3c3aac1fa22cf65c5723bff58933"
+  }
+}

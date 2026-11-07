@@ -136,13 +136,47 @@ func TestSchemaIsCurrent(t *testing.T) {
 	if err := json.Unmarshal(want, &probe); err != nil {
 		t.Fatal(err)
 	}
-	props := probe["properties"].(map[string]any)
-	src := props["source"].(map[string]any)["properties"].(map[string]any)
-	if _, ok := src["token"]; ok {
-		t.Error("token must not be part of the schema")
+	obj := func(m any, key string) map[string]any {
+		t.Helper()
+		v, ok := m.(map[string]any)[key].(map[string]any)
+		if !ok {
+			t.Fatalf("schema: no object at %q", key)
+		}
+		return v
 	}
-	if _, ok := src["apiServer"]; !ok {
-		t.Error("inline access fields missing from source")
+	// The resource form, and v0.1's layout with the fields at the top.
+	if obj(probe, "then")["$ref"] != "#/$defs/export" || obj(obj(probe, "$defs"), "export")["properties"] == nil {
+		t.Error("exports in the file aren't checked against their schema")
+	}
+	migration := obj(probe, "else")
+	resource := obj(obj(migration, "then"), "properties")
+	spec := obj(obj(resource, "spec"), "properties")
+	flat := obj(obj(migration, "else"), "properties")
+	if obj(obj(obj(resource, "metadata"), "properties"), "name")["pattern"] == nil {
+		t.Error("metadata.name has no pattern")
+	}
+	for form, props := range map[string]map[string]any{"resource": spec, "v0.1": flat} {
+		src := obj(obj(props, "source"), "properties")
+		if _, ok := src["token"]; ok {
+			t.Errorf("%s: token must not be part of the schema", form)
+		}
+		if _, ok := src["apiServer"]; !ok {
+			t.Errorf("%s: inline access fields missing from source", form)
+		}
+		if _, ok := obj(obj(props, "helm"), "properties")["mode"].(map[string]any)["enum"]; !ok {
+			t.Errorf("%s: enums missing", form)
+		}
+	}
+	for _, f := range []string{"apiVersion", "kind", "metadata"} {
+		if _, ok := spec[f]; ok {
+			t.Errorf("%s inside spec", f)
+		}
+		if _, ok := resource[f]; !ok {
+			t.Errorf("%s missing from the resource", f)
+		}
+	}
+	if _, ok := flat["apiVersion"]; !ok {
+		t.Error("v0.1 layout: apiVersion missing")
 	}
 	got, err := os.ReadFile("../../docs/gitopsify.schema.json")
 	if err != nil || string(got) != string(want) {

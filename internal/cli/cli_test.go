@@ -257,3 +257,39 @@ func TestCommandReferenceIsCurrent(t *testing.T) {
 		t.Error("docs/commands.md is out of date: run make docs")
 	}
 }
+
+// TestInitWritesResources: init writes a Migration resource in the syntax
+// of the file it's asked for, and generate reads each back.
+func TestInitWritesResources(t *testing.T) {
+	dump := chdir(t)
+	for file, start := range map[string]string{
+		"gitopsify.yaml": config.SchemaHeader,
+		"gitopsify.json": "{\n  \"apiVersion\": \"gitopsify.io/v1alpha1\",\n  \"kind\": \"Migration\",\n  \"metadata\": {\n    \"name\": \"kind-test\"",
+		"gitopsify.hcl":  "# gitopsify migration.",
+	} {
+		t.Run(file, func(t *testing.T) {
+			if code, _, errOut := run(t, "init", "--context", "kind-test", "--tool", "flux", "--env", "uat=uat", "--repo-url", "https://example.com/gitops.git", "-f", file); code != 0 {
+				t.Fatalf("exit %d: %s", code, errOut)
+			}
+			b, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(string(b), start) || !strings.Contains(string(b), "spec") {
+				t.Fatalf("%s:\n%s", file, b)
+			}
+			cfg, err := config.Load(file)
+			if err != nil || cfg.Metadata.Name != "kind-test" || cfg.Source.Context != "kind-test" || cfg.Output.Tool != config.ToolFlux {
+				t.Fatalf("%+v %v", cfg, err)
+			}
+			out := "out-" + strings.TrimPrefix(filepath.Ext(file), ".")
+			if code, _, errOut := run(t, "generate", "--from-file", dump, "-c", file, "-o", out); code != 0 {
+				t.Fatalf("generate: exit %d: %s", code, errOut)
+			}
+			copy, err := config.Load(filepath.Join(out, "gitopsify.yaml"))
+			if err != nil || copy.Metadata.Name != "kind-test" {
+				t.Errorf("generated copy: %+v %v", copy, err)
+			}
+		})
+	}
+}

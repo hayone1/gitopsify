@@ -1,0 +1,220 @@
+{
+  "$id": "https://raw.githubusercontent.com/hayone1/gitopsify/main/docs/gitopsify-export.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "gitopsify-\u003cprovider\u003e.yaml: how gitopsify export turns a tool's state into Terraform or Crossplane. Reference: https://github.com/hayone1/gitopsify/blob/main/docs/providers.md",
+  "properties": {
+    "apiVersion": {
+      "enum": [
+        "gitopsify.io/v1alpha1"
+      ],
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "Export"
+      ],
+      "type": "string"
+    },
+    "metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "annotations": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "name": {
+          "maxLength": 253,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "spec": {
+      "additionalProperties": false,
+      "properties": {
+        "instances": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "settings": {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "maxProperties": 1,
+                      "minProperties": 1,
+                      "properties": {
+                        "env": {
+                          "type": "string"
+                        },
+                        "file": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "output": {
+          "additionalProperties": false,
+          "properties": {
+            "adopt": {
+              "type": "boolean"
+            },
+            "crossplane": {
+              "additionalProperties": false,
+              "properties": {
+                "managementPolicies": {
+                  "items": {
+                    "enum": [
+                      "Observe",
+                      "Create",
+                      "Update",
+                      "Delete",
+                      "LateInitialize",
+                      "*"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "namespacePrefix": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "dir": {
+              "type": "string"
+            },
+            "formats": {
+              "items": {
+                "enum": [
+                  "terraform",
+                  "crossplane"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "secretValues": {
+              "enum": [
+                "skip",
+                "local"
+              ],
+              "type": "string"
+            },
+            "terraform": {
+              "additionalProperties": false,
+              "properties": {
+                "backend": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "settings": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "type": "object"
+                    },
+                    "type": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "provider": {
+          "additionalProperties": false,
+          "properties": {
+            "checksums": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "select": {
+          "additionalProperties": false,
+          "properties": {
+            "exclude": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "include": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kinds": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "noDeps": {
+              "type": "boolean"
+            },
+            "partitions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "prune": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "title": "gitopsify export",
+  "type": "object"
+}

@@ -1,0 +1,12 @@
+apiVersion: grafana.m.crossplane.io/v1beta1
+kind: ClusterProviderConfig
+metadata:
+  name: grafana-main-org
+spec:
+  credentials:
+    secretRef:
+      key: credentials
+      name: grafana-default-credentials
+      namespace: crossplane-system
+    source: Secret
+  orgId: "1"

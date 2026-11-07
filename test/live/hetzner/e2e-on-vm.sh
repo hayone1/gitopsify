@@ -12,6 +12,9 @@
 #   ./e2e-on-vm.sh destroy         remove what an interrupted run left behind
 #   RUN="make gifs" FETCH=docs/images ./e2e-on-vm.sh
 #                                  run another command there and copy files back
+#   UPLOAD=../gitopsify-provider-grafana RUN=/gitopsify-provider-grafana/test/live/crossplane.sh ./e2e-on-vm.sh
+#                                  also upload sibling repositories (to /<name>,
+#                                  next to /gitopsify, a link to /src)
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -71,7 +74,7 @@ for location in ${LOCATIONS:-fsn1 nbg1 hel1}; do
   echo "${SERVER_TYPE:-cx33} unavailable in $location"
 done
 ip=$(tf output -json ips | jq -r .runner)
-ssh_() { ssh -i "$state/ssh" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$state/known_hosts" -o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=30 "root@$ip" "$@"; }
+ssh_() { ssh -i "$state/ssh" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$state/known_hosts" -o ConnectTimeout=30 -o ConnectionAttempts=3 -o BatchMode=yes -o ServerAliveInterval=30 "root@$ip" "$@"; }
 until ssh_ true 2>/dev/null; do sleep 5; done
 echo "runner $ip"
 
@@ -88,6 +91,8 @@ curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/\$(curl -fsSL ht
 chmod +x /usr/local/bin/kubectl
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash >/dev/null
 GOBIN=/usr/local/bin go install sigs.k8s.io/kind@v0.33.0
+curl -fsSL https://github.com/opentofu/opentofu/releases/download/v1.13.9/tofu_1.13.9_linux_amd64.zip -o /tmp/tofu.zip
+curl -fsSL https://releases.hashicorp.com/terraform/1.14.6/terraform_1.14.6_linux_amd64.zip -o /tmp/tf.zip && apt-get install -qq -y unzip >/dev/null && unzip -o -q /tmp/tf.zip -d /usr/local/bin && unzip -o -q /tmp/tofu.zip tofu -d /usr/local/bin
 git config --global user.name gitopsify-e2e && git config --global user.email e2e@example.com
 EOF
 
@@ -95,12 +100,48 @@ log "uploading the source"
 (cd "$root" && git ls-files --cached --others --exclude-standard | grep -v '^testdata/golden/' | tar -cz -T -) |
   ssh_ "rm -rf /src && mkdir /src && tar -xz -C /src"
 
+ssh_ "ln -sfn /src /gitopsify"
+for dir in ${UPLOAD:-}; do
+  abs=$(cd "$root" && cd "$dir" && pwd)
+  name=$(basename "$abs")
+  log "uploading $name"
+  (cd "$abs" && git ls-files --cached --others --exclude-standard | tar -cz -T -) |
+    ssh_ "rm -rf /$name && mkdir /$name && tar -xz -C /$name"
+done
+
 run=${RUN:-./test/e2e/run.sh}
 log "running $run on the runner"
-set -o pipefail
-ssh_ "cd /src && PATH=/usr/local/go/bin:\$PATH STAGES='${STAGES:-}' SKIP='${SKIP:-}' $run" 2>&1 | tee "$state/e2e.log"
+# The command runs detached on the runner and its log is followed with short
+# SSH calls, so a dropped connection (the link from here can be flaky) costs
+# a retry instead of the run.
+ssh_ "rm -f /root/run.log /root/run.exit; cd /src && (setsid nohup env PATH=/usr/local/go/bin:\$PATH STAGES='${STAGES:-}' SKIP='${SKIP:-}' \
+  bash -c '$run; echo \$? > /root/run.exit' > /root/run.log 2>&1 < /dev/null &)"
+: >"$state/e2e.log"
+offset=0
+chunk=$(mktemp)
+deadline=$((SECONDS + ${RUN_TIMEOUT:-7200}))
+while :; do
+  if ((SECONDS > deadline)); then
+    log "gave up after ${RUN_TIMEOUT:-7200}s"
+    exit 1
+  fi
+  done_=false
+  ssh_ "test -f /root/run.exit" 2>/dev/null && done_=true
+  if ssh_ "tail -c +$((offset + 1)) /root/run.log" >"$chunk" 2>/dev/null; then
+    cat "$chunk" | tee -a "$state/e2e.log"
+    offset=$((offset + $(wc -c <"$chunk")))
+  fi
+  $done_ && break
+  sleep 10
+done
+rm -f "$chunk"
+code=$(ssh_ "cat /root/run.exit")
 if [[ -n "${FETCH:-}" ]]; then
   log "fetching $FETCH"
   # shellcheck disable=SC2086
   ssh_ "cd /src && tar -cz $FETCH" | tar -xz -C "$root"
+fi
+if [[ $code != 0 ]]; then
+  log "$run failed (exit $code)"
+  exit "$code"
 fi

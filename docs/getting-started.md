@@ -33,21 +33,24 @@ Or write it yourself:
 ```yaml
 apiVersion: gitopsify.io/v1alpha1
 kind: Migration
-source:
-  context: test
-scope:
-  namespaces: [shop, payments]      # leave out to take the whole cluster
-secrets:
-  strategy: sealed-secrets
-output:
-  tool: argocd
-  repo:
-    url: https://github.com/acme/platform-gitops.git
-environments:
-  - name: uat
-    cluster: {context: uat}
-    transforms:
-      - {type: replace, from: test.acme.io, to: uat.acme.io}
+metadata:
+  name: shop
+spec:
+  source:
+    context: test
+  scope:
+    namespaces: [shop, payments]      # leave out to take the whole cluster
+  secrets:
+    strategy: sealed-secrets
+  output:
+    tool: argocd
+    repo:
+      url: https://github.com/acme/platform-gitops.git
+  environments:
+    - name: uat
+      cluster: {context: uat}
+      transforms:
+        - {type: replace, from: test.acme.io, to: uat.acme.io}
 ```
 
 Every command reads `gitopsify.yaml` from the current directory, and flags

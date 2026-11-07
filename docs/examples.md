@@ -71,11 +71,12 @@ gitopsify generate -i                                   # pick apps from a list
 Rules of your own, first match wins:
 
 ```yaml
-scope:
-  rules:
-    - {name: no-debug, action: exclude, kinds: [Deployment], names: ["debug-*"], reason: debugging leftovers}
-    - {name: keep-metrics, action: include, namespaces: [kube-system], names: [metrics-server*]}
-  disableDefaultRules: [default-storageclass]   # migrate the default StorageClass too
+spec:
+  scope:
+    rules:
+      - {name: no-debug, action: exclude, kinds: [Deployment], names: ["debug-*"], reason: debugging leftovers}
+      - {name: keep-metrics, action: include, namespaces: [kube-system], names: [metrics-server*]}
+    disableDefaultRules: [default-storageclass]   # migrate the default StorageClass too
 ```
 
 Grouping objects into apps differently:
@@ -86,10 +87,11 @@ gitopsify generate --group-by single                    # everything in one app
 ```
 
 ```yaml
-grouping:
-  apps:
-    - {name: monitoring, kinds: [ServiceMonitor, PodMonitor, PrometheusRule]}
-    - {name: edge, namespaces: [ingress-nginx, cert-manager]}
+spec:
+  grouping:
+    apps:
+      - {name: monitoring, kinds: [ServiceMonitor, PodMonitor, PrometheusRule]}
+      - {name: edge, namespaces: [ingress-nginx, cert-manager]}
 ```
 
 ## Argo CD
@@ -127,11 +129,12 @@ gitopsify status --env uat --format json | jq '.[] | select(.ready | not)'
 A central Argo CD that deploys to registered clusters:
 
 ```yaml
-environments:
-  - name: prod
-    cluster:
-      name: prod-eu          # the cluster's name in Argo CD
-      context: prod-eu       # how gitopsify reaches it for check/diff
+spec:
+  environments:
+    - name: prod
+      cluster:
+        name: prod-eu          # the cluster's name in Argo CD
+        context: prod-eu       # how gitopsify reaches it for check/diff
 ```
 
 ## Flux
@@ -173,37 +176,39 @@ gitopsify generate --tool argocd --repo-url ... \
 Per environment, in `gitopsify.yaml`:
 
 ```yaml
-environments:
-  - name: uat
-    cluster: {context: uat}
-    transforms:
-      - {type: replace, from: test.acme.io, to: uat.acme.io}
-  - name: prod
-    cluster: {context: prod}
-    transforms:
-      - {type: replace, from: test.acme.io, to: acme.io}
-      - {type: replace, from: '(\w+)\.test\.svc', to: '$1.prod.svc', regex: true}
-      - {type: set, target: {kinds: [Deployment], names: [api, web]}, path: spec.replicas, value: 3}
-      - {type: set, target: {kinds: [Deployment], names: [api]}, path: 'spec.template.spec.containers[name=api].resources.requests.cpu', value: 500m}
-      - {type: set, target: {apps: [redis]}, path: values.replica.replicaCount, value: 3}
-      - {type: remove, target: {kinds: [Service], names: [lb]}, path: spec.loadBalancerIP}
-      - {type: labels, set: {env: prod}, remove: ["test-*"]}
-      - {type: annotations, target: {kinds: [ServiceAccount], names: [api]}, set: {eks.amazonaws.com/role-arn: "arn:aws:iam::222222222222:role/api"}}
-      - type: jsonPatch
-        target: {kinds: [Ingress], names: [web]}
-        patch:
-          - {op: add, path: /metadata/annotations/nginx.ingress.kubernetes.io~1proxy-body-size, value: 50m}
+spec:
+  environments:
+    - name: uat
+      cluster: {context: uat}
+      transforms:
+        - {type: replace, from: test.acme.io, to: uat.acme.io}
+    - name: prod
+      cluster: {context: prod}
+      transforms:
+        - {type: replace, from: test.acme.io, to: acme.io}
+        - {type: replace, from: '(\w+)\.test\.svc', to: '$1.prod.svc', regex: true}
+        - {type: set, target: {kinds: [Deployment], names: [api, web]}, path: spec.replicas, value: 3}
+        - {type: set, target: {kinds: [Deployment], names: [api]}, path: 'spec.template.spec.containers[name=api].resources.requests.cpu', value: 500m}
+        - {type: set, target: {apps: [redis]}, path: values.replica.replicaCount, value: 3}
+        - {type: remove, target: {kinds: [Service], names: [lb]}, path: spec.loadBalancerIP}
+        - {type: labels, set: {env: prod}, remove: ["test-*"]}
+        - {type: annotations, target: {kinds: [ServiceAccount], names: [api]}, set: {eks.amazonaws.com/role-arn: "arn:aws:iam::222222222222:role/api"}}
+        - type: jsonPatch
+          target: {kinds: [Ingress], names: [web]}
+          patch:
+            - {op: add, path: /metadata/annotations/nginx.ingress.kubernetes.io~1proxy-body-size, value: 50m}
 ```
 
 One repository per environment:
 
 ```yaml
-output:
-  tool: flux
-  layout: repo-per-env
-environments:
-  - {name: uat, repoURL: https://github.com/acme/gitops-uat.git, cluster: {context: uat}}
-  - {name: prod, repoURL: https://github.com/acme/gitops-prod.git, cluster: {context: prod}}
+spec:
+  output:
+    tool: flux
+    layout: repo-per-env
+  environments:
+    - {name: uat, repoURL: https://github.com/acme/gitops-uat.git, cluster: {context: uat}}
+    - {name: prod, repoURL: https://github.com/acme/gitops-prod.git, cluster: {context: prod}}
 ```
 
 ## Helm releases
@@ -218,14 +223,15 @@ gitopsify generate --helm-mode vendor               # charts copied into the rep
 ```
 
 ```yaml
-helm:
-  repositories:
-    cert-manager: https://charts.jetstack.io
-  releases:
-    kube-system/metrics-server: {include: true}     # migrate a release from a system namespace
-    tools/inhouse: {mode: vendor}
-    shop/legacy: {skip: true}
-    data/redis: {repo: oci://registry.acme.io/charts, version: 19.6.4}
+spec:
+  helm:
+    repositories:
+      cert-manager: https://charts.jetstack.io
+    releases:
+      kube-system/metrics-server: {include: true}     # migrate a release from a system namespace
+      tools/inhouse: {mode: vendor}
+      shop/legacy: {skip: true}
+      data/redis: {repo: oci://registry.acme.io/charts, version: 19.6.4}
 ```
 
 ## Secrets
@@ -245,13 +251,14 @@ gitopsify generate --secrets external-secrets --eso-store vault --eso-store-kind
 ```
 
 ```yaml
-secrets:
-  strategy: sealed-secrets
-  overrides:
-    - {namespaces: [monitoring], strategy: local}
-    - {names: ["*-tls"], strategy: skip}
-  externalSecrets:
-    keyTemplate: "{{ .Namespace }}-{{ .Name }}"     # stores that don't allow "/"
+spec:
+  secrets:
+    strategy: sealed-secrets
+    overrides:
+      - {namespaces: [monitoring], strategy: local}
+      - {names: ["*-tls"], strategy: skip}
+    externalSecrets:
+      keyTemplate: "{{ .Namespace }}-{{ .Name }}"     # stores that don't allow "/"
 ```
 
 ## Cluster access
@@ -371,18 +378,20 @@ Whole-cluster rebuild with Argo CD and Sealed Secrets:
 ```yaml
 apiVersion: gitopsify.io/v1alpha1
 kind: Migration
-source: {context: prod-old}
-scope:
-  excludeNamespaces: [sandbox-*]
-secrets: {strategy: sealed-secrets}
-helm:
-  resolvers: [local, artifacthub]
-output:
-  tool: argocd
-  repo: {url: git@github.com:acme/prod-gitops.git}
-environments:
-  - name: prod
-    cluster: {context: prod-new}
+metadata: {name: prod-rebuild}
+spec:
+  source: {context: prod-old}
+  scope:
+    excludeNamespaces: [sandbox-*]
+  secrets: {strategy: sealed-secrets}
+  helm:
+    resolvers: [local, artifacthub]
+  output:
+    tool: argocd
+    repo: {url: git@github.com:acme/prod-gitops.git}
+  environments:
+    - name: prod
+      cluster: {context: prod-new}
 ```
 
 Two environments with Flux, SOPS and different sizes:
@@ -390,26 +399,28 @@ Two environments with Flux, SOPS and different sizes:
 ```yaml
 apiVersion: gitopsify.io/v1alpha1
 kind: Migration
-source: {context: test}
-scope: {namespaces: [shop, payments]}
-secrets:
-  strategy: sops
-  sops: {age: [age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs0x8eh7]}
-transforms:
-  - {type: image, from: registry.test.acme.io/, to: registry.acme.io/}
-output:
-  tool: flux
-  repo: {url: ssh://git@github.com/acme/gitops.git}
-environments:
-  - name: uat
-    cluster: {context: uat}
-    transforms:
-      - {type: replace, from: test.acme.io, to: uat.acme.io}
-  - name: prod
-    cluster: {context: prod}
-    transforms:
-      - {type: replace, from: test.acme.io, to: acme.io}
-      - {type: set, target: {kinds: [Deployment]}, path: spec.replicas, value: 3}
+metadata: {name: shop-payments}
+spec:
+  source: {context: test}
+  scope: {namespaces: [shop, payments]}
+  secrets:
+    strategy: sops
+    sops: {age: [age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs0x8eh7]}
+  transforms:
+    - {type: image, from: registry.test.acme.io/, to: registry.acme.io/}
+  output:
+    tool: flux
+    repo: {url: ssh://git@github.com/acme/gitops.git}
+  environments:
+    - name: uat
+      cluster: {context: uat}
+      transforms:
+        - {type: replace, from: test.acme.io, to: uat.acme.io}
+    - name: prod
+      cluster: {context: prod}
+      transforms:
+        - {type: replace, from: test.acme.io, to: acme.io}
+        - {type: set, target: {kinds: [Deployment]}, path: spec.replicas, value: 3}
 ```
 
 One app as plain Kustomize, for a team that deploys with its own pipeline:
@@ -417,11 +428,13 @@ One app as plain Kustomize, for a team that deploys with its own pipeline:
 ```yaml
 apiVersion: gitopsify.io/v1alpha1
 kind: Migration
-source: {context: test}
-scope:
-  resources: [deployment/shop/web]
-secrets: {strategy: local}
-output: {dir: web-manifests}
+metadata: {name: web}
+spec:
+  source: {context: test}
+  scope:
+    resources: [deployment/shop/web]
+  secrets: {strategy: local}
+  output: {dir: web-manifests}
 ```
 
 Takeover of the same cluster by Argo CD:
@@ -429,12 +442,14 @@ Takeover of the same cluster by Argo CD:
 ```yaml
 apiVersion: gitopsify.io/v1alpha1
 kind: Migration
-source: {context: prod}
-adopt: {enabled: true}
-output:
-  tool: argocd
-  repo: {url: https://github.com/acme/prod-gitops.git}
-environments:
-  - name: prod
-    cluster: {context: prod}
+metadata: {name: prod-takeover}
+spec:
+  source: {context: prod}
+  adopt: {enabled: true}
+  output:
+    tool: argocd
+    repo: {url: https://github.com/acme/prod-gitops.git}
+  environments:
+    - name: prod
+      cluster: {context: prod}
 ```

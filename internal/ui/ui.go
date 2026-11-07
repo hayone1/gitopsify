@@ -204,3 +204,12 @@ func (u *UI) Input(title, description, placeholder string, value *string, valida
 	}
 	return run(u.form(huh.NewGroup(in)))
 }
+
+// Password asks for a secret without echoing it.
+func (u *UI) Password(title, description string, value *string, validate func(string) error) error {
+	in := huh.NewInput().Title(title).Description(description).EchoMode(huh.EchoModePassword).Value(value)
+	if validate != nil {
+		in = in.Validate(validate)
+	}
+	return run(u.form(huh.NewGroup(in)))
+}

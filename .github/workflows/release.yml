@@ -17,11 +17,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # "go install github.com/hayone1/gitopsify/cmd/gitopsify@<tag>" refuses
+      # modules with replace directives. During development go.mod points the
+      # SDK at ./sdk; a release must require a tagged sdk/vX.Y.Z instead (see
+      # docs/development.md).
+      - name: No replace directives
+        run: |
+          if go mod edit -json | jq -e '.Replace // [] | length > 0' >/dev/null; then
+            echo "::error::go.mod has replace directives; tag sdk/vX.Y.Z and require it before releasing"
+            exit 1
+          fi
       - uses: goreleaser/goreleaser-action@v6
         with:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # sdk/vX.Y.Z tags can point at the same commit; release this tag.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 
   # Installs the release just published the way users do, on every platform.
   verify-install:

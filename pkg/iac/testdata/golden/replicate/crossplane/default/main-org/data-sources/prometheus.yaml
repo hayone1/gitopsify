@@ -1,0 +1,23 @@
+apiVersion: oss.grafana.m.crossplane.io/v1alpha1
+kind: DataSource
+metadata:
+  name: prometheus
+  namespace: grafana-main-org
+  labels:
+    gitopsify.io/provider: grafana
+spec:
+  forProvider:
+    isDefault: true
+    jsonDataEncoded: '{"httpMethod":"POST","timeInterval":"${interval}"}'
+    name: Prometheus
+    type: prometheus
+    uid: prom
+    url: http://prometheus:9090
+  managementPolicies:
+    - Observe
+    - Create
+    - Update
+    - Delete
+  providerConfigRef:
+    kind: ClusterProviderConfig
+    name: grafana-main-org

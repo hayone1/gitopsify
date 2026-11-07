@@ -1,0 +1,23 @@
+apiVersion: oss.grafana.m.crossplane.io/v1alpha1
+kind: Dashboard
+metadata:
+  name: home
+  namespace: grafana-main-org
+  labels:
+    gitopsify.io/provider: grafana
+  annotations:
+    crossplane.io/external-name: 1:home
+spec:
+  forProvider:
+    configJson: |
+      {
+        "uid": "home",
+        "title": "Home"
+      }
+  managementPolicies:
+    - Observe
+    - Create
+    - Update
+  providerConfigRef:
+    kind: ClusterProviderConfig
+    name: grafana-main-org

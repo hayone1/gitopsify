@@ -60,6 +60,21 @@ gitopsify bootstrap --env uat --wait     # install Argo CD and let it sync
 [Getting started](docs/getting-started.md) walks through a whole migration, and
 [examples](docs/examples.md) has recipes for most situations.
 
+## Beyond Kubernetes: Grafana and other tools
+
+Providers read other tools and `gitopsify export` writes Terraform or Crossplane
+that manages what they hold: a Grafana with three organizations becomes three
+Terraform workspaces (or Kustomizations) whose first plan imports everything
+and changes nothing.
+
+```sh
+gitopsify provider install grafana
+gitopsify export                         # asks; or: gitopsify export grafana --no-input
+```
+
+More in [docs/providers.md](docs/providers.md); to support another tool, see
+[docs/writing-providers.md](docs/writing-providers.md).
+
 ## With an AI coding agent
 
 gitopsify ships skills that guide Claude Code, Codex, Gemini CLI, Cursor or
@@ -89,11 +104,13 @@ More in [docs/ai-agents.md](docs/ai-agents.md).
 | [Environments and transforms](docs/environments.md) | uat, prod and what differs between them |
 | [Argo CD, Flux or plain Kustomize](docs/gitops-tools.md) | What gets generated and how to bootstrap |
 | [Taking over a running cluster](docs/takeover.md) | GitOps for the cluster you already have |
+| [Grafana and other tools](docs/providers.md) | Terraform and Crossplane from a tool's live state |
+| [Writing a provider](docs/writing-providers.md) | Support another tool |
 | [AI agents](docs/ai-agents.md) | Skills and plugins |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and answers |
 | [Configuration reference](docs/configuration.md) | Every field of `gitopsify.yaml` |
 | [Command reference](docs/commands.md) | Every command and flag |
-| [Design](docs/DESIGN.md) · [Development](docs/development.md) | For contributors |
+| [Design](docs/DESIGN.md) · [Providers design](docs/DESIGN-providers.md) · [Development](docs/development.md) | For contributors |
 
 Example output for every mode, generated from [a real cluster](testdata/clusters/clickops.yaml),
 is in [testdata/golden](testdata/golden).

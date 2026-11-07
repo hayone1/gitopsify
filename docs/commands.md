@@ -11,9 +11,16 @@ Every command reads `./gitopsify.yaml` when it exists (or `--config`); flags ove
 | [`gitopsify check`](#gitopsify-check) | Preflight the target cluster: APIs, classes, existing owners, Helm records |
 | [`gitopsify diff`](#gitopsify-diff) | Show what the first sync would change in the target cluster |
 | [`gitopsify doctor`](#gitopsify-doctor) | Check that gitopsify can reach everything a migration needs |
+| [`gitopsify export`](#gitopsify-export) | Turn a tool's live state (Grafana, ...) into Terraform or Crossplane |
 | [`gitopsify generate`](#gitopsify-generate) | Write the GitOps repository |
 | [`gitopsify init`](#gitopsify-init) | Describe a migration in gitopsify.yaml (interactive on a terminal) |
 | [`gitopsify migrate`](#gitopsify-migrate) | Generate, push, check and bootstrap in one go |
+| [`gitopsify provider`](#gitopsify-provider) | Find, install and inspect providers (Grafana, ...) for gitopsify export |
+| [`gitopsify provider info`](#gitopsify-provider-info) | Show what a provider reads and what it needs to connect |
+| [`gitopsify provider install`](#gitopsify-provider-install) | Install or upgrade a provider from its GitHub releases |
+| [`gitopsify provider list`](#gitopsify-provider-list) | List the providers gitopsify can run |
+| [`gitopsify provider remove`](#gitopsify-provider-remove) | Uninstall a provider |
+| [`gitopsify provider search`](#gitopsify-provider-search) | Search the provider index |
 | [`gitopsify rules`](#gitopsify-rules) | List the built-in exclusion rules |
 | [`gitopsify scan`](#gitopsify-scan) | Inventory the source cluster: what would be migrated, how, and what is left out |
 | [`gitopsify skills`](#gitopsify-skills) | Install the gitopsify skills for AI coding agents (Claude Code, Codex, Gemini CLI, Cursor, Copilot) |
@@ -525,6 +532,67 @@ Usage: `gitopsify doctor [flags]`
 | `--target-token-file` |  | file with a bearer token for the target cluster |
 
 
+## gitopsify export
+
+Turn a tool's live state (Grafana, ...) into Terraform or Crossplane.
+
+```text
+Reads what a tool holds through a provider (see "gitopsify provider") and writes
+it as Terraform and/or Crossplane configuration: one Terraform root module and
+one Kustomization per instance and partition (Grafana organization, Keycloak
+realm, ...), with stable names, files for big JSON documents, and secrets kept
+out of Git.
+
+By default the configuration adopts the objects that were read: Terraform gets
+import blocks and Crossplane objects get external names, so the first plan
+changes nothing and deleting the configuration never deletes the objects.
+--no-adopt writes configuration that creates them in another instance instead.
+
+On a terminal, export asks for what flags and the export file don't say, and
+offers to save the answers to gitopsify-<provider>.yaml. In CI, run it with
+--no-input: it reads that file, takes credentials from the environment, and
+fails if the provider couldn't read everything (unless --allow-partial).
+
+Exporting again into the same directory updates what changed in the tool. Names
+stay stable across renames, and objects that are no longer exported get
+Terraform "removed" blocks that forget them without destroying them.
+```
+
+Usage: `gitopsify export [provider] [flags]`
+
+```sh
+  gitopsify export                                   # wizard
+  gitopsify export grafana --to terraform --partition main-org
+  GRAFANA_URL=https://grafana.example.com GRAFANA_AUTH=admin:secret \
+    gitopsify export grafana --no-input --kind Folder,Dashboard
+  gitopsify export grafana --include 'Dashboard/main-org/kubernetes-*' --dry-run
+  gitopsify export --no-input                        # replays gitopsify-<provider>.yaml
+```
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--allow-partial` |  | write even if the provider couldn't read everything, keeping the previous files of what it couldn't read |
+| `--dry-run` |  | read and show what would be written, without writing |
+| `--exclude` |  | leave out objects matching Kind/partition/name (globs) (repeatable) |
+| `--force` |  | write into a non-empty directory that holds no earlier export |
+| `--include` |  | export only objects matching Kind/partition/name (globs; plus what they reference) (repeatable) |
+| `--index` |  | provider index: a URL or a file |
+| `--install` |  | install the provider (the version the export file pins) if it's missing |
+| `--kind` |  | export only these kinds (default: the provider's default kinds) |
+| `--no-adopt` |  | write configuration that creates the objects (no import blocks or external names) |
+| `--no-deps` |  | with --include, don't pull in referenced objects |
+| `-o`, `--output` |  | output directory (default ./<provider>) |
+| `--partition` |  | export only these partitions (organizations, realms...): names, IDs or globs (repeatable) |
+| `--prune` |  | stop managing objects exported before that the selection now leaves out (Terraform forgets them; their Crossplane files are removed) |
+| `--save` |  | save the choices to the export file (gitopsify-<provider>.yaml) |
+| `--secret-values` |  | secret values the tool returns: skip (variables/Secrets you fill in) or local (written to git-ignored files) |
+| `--set` |  | connection setting: name=value, or instance.name=value with several instances (repeatable; see gitopsify provider info) |
+| `--timeout` | `30m0s` | give up reading after this long |
+| `--to` |  | formats to write: terraform, crossplane (default: all the provider supports) |
+
+
 ## gitopsify generate
 
 Write the GitOps repository.
@@ -681,6 +749,10 @@ Writes gitopsify.yaml. On a terminal it asks for the source cluster, the
 namespaces, the GitOps tool and pattern, the environments and the Secret
 strategy; otherwise (or with --no-input) it uses the flags. Every other command
 reads gitopsify.yaml from the current directory.
+
+The file is a Kubernetes-style resource (apiVersion, kind, metadata, spec).
+--file picks the syntax by extension: .json for JSON, .hcl for HCL, YAML
+otherwise.
 ```
 
 Usage: `gitopsify init [flags]`
@@ -920,6 +992,101 @@ Usage: `gitopsify migrate [flags]`
 | `--target-tls-server-name` |  | server name to verify the target cluster's API server certificate against |
 | `--target-token` |  | bearer token for the target cluster (or $GITOPSIFY_TARGET_TOKEN); never written to files |
 | `--target-token-file` |  | file with a bearer token for the target cluster |
+
+
+## gitopsify provider
+
+Find, install and inspect providers (Grafana, ...) for gitopsify export.
+
+```text
+Providers read the state of a tool, such as Grafana, so "gitopsify export" can
+write it as Terraform or Crossplane configuration. Each provider is a separate
+program, gitopsify-provider-<name>, published in its own repository.
+
+Install one by name from the provider index, or by its GitHub source
+(owner/name) when it isn't listed. Executables named gitopsify-provider-<name>
+on your PATH work too, which is handy when you develop one.
+```
+
+```sh
+  gitopsify provider search
+  gitopsify provider install grafana
+  gitopsify provider info grafana
+  gitopsify export grafana
+```
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--index` |  | provider index: a URL or a file (default: the published index, or $GITOPSIFY_PROVIDER_INDEX) |
+
+
+## gitopsify provider info
+
+Show what a provider reads and what it needs to connect.
+
+Usage: `gitopsify provider info <name> [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--format` | `table` | output format: table, json or yaml |
+
+
+## gitopsify provider install
+
+Install or upgrade a provider from its GitHub releases.
+
+```text
+Downloads a provider release for this machine, checks it against the release's
+checksums, makes sure it runs, and installs it into the providers directory
+($GITOPSIFY_PROVIDERS_DIR to change it). Without a version it installs the latest
+release. GITHUB_TOKEN (or GH_TOKEN) is used when set: for private repositories
+and to avoid GitHub's rate limits.
+```
+
+Usage: `gitopsify provider install <name|owner/name>[@version] [flags]`
+
+```sh
+  gitopsify provider install grafana
+  gitopsify provider install grafana@v0.1.0
+  gitopsify provider install acme/keycloak
+```
+
+
+## gitopsify provider list
+
+List the providers gitopsify can run.
+
+Usage: `gitopsify provider list [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--format` | `table` | output format: table, json or yaml |
+
+
+## gitopsify provider remove
+
+Uninstall a provider.
+
+Usage: `gitopsify provider remove <name> [flags]`
+
+
+## gitopsify provider search
+
+Search the provider index.
+
+Usage: `gitopsify provider search [term] [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--format` | `table` | output format: table, json or yaml |
 
 
 ## gitopsify rules

@@ -113,7 +113,10 @@ Typical flow:
   gitopsify diff --env uat             # what the first sync would change
   gitopsify bootstrap --env uat        # install Argo CD/Flux and apply the root object
 
-or all at once: gitopsify migrate`,
+or all at once: gitopsify migrate
+
+Other tools (Grafana, ...) become Terraform or Crossplane configuration through
+providers: gitopsify provider search, then gitopsify export <provider>.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       versionString(),
@@ -122,6 +125,7 @@ or all at once: gitopsify migrate`,
 	root.AddGroup(
 		&cobra.Group{ID: "migrate", Title: "Migration:"},
 		&cobra.Group{ID: "target", Title: "Target cluster:"},
+		&cobra.Group{ID: "providers", Title: "Tools to Terraform and Crossplane:"},
 	)
 	for _, c := range []*cobra.Command{newInit(o), newScan(o), newGenerate(o), newMigrate(o)} {
 		c.GroupID = "migrate"
@@ -129,6 +133,10 @@ or all at once: gitopsify migrate`,
 	}
 	for _, c := range []*cobra.Command{newCheck(o), newDiff(o), newAdopt(o), newBootstrap(o), newStatus(o)} {
 		c.GroupID = "target"
+		root.AddCommand(c)
+	}
+	for _, c := range []*cobra.Command{newExport(o), newProvider(o)} {
+		c.GroupID = "providers"
 		root.AddCommand(c)
 	}
 	root.AddCommand(newRules(o), newDoctor(o), newSkills(o), newVersion(), newGenDocs(o))
