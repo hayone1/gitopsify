@@ -155,9 +155,7 @@
   },
   "hashes": {
     ".gitignore": "4e1a965c310519c38f70ebc3793b38b80f3edaef9043fb05f03f0e0579b4ae2b",
-    ".secrets/crossplane/default/main-org/contactpoint-on-call.yaml": "e848959fabb5aef938b185d3a3839ab6e279d505eb6950545ca57224dceda4fb",
-    ".secrets/crossplane/setup/grafana-default-credentials.yaml": "710df4dda72ec6cca9df77bae2d5e739a21998830d66ebec3e8028087bebe7f8",
-    "EXPORT_REPORT.md": "1b0a126f7213028bb8571af576a44bc67dcf090548c281a09ed92ef44b72663f",
+    "EXPORT_REPORT.md": "4234aab40a74ec9fa25370316601efecdc59ec5ddc0dc95b338fa1cb5ba78e7e",
     "crossplane/README.md": "41789a9789d397f1fe1001c969b052cb89e716e694a6dd4455c18bad5ea1b915",
     "crossplane/default/main-org/contact-points/on-call.yaml": "2e69bbe3421b8275749027d62ef928ce0d5769eaa5e037a1528fc8c3dec18113",
     "crossplane/default/main-org/dashboards/home.yaml": "b6c5651d223da271b211ec792e7282a6b0163325fc8b571349ba90e330600df4",
@@ -176,7 +174,6 @@
     "crossplane/setup/kustomization.yaml": "219e3359fc6f17c734ceedfb40e40e5207e502756026de3545a99ef60f41dc14",
     "crossplane/setup/provider.yaml": "c027f30f6651180cb2eb5bcc03b4d77ca3bd88736d1508a036886a419b8a4246",
     "terraform/README.md": "77da611abf7b86fd08d88f1c555b929790298efa8d7eaeb55a54f8926ec331d9",
-    "terraform/default/main-org/contact_points.secrets.auto.tfvars": "247cac42851f9c742422798badd1bb9b3a6a4c94b87361c1bd3442f29585a9ac",
     "terraform/default/main-org/contact_points.tf": "5487fc40ca798d5f0fb0233910fec163233764fc4dcf38339b8f4269781f1466",
     "terraform/default/main-org/dashboards.tf": "6aab1a227622c9720e81e6811b7bf31d2e15c524a12c7309f7865707432fcdaa",
     "terraform/default/main-org/dashboards/general/home.json": "865765cd525a351bc81e02a90bc3288333b8a130e000192f7b35ed0a16450a6f",

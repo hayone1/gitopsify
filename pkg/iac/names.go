@@ -29,8 +29,9 @@ type State struct {
 	// Files owned by each output unit: format → workspace ID → kind ("" for
 	// the workspace's own files) → paths relative to the output directory.
 	Files map[string]map[string]map[string][]string `json:"files"`
-	// Hashes holds the SHA-256 of every file the export wrote, to tell hand
-	// edits apart (and, later, to merge them).
+	// Hashes holds the SHA-256 of every file the export wrote, except the
+	// git-ignored secret files, to tell hand edits apart (and, later, to
+	// merge them).
 	Hashes map[string]string `json:"hashes,omitempty"`
 	// Retired holds old addresses of objects that changed kind, partition or
 	// Terraform type: they keep their removed blocks and reserved names.

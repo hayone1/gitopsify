@@ -21,10 +21,9 @@ These objects are managed some other way, or can't be expressed as configuration
 
 ## Secrets left out
 
-These secret values aren't in the output. Add them by hand if the configuration should manage them; until then the first plan stays clean.
+These secret values aren't in the output. Add them by hand if the configuration should manage them, in files of your own (gitopsify rewrites its `*.secrets.auto.tfvars` and `.secrets/` on every export); until then the first plan stays clean.
 
-- DataSource "Prometheus" (default / Main Org.): secure_json_data_encoded (basicAuthPassword)
-- DataSource "Prometheus" (default / Main Org.): secure_json_data_encoded: the tool doesn't return this secret
+- DataSource "Prometheus" (default / Main Org.): secure_json_data_encoded (basicAuthPassword): the tool doesn't return this secret
 
 ## Terraform variables to set
 

@@ -383,3 +383,67 @@ func unescapeHTML(b []byte) []byte {
 	}
 	return out
 }
+
+// Summary returns r as discover sends it when the request asks for
+// DetailSummary: without attributes and Crossplane body, but with the keys of
+// the resources they reference added to DependsOn, so gitopsify still pulls in
+// what a picked object needs.
+func (r Resource) Summary() Resource {
+	seen := map[string]bool{}
+	deps := make([]string, 0, len(r.DependsOn))
+	for _, d := range r.DependsOn {
+		if !seen[d] {
+			seen[d] = true
+			deps = append(deps, d)
+		}
+	}
+	var refs []string
+	for _, body := range []map[string]any{r.Attributes, r.Crossplane} {
+		collectRefs(asSent(body), &refs)
+	}
+	sort.Strings(refs)
+	for _, k := range refs {
+		if !seen[k] && k != r.Key {
+			seen[k] = true
+			deps = append(deps, k)
+		}
+	}
+	if len(deps) == 0 {
+		deps = nil
+	}
+	r.Attributes, r.Crossplane, r.DependsOn = nil, nil, deps
+	return r
+}
+
+// asSent returns v as gitopsify decodes it, so markers inside typed Go
+// values ([]map[string]any, map[string]sdk.RefValue, structs) are found too.
+func asSent(v map[string]any) any {
+	if v == nil {
+		return nil
+	}
+	b, err := marshal(v)
+	if err != nil {
+		return v
+	}
+	d, err := DecodeValue(b)
+	if err != nil {
+		return v
+	}
+	return d
+}
+
+// collectRefs appends the keys of the $ref markers in v.
+func collectRefs(v any, out *[]string) {
+	switch t := v.(type) {
+	case RefValue:
+		*out = append(*out, t.Ref)
+	case map[string]any:
+		for _, e := range t {
+			collectRefs(e, out)
+		}
+	case []any:
+		for _, e := range t {
+			collectRefs(e, out)
+		}
+	}
+}

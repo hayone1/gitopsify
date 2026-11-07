@@ -7,9 +7,31 @@ per partition, Terraform and Crossplane output, adoption, references, secrets
 kept out of Git, safe re-exports and the report.
 [DESIGN-providers.md](DESIGN-providers.md) explains why it works this way.
 
-The reference provider is
-[gitopsify-provider-grafana](https://github.com/hayone1/gitopsify-provider-grafana);
-copy its layout.
+Three pieces, like Terraform's and Crossplane's:
+
+| | gitopsify | Terraform | Crossplane |
+|---|---|---|---|
+| SDK | [`github.com/hayone1/gitopsify/sdk`](../sdk) | terraform-plugin-framework | crossplane-runtime, Upjet |
+| Template | [gitopsify-provider-template](https://github.com/hayone1/gitopsify-provider-template) | terraform-provider-scaffolding-framework | upjet-provider-template |
+| Reference provider | [gitopsify-provider-grafana](https://github.com/hayone1/gitopsify-provider-grafana) | | |
+
+## Start from the template
+
+```sh
+gh repo create acme/gitopsify-provider-keycloak --template hayone1/gitopsify-provider-template --public --clone
+cd gitopsify-provider-keycloak
+go run ./tools/prepare -name keycloak -title Keycloak
+make test
+```
+
+The template is a working provider for a made-up notes app with tests,
+release workflows and agent instructions (`AGENTS.md`). `prepare` renames it.
+Then replace the notes app with your tool, file by file: `describe.go`
+(settings, kinds, upstream providers), `client.go`, `provider.go` (`Check`)
+and `read.go` (one reader per kind). `make upstream` fetches the pinned
+Terraform schema and Crossplane CRDs that the tests validate against;
+`make record` records your tool's answers for them. The rest of this page
+explains the contract the template follows.
 
 ## The contract
 
@@ -142,7 +164,8 @@ And:
   export's files for that scope instead of treating its objects as deleted.
 - Honour `req.Scope` (partitions, kinds, keys) to avoid reading what isn't
   needed, and `req.Detail == sdk.DetailSummary` (keys, names and `DependsOn`,
-  no attributes) so people can pick objects quickly.
+  no attributes) so people can pick objects quickly: send `res.Summary()`,
+  which drops the attributes and keeps what they reference.
 
 What makes the first plan clean:
 
@@ -163,14 +186,15 @@ What makes the first plan clean:
    sdktest.Conformance(t, provider.New(), sdk.Request{Settings: map[string]string{"url": srv.URL}})
    ```
 2. **Upstream schemas**: keep `terraform providers schema -json` (trimmed to
-   your types) and the Crossplane CRDs of the pinned versions in `testdata/`,
-   and check every resource against them:
+   your types) and the Crossplane CRDs of the pinned versions in `testdata/`
+   (`make upstream` fetches both), and check every resource against them:
    ```go
    sdktest.ValidateTerraform(schema, d, inv)   // names, types, blocks, required, sensitive → Secret
    sdktest.ValidateCrossplane(crds, d, inv)    // derived fields, *Ref / *SecretRef names, types
    ```
 3. **Real answers**: record what the real tool returns and replay it in unit
-   tests (the Grafana provider records with `GITOPSIFY_GRAFANA_RECORD=dir`).
+   tests (`make record` in the template; the Grafana provider records with
+   `GITOPSIFY_GRAFANA_RECORD=dir`).
 4. **Live**: the real tool in Docker, `gitopsify export`, `terraform plan`
    (imports only), `apply`, `plan` again (no changes), and Crossplane objects
    that become Ready and Synced while observing and while managing, without
@@ -194,7 +218,8 @@ Publish GitHub releases with archives named
 `gitopsify-provider-<name>_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows)
 and a checksums file: GoReleaser's defaults with `project_name:
 gitopsify-provider-<name>`. The Grafana provider's `.goreleaser.yaml` is a
-starting point. Build for linux, darwin and windows on amd64 and arm64.
+starting point (the template has it). Build for linux, darwin and windows
+on amd64 and arm64.
 
 Until the SDK has tagged releases, build against a checkout
 (`replace github.com/hayone1/gitopsify/sdk => ../gitopsify/sdk`); require a

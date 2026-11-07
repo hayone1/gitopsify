@@ -2,10 +2,12 @@
 
 State as of 2026-11-07. Repo: https://github.com/hayone1/gitopsify (private;
 written to go public as is). Latest release: v0.1.1. `main` is committed,
-pushed and green. **Branch `providers` (local, nothing committed yet)** holds
-the provider system described below; the sibling repository
-`../gitopsify-provider-grafana` (local `git init`, nothing committed, no GitHub
-repository yet) holds the first provider.
+pushed and green. **Branch `providers`** (pushed; draft PR #1) holds the
+provider system described below. Sibling repositories:
+`../gitopsify-provider-grafana` (github.com/hayone1/gitopsify-provider-grafana,
+private) holds the first provider; `../gitopsify-provider-template`
+(github.com/hayone1/gitopsify-provider-template, private, a GitHub template
+repository) is the starting point for new providers.
 
 ## What it is
 Go CLI (cobra + Charm huh/lipgloss) that turns a running cluster (or a
@@ -46,6 +48,15 @@ guide `docs/writing-providers.md`.
   (shared with pkg/iac).
 - `internal/cli/export.go` (wizard + CI path), `provider.go` (list, search,
   install, remove, info). User-facing skill `skills/gitopsify-export`.
+- SDK + template + reference provider, like Terraform/Crossplane (D13):
+  `sdk/` (incl. `Resource.Summary()` for summary discovers), the template repo
+  (made-up notes provider, `go run ./tools/prepare -name X` renames it and
+  deletes itself, `make upstream` = tools/upstream fetches the pinned
+  Terraform schema via terraform and the CRDs from the Crossplane package's
+  package.yaml via crane, `make record`, CI/release, AGENTS.md). The Grafana
+  repo has the same tools/upstream (keep the two copies in sync).
+- `.gitopsify/export.json` hashes every file written except the git-ignored
+  secret files (a hash would let readers check guessed secrets offline).
 - Maintainer agent files: `CLAUDE.md`, `.claude/skills/session-handoff`.
 
 ## Where things are
@@ -117,6 +128,19 @@ guide `docs/writing-providers.md`.
   as defaults; v0.1 files without metadata.name take it from --context;
   Migration validation messages don't say `spec.`.
 
+- Template and fixes (later the same day): template tests (conformance,
+  upstream validation, scopes, summary, errors, recording), `prepare` run on
+  a copy with an origin remote then `make lint test build` (no template names
+  left), the template provider driven through the real `gitopsify export`
+  against a fake API (35 files, report correct), `tools/upstream` run for
+  real against grafana/grafana and provider-grafana v2.17.0 (same content as
+  the hand-captured testdata, which it now regenerates). Found and fixed on
+  the way: a secret the tool doesn't return was listed twice in
+  EXPORT_REPORT.md; export.json held hashes of secret files (GitGuardian
+  flagged one on PR #1: a false positive as a secret, but a real offline
+  guessing leak); the pkg/iac golden secret fixtures were never committed
+  (git-ignored; `make golden` now force-adds them).
+
 ## Day to day (providers)
 ```sh
 go build -o bin/gitopsify ./cmd/gitopsify && (cd ../gitopsify-provider-grafana && make build)
@@ -131,7 +155,7 @@ cd ../gitopsify-provider-grafana && make live   # Terraform + OpenTofu + Crosspl
 ## Day to day
 ```sh
 make build test lint      # always run make lint before committing
-make golden               # after intended output changes (git add -f .secrets fixtures)
+make golden               # after intended output changes, migrations and exports (git add -f secret fixtures)
 make docs                 # regenerates docs/commands.md + docs/gitopsify.schema.json
 make e2e-vm               # kind suite on a Hetzner cx33 (~40 min), STAGES=/SKIP=
 make live                 # 3x k3s + private GitHub repo hayone1/gitopsify-e2e-live (~40 min)
@@ -210,7 +234,8 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   delimiters (`PYEOF`, `GOEOF`).
 
 ## Gotchas
-- Golden `.gitignore`s ignore `.secrets/`; `make golden` force-adds fixtures.
+- Golden `.gitignore`s ignore `.secrets/` and `*.secrets.auto.tfvars`; `make golden`
+  force-adds them (`git add -A` doesn't: that broke CI on PR #1).
 - Pinned defaults: Argo CD v3.5.6, Flux v2.9.6 (`pkg/config/defaults.go`).
 - Argo CD 3 doesn't store resource health in Applications (status inspects
   resources itself). k8s 1.37 bumps `generation` on annotation changes (judge
@@ -220,17 +245,25 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
 - New Docker Hub repos are public on free accounts.
 
 ## Open / next (providers), in order
-1. Commit the `providers` branch and the provider repository (nothing is
-   committed yet), create github.com/hayone1/gitopsify-provider-grafana, push.
-2. Tag `sdk/v0.1.0`, require it (drop the replace directives in both repos),
+1. Decide visibility: while hayone1/gitopsify is private, the provider and
+   template repos' CI can't check out the SDK (`github.token` can't read
+   another private repo; fails with "Not Found") and `go get` of the SDK
+   needs auth. Either make gitopsify public or add a `GITOPSIFY_READ_TOKEN`
+   secret (fine-grained, contents:read on gitopsify) to both repos. Their CI
+   also needs the SDK on gitopsify's default branch (merge PR #1 first).
+2. PR #1: GitGuardian incident 39798306 is a false positive (a SHA-256 file
+   hash in an old golden export.json, since removed); mark it so in the
+   GitGuardian dashboard, or squash-merge so main never holds it.
+3. Merge PR #1, tag `sdk/v0.1.0`, require it (drop the replace directives
+   and the gitopsify checkout step in the provider and template repos),
    release the provider v0.1.0, add its `repoId` to `providers/index.yaml`,
    then release gitopsify.
-3. Continuous use: three-way merge of re-exports with hand edits (the base
+4. Continuous use: three-way merge of re-exports with hand edits (the base
    is in export.json's file hashes), then a `gitopsify sync` loop or a
    controller reconciling `Export` resources (DESIGN-providers §11).
-4. Grafana provider: more contact point integrations, Grafana 13 v2
+5. Grafana provider: more contact point integrations, Grafana 13 v2
    dashboards (`grafana_apps_dashboard_*`), users/SSO (instance-wide).
-5. Signature verification of provider releases (artifact attestations).
+6. Signature verification of provider releases (artifact attestations).
 
 ## Open / next
 - Make the repo public (`gh repo edit hayone1/gitopsify --visibility public`);

@@ -174,7 +174,15 @@ func (r *Result) Write(dir string, force bool) (written, removed []string, err e
 					return written, removed, err
 				}
 			}
-			r.State.Hashes[p] = hashOf(data)
+			if u.secret[p] {
+				// No hash of a secret file in the tracked state: it would let
+				// anyone who can read the repository check guesses of the
+				// secrets offline. Secret files are rewritten from the tool on
+				// every export, so they need no hand-edit detection.
+				delete(r.State.Hashes, p)
+			} else {
+				r.State.Hashes[p] = hashOf(data)
+			}
 			written = append(written, p)
 		}
 		if k.format != "" {

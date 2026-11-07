@@ -97,7 +97,11 @@ func renderCrossplane(res *Result, in Input, workspaces []*workspace, byKey map[
 					return err
 				}
 				for _, o := range omitted {
-					rep.MissingSecrets = appendUnique(rep.MissingSecrets, fmt.Sprintf("%s %q (%s): %s: %s", kind.Name, r.r.Name, w.title(), o.Path, o.Reason))
+					reason := o.Reason
+					if o.Secret.Value == nil {
+						reason = secretNotReturned
+					}
+					rep.leaveOut(kind, w, r.r, o.Path, o.Secret, reason)
 				}
 				meta := map[string]any{
 					"name": r.state.Crossplane, "namespace": w.namespace,

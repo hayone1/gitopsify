@@ -187,7 +187,7 @@ func renderTerraformKind(res *Result, in Input, w *workspace, kind *sdk.Kind, by
 			},
 			secret: func(p string, s sdk.SecretValue) (hclwrite.Tokens, bool) {
 				if s.Value == nil {
-					rep.MissingSecrets = append(rep.MissingSecrets, fmt.Sprintf("%s %q (%s): %s%s", kind.Name, r.r.Name, w.title(), p, describe(s.Description)))
+					rep.leaveOut(kind, w, r.r, p, s, secretNotReturned)
 					return nil, false
 				}
 				v := varNames.assign(truncate(short+"_"+name+"_"+s.Secret, 120, "_"), r.r.Key+p)
@@ -280,7 +280,7 @@ func renderTerraformKind(res *Result, in Input, w *workspace, kind *sdk.Kind, by
 		u.add(base+"/"+fileName, hclwrite.Format(f.Bytes()), false)
 	}
 	if len(tfvars) > 0 {
-		u.add(base+"/"+kindFileBase(kind)+SecretTFVarsSuffix, []byte("# Secret values read from "+in.Description.Title+". Never commit this file.\n"+strings.Join(tfvars, "")), true)
+		u.add(base+"/"+kindFileBase(kind)+SecretTFVarsSuffix, []byte("# Secret values read from "+in.Description.Title+". Never commit this file. gitopsify export\n# rewrites it: set other values in TF_VAR_ variables or a *.auto.tfvars file of your own.\n"+strings.Join(tfvars, "")), true)
 	}
 	return nil
 }

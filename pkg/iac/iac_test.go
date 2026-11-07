@@ -325,6 +325,20 @@ func TestSecretsStayOutOfTrackedFiles(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "terraform/default/main-org/contact_points"+SecretTFVarsSuffix)); err != nil {
 		t.Error("no tfvars for the Slack URL")
 	}
+	// The tracked state holds no hash of a secret file (it would let anyone
+	// check guesses of the secrets offline), but still knows the files.
+	st, err := LoadState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p := range st.Hashes {
+		if strings.HasPrefix(p, ".secrets/") || strings.HasSuffix(p, SecretTFVarsSuffix) {
+			t.Errorf("export.json has a hash of the secret file %s", p)
+		}
+	}
+	if !strings.Contains(read(t, filepath.Join(dir, StateFile)), "contact_points"+SecretTFVarsSuffix) {
+		t.Error("export.json doesn't list the secret files it owns")
+	}
 }
 
 func TestWriteRefusesForeignDirectories(t *testing.T) {
@@ -439,3 +453,46 @@ func compareTrees(t *testing.T, want, got string) {
 
 // Keep encoding/json imported for fixtures that need numbers.
 var _ = json.Number("1")
+
+// TestMissingSecretListedOnce: a secret neither format can write (the tool
+// doesn't return it) is one line of the report, with its description, and
+// one line per object even when objects share a name.
+func TestMissingSecretListedOnce(t *testing.T) {
+	inv := inventory()
+	inv.Resources = append(inv.Resources,
+		// Same display name as datasource/1/prom, its own secret.
+		sdk.Resource{Key: "datasource/1/prom2", Kind: "DataSource", Partition: "1", Name: "Prometheus", ImportID: "1:prom2", Attributes: map[string]any{
+			"name": "Prometheus", "type": "prometheus", "uid": "prom2",
+			"secure_json_data_encoded": sdk.Secret("secure_json_data", nil, "secureJsonDataEncodedSecretRef", "basicAuthPassword")}},
+		// Terraform writes it; Crossplane has no secret reference for it.
+		sdk.Resource{Key: "datasource/1/loki", Kind: "DataSource", Partition: "1", Name: "Loki", ImportID: "1:loki", Attributes: map[string]any{
+			"name": "Loki", "type": "loki", "uid": "loki",
+			"http_headers": sdk.Secret("http_headers", map[string]string{"X-Key": "k"}, "", "headers")}},
+		// Not returned, inside a block.
+		sdk.Resource{Key: "contactpoint/1/pager", Kind: "ContactPoint", Partition: "1", Name: "Pager", ImportID: "1:pager", Attributes: map[string]any{
+			"name":  "Pager",
+			"slack": []any{map[string]any{"url": sdk.Secret("url", nil, "urlSecretRef", "Slack webhook URL")}}}},
+	)
+	res, _, _ := export(t, t.TempDir(), inv, Options{Adopt: true})
+	count := func(sub string) int {
+		n := 0
+		for _, m := range res.Report.MissingSecrets {
+			if strings.Contains(m, sub) {
+				n++
+			}
+		}
+		return n
+	}
+	if n := count(`DataSource "Prometheus" (default / Main Org.): secure_json_data_encoded (basicAuthPassword): the tool doesn't return this secret`); n != 2 {
+		t.Errorf("same-named data sources: %d lines, want 2: %q", n, res.Report.MissingSecrets)
+	}
+	if n := count(`DataSource "Loki" (default / Main Org.): http_headers (headers): Crossplane: the Crossplane resource has no secret reference for it`); n != 1 {
+		t.Errorf("crossplane-only: %d lines: %q", n, res.Report.MissingSecrets)
+	}
+	if n := count(`ContactPoint "Pager"`); n != 1 {
+		t.Errorf("secret in a block: %d lines: %q", n, res.Report.MissingSecrets)
+	}
+	if len(res.Report.MissingSecrets) != 4 {
+		t.Errorf("missing secrets: %q", res.Report.MissingSecrets)
+	}
+}

@@ -22,6 +22,8 @@ type Report struct {
 	Skipped []string
 	// MissingSecrets are secret attributes left out of the output.
 	MissingSecrets []string
+	// missing identifies the secrets in MissingSecrets (see leaveOut).
+	missing map[string]bool
 	// Variables are Terraform variables that need values.
 	Variables []string
 	// Secrets are Kubernetes Secrets that need to be created.
@@ -45,6 +47,32 @@ type WorkspaceReport struct {
 	Gone int
 	// Incomplete lists kinds that weren't read completely ("*": all).
 	Incomplete []string
+}
+
+// secretNotReturned is why a secret whose value the tool doesn't return is
+// left out.
+const secretNotReturned = "the tool doesn't return this secret"
+
+// leaveOut records a secret left out of the output: once per object and
+// secret, though both formats may leave it out (under different paths: an
+// explicit Crossplane body uses Crossplane's field names). reason is
+// secretNotReturned or why Crossplane couldn't write it.
+func (r *Report) leaveOut(kind *sdk.Kind, w *workspace, res *sdk.Resource, path string, s sdk.SecretValue, reason string) {
+	id := w.id + "\x00" + res.Key + "\x00" + s.Secret
+	if s.Secret == "" {
+		id += "\x00" + path
+	}
+	if r.missing == nil {
+		r.missing = map[string]bool{}
+	}
+	if r.missing[id] {
+		return
+	}
+	r.missing[id] = true
+	if reason != secretNotReturned {
+		reason = "Crossplane: " + reason
+	}
+	r.MissingSecrets = append(r.MissingSecrets, fmt.Sprintf("%s %q (%s): %s%s: %s", kind.Name, res.Name, w.title(), path, describe(s.Description), reason))
 }
 
 // Total is the number of resources exported.
@@ -153,7 +181,7 @@ func reportMarkdown(r *Report, in Input) []byte {
 	}
 	section("Could not be read", "The provider couldn't read these, so the previous export's files for them were kept. Fix the cause and export again.", r.Warnings)
 	section("Left out on purpose", "These objects are managed some other way, or can't be expressed as configuration.", r.Skipped)
-	section("Secrets left out", "These secret values aren't in the output. Add them by hand if the configuration should manage them; until then the first plan stays clean.", r.MissingSecrets)
+	section("Secrets left out", "These secret values aren't in the output. Add them by hand if the configuration should manage them, in files of your own (gitopsify rewrites its `*.secrets.auto.tfvars` and `.secrets/` on every export); until then the first plan stays clean.", r.MissingSecrets)
 	section("Terraform variables to set", "These secrets are Terraform variables without values. Set them (for example as environment variables) before `terraform plan`, or export again with `--secret-values local` to have them written to git-ignored `*"+SecretTFVarsSuffix+"` files.", r.Variables)
 	section("Kubernetes Secrets to create", "The Crossplane objects reference these Secrets. Create them before applying, or export again with `--secret-values local` to have them written under `.secrets/`.", r.Secrets)
 	section("Notes", "What the provider says about particular objects.", r.Notes)

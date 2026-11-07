@@ -30,7 +30,7 @@
 make build     # bin/gitopsify
 make test      # unit, golden and CLI tests; needs kubectl and helm for the Kustomize build checks
 make lint      # go vet and gofmt
-make golden    # regenerate testdata/golden after an intended output change
+make golden    # regenerate the golden trees (migrations and exports) after an intended output change
 make docs      # regenerate docs/commands.md after changing a command or flag
 make e2e       # kind clusters on this machine: auth, round trip, plain, Argo CD, Flux, SOPS, takeover
 make e2e-vm    # the same suite on a throwaway Hetzner machine (needs TF_VAR_hcloud_token)

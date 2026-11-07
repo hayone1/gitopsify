@@ -1067,7 +1067,7 @@ func (r *exportRun) summary(res *iac.Result) {
 		r.u.Warn("%s exported before no longer: Terraform gets removed blocks (forget, don't destroy)", count(n, "object"))
 	}
 	if n := len(rep.MissingSecrets); n > 0 {
-		r.u.Warn("%s left out (the tool doesn't return them): listed in EXPORT_REPORT.md", count(n, "secret value"))
+		r.u.Warn("%s not in the output: listed in EXPORT_REPORT.md", count(n, "secret value"))
 	}
 	if n := len(rep.Large); n > 0 {
 		r.u.Warn("%s over 512 KiB: apply with server-side apply", count(n, "Crossplane object"))

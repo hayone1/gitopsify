@@ -25,6 +25,8 @@ type Resolver interface {
 type Omission struct {
 	Path   string
 	Reason string
+	// Secret is the secret left out.
+	Secret SecretValue
 }
 
 // ForProvider returns spec.forProvider for a resource of kind k: its explicit
@@ -162,10 +164,10 @@ func (d *deriver) refList(items []any) ([]any, string, bool) {
 func (d *deriver) secret(path string, s SecretValue) (map[string]any, bool) {
 	switch {
 	case s.Value == nil:
-		d.omitted = append(d.omitted, Omission{Path: path, Reason: "the tool doesn't return this secret"})
+		d.omitted = append(d.omitted, Omission{Path: path, Reason: "the tool doesn't return this secret", Secret: s})
 		return nil, false
 	case s.Crossplane == "":
-		d.omitted = append(d.omitted, Omission{Path: path, Reason: "the Crossplane resource has no secret reference for it"})
+		d.omitted = append(d.omitted, Omission{Path: path, Reason: "the Crossplane resource has no secret reference for it", Secret: s})
 		return nil, false
 	case d.res == nil:
 		return nil, false
@@ -187,7 +189,7 @@ func (d *deriver) value(path string, v any, rename bool) (any, bool, error) {
 	case RefValue:
 		return plainValue(t.Value), true, nil
 	case SecretValue:
-		d.omitted = append(d.omitted, Omission{Path: path, Reason: "secrets inside lists or maps can't be referenced"})
+		d.omitted = append(d.omitted, Omission{Path: path, Reason: "secrets inside lists or maps can't be referenced", Secret: t})
 		return nil, false, nil
 	case JSONValue:
 		b, err := CompactJSON(t.JSON)

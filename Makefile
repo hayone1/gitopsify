@@ -12,12 +12,14 @@ test:
 	go test ./...
 	cd sdk && go test ./...
 
-# Regenerate testdata/golden after an intended change of the output. The
-# golden trees contain generated .gitignore files that ignore .secrets/, so
-# those fixtures are added with git add -f.
+# Regenerate the golden trees (migrations: testdata/golden; exports:
+# pkg/iac/testdata/golden) after an intended change of the output. They
+# contain generated .gitignore files that ignore the secret files (.secrets/,
+# *.secrets.auto.tfvars), so those fixtures are added with git add -f.
 golden:
 	go test ./pkg/pipeline -run TestGolden -update
-	git add -f testdata/golden/*/.secrets
+	go test ./pkg/iac -run TestGolden -update
+	git add -f testdata/golden/*/.secrets pkg/iac/testdata/golden/*/.secrets pkg/iac/testdata/golden/*/terraform/*/*/*.secrets.auto.tfvars
 
 # Regenerate docs/commands.md and docs/gitopsify.schema.json after changing a
 # command, a flag or the configuration.

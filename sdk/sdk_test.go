@@ -278,3 +278,32 @@ func TestUnknownMarkerIsAnError(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestSummary(t *testing.T) {
+	r := sdk.Resource{
+		Key: "note/ops/n1", Kind: "Note", Name: "n1", ImportID: "ops/n1",
+		DependsOn: []string{"webhook/ops/w1", "webhook/ops/w1"},
+		Attributes: map[string]any{
+			"folder_id": sdk.Ref("folder/ops/f2", "id", "f2", "folderIdRef"),
+			"links":     []any{sdk.Ref("note/ops/n0", "id", "n0", ""), sdk.Ref("note/ops/n1", "id", "n1", "")},
+			"block":     []any{map[string]any{"owner": sdk.Ref("folder/ops/f1", "id", "f1", "")}},
+			// Typed Go containers serialize the same way.
+			"typed": []map[string]any{{"user": sdk.Ref("user/1", "id", "1", "")}},
+			"refs":  map[string]sdk.RefValue{"a": sdk.Ref("user/2", "id", "2", "")},
+		},
+		Crossplane: map[string]any{"extra": sdk.Ref("webhook/ops/w1", "id", "w1", "")},
+	}
+	s := r.Summary()
+	if s.Attributes != nil || s.Crossplane != nil || s.Key != r.Key || s.ImportID != r.ImportID {
+		t.Errorf("summary keeps the body or loses the rest: %+v", s)
+	}
+	if got := strings.Join(s.DependsOn, ","); got != "webhook/ops/w1,folder/ops/f1,folder/ops/f2,note/ops/n0,user/1,user/2" {
+		t.Errorf("dependsOn = %s", got)
+	}
+	if r.Attributes == nil || len(r.DependsOn) != 2 {
+		t.Errorf("Summary changed the original: %+v", r)
+	}
+	if s := (sdk.Resource{Key: "a"}).Summary(); s.DependsOn != nil {
+		t.Errorf("no references: dependsOn = %#v", s.DependsOn)
+	}
+}
