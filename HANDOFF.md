@@ -303,6 +303,10 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   `e2e-on-vm.sh destroy`.
 - Safety check in the agent shell: Python heredocs that contain shell-like
   test strings get blocked; write patch scripts to the scratchpad and run them.
+- Patch scripts that assert their anchors write nothing when one fails:
+  check their exit status and grep for the change before committing (a
+  round-8 commit once went out described but without its changes; a test
+  that ran too fast gave it away).
 - A heredoc delimiter inside a heredoc ends it early (an `EOF` in Python code
   inside `<<'EOF'` ran half the script as shell commands): use unique
   delimiters (`PYEOF`, `GOEOF`).
