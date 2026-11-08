@@ -23,4 +23,4 @@ providers:
     maturity: alpha
     outputs: [terraform, crossplane]
     maintainers: [hayone1]
-    # repoId: set once github.com/hayone1/gitopsify-provider-grafana exists
+    repoId: 1449686256

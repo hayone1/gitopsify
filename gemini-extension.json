@@ -1,6 +1,6 @@
 {
   "name": "gitopsify",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Migrate what runs in a Kubernetes cluster into a GitOps repository for Argo CD, Flux or Kustomize with the gitopsify CLI.",
   "contextFileName": "GEMINI.md"
 }
