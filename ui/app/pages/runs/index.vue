@@ -13,7 +13,7 @@ const status = ref((route.query.status as string) || 'all')
 const cluster = ref((route.query.cluster as string) || 'all')
 const search = ref('')
 
-const typeItems = [{ label: 'All types', value: 'all' }, { label: 'Migrations', value: 'migrate' }, { label: 'Scans', value: 'scan' }]
+const typeItems = [{ label: 'All types', value: 'all' }, { label: 'Migrations', value: 'migrate' }, { label: 'Scans', value: 'scan' }, { label: 'Exports', value: 'export' }]
 const statusItems = ['all', 'queued', 'running', 'succeeded', 'failed', 'canceled'].map(s => ({ label: s === 'all' ? 'Any status' : s, value: s }))
 const clusterItems = computed(() => [{ label: 'All clusters', value: 'all' }, ...clusters.value.map(c => ({ label: c.name, value: c.name }))])
 
@@ -47,7 +47,7 @@ onUnmounted(() => clearInterval(timer))
 
 const shown = computed(() => {
   const q = search.value.toLowerCase()
-  return q ? runs.value.filter(r => [r.name, r.id, r.createdBy, r.cluster].some(v => v?.toLowerCase().includes(q))) : runs.value
+  return q ? runs.value.filter(r => [r.name, r.id, r.createdBy, r.cluster, r.tool].some(v => v?.toLowerCase().includes(q))) : runs.value
 })
 </script>
 

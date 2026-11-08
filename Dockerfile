@@ -1,12 +1,23 @@
 # gitopsify with the tools it calls: git and ssh (generate --push), helm (diff
-# of Helm apps, the plain apply script) and kubectl.
+# of Helm apps, the plain apply script) and kubectl, and the web UI.
 #   docker run --rm -v ~/.kube:/home/gitopsify/.kube:ro -v "$PWD:/work" hayone/gitopsify scan
+#   docker run -p 8080:8080 -v ./server.yaml:/etc/gitopsify/server.yaml:ro hayone/gitopsify server
+# The web UI, built once for every platform (it's static files).
+FROM --platform=$BUILDPLATFORM node:26-alpine AS ui
+WORKDIR /ui
+RUN npm install -g pnpm@10.20.0 >/dev/null
+COPY ui/package.json ui/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --ignore-scripts
+COPY ui/ ./
+RUN pnpm exec nuxt prepare && pnpm generate
+
 FROM --platform=$BUILDPLATFORM golang:1.27 AS build
 ARG TARGETOS TARGETARCH VERSION=dev COMMIT="" DATE=""
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=ui /ui/.output/public/ web/dist/
 # The tagged SDK go.mod requires, as go install gets it (not go.work's ./sdk).
 ENV GOWORK=off
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
@@ -23,10 +34,13 @@ RUN apk add --no-cache curl \
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates git openssh-client \
- && adduser -D -u 10001 gitopsify
+ && adduser -D -u 10001 gitopsify \
+ && mkdir -p /var/lib/gitopsify /etc/gitopsify && chown gitopsify /var/lib/gitopsify
 COPY --from=tools /usr/local/bin/helm /usr/local/bin/kubectl /usr/local/bin/
 COPY --from=build /out/gitopsify /usr/local/bin/gitopsify
 USER gitopsify
 WORKDIR /work
+# gitopsify server listens here.
+EXPOSE 8080
 ENTRYPOINT ["gitopsify"]
 CMD ["--help"]

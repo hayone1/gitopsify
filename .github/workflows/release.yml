@@ -32,6 +32,12 @@ jobs:
             echo "::error::sdk/ changed since sdk/$v, which go.mod requires; tag a new SDK version and require it first"
             exit 1
           fi
+      # The web UI (ui/, Nuxt), embedded in the binary.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - run: npm install -g pnpm@10.20.0
+      - run: make ui
       - uses: goreleaser/goreleaser-action@v6
         with:
           args: release --clean
@@ -40,6 +46,22 @@ jobs:
           GOWORK: "off"
           # sdk/vX.Y.Z tags can point at the same commit; release this tag.
           GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+
+  # The Helm chart, versioned like the release, at oci://ghcr.io/hayone1/charts/gitopsify.
+  chart:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: |
+          v=${GITHUB_REF_NAME#v}
+          helm package charts/gitopsify --version "$v" --app-version "$v"
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "gitopsify-$v.tgz" oci://ghcr.io/hayone1/charts
 
   # Installs the release just published the way users do, on every platform.
   verify-install:

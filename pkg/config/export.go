@@ -286,6 +286,20 @@ func LoadExport(path, name string) (*Export, error) {
 	if err != nil {
 		return nil, err
 	}
+	return findExport(path, name, docs)
+}
+
+// ParseExport reads the export in data, as LoadExport does a file's; name
+// appears in errors.
+func ParseExport(name string, data []byte) (*Export, error) {
+	docs, err := ParseDocuments(name, data)
+	if err != nil {
+		return nil, err
+	}
+	return findExport(name, "", docs)
+}
+
+func findExport(path, name string, docs []Document) (*Export, error) {
 	exports := Find(docs, KindExport, "")
 	if len(exports) == 0 {
 		var kinds []string

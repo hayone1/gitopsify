@@ -10,9 +10,15 @@ const links = computed<NavigationMenuItem[][]>(() => {
   const main: NavigationMenuItem[] = [
     { label: 'Overview', icon: 'i-lucide-layout-dashboard', to: '/', onSelect: () => { open.value = false } },
     { label: 'Runs', icon: 'i-lucide-list-checks', to: '/runs', onSelect: () => { open.value = false } },
-    { label: 'Clusters', icon: 'i-lucide-server', to: '/clusters', onSelect: () => { open.value = false } }
+    { label: 'Clusters', icon: 'i-lucide-server', to: '/clusters', onSelect: () => { open.value = false } },
+    { label: 'Tools', icon: 'i-lucide-blocks', to: '/tools', onSelect: () => { open.value = false } }
   ]
-  if (atLeast(me.value?.role, 'operator')) {
+  const operatesTool = Object.values(me.value?.tools || {}).some(r => atLeast(r, 'operator'))
+  const operatesCluster = Object.values(me.value?.clusters || {}).some(r => atLeast(r, 'operator'))
+  if (operatesTool) {
+    main.splice(1, 0, { label: 'New export', icon: 'i-lucide-file-output', to: '/exports/new', onSelect: () => { open.value = false } })
+  }
+  if (operatesCluster) {
     main.splice(1, 0, { label: 'New migration', icon: 'i-lucide-git-branch-plus', to: '/migrations/new', onSelect: () => { open.value = false } })
   }
   const admin: NavigationMenuItem[] = []

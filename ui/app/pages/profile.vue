@@ -1,6 +1,9 @@
 <script setup lang="ts">
 const me = useMe()
-const roles = computed(() => Object.entries(me.value?.clusters || {}).sort(([a], [b]) => a.localeCompare(b)))
+const roles = computed(() => [
+  ...Object.entries(me.value?.clusters || {}).map(([n, r]) => ['cluster ' + n, r]),
+  ...Object.entries(me.value?.tools || {}).map(([n, r]) => ['tool ' + n, r])
+].sort(([a], [b]) => a!.localeCompare(b!)) as [string, string][])
 const roleText: Record<string, string> = {
   viewer: 'See clusters, runs and their files',
   operator: 'Also scan, generate and push migrations',

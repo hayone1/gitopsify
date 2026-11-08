@@ -1,0 +1,152 @@
+# Values for the gitopsify chart. The server's configuration is a Server
+# resource (docs/web-ui.md); `server` below is its spec, minus what the chart
+# sets itself (listen, dataDir).
+
+image:
+  repository: docker.io/hayone/gitopsify
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The Server resource's spec.
+server:
+  # The address people reach gitopsify at; required for OIDC.
+  externalURL: ""
+  auth:
+    mode: oidc
+    oidc:
+      issuer: ""
+      clientID: gitopsify
+      # The client secret comes from secrets.oidcClientSecret (or an
+      # existing Secret); don't put it here.
+      # Dex needs "groups" too: [profile, email, groups]
+      scopes: [profile, email]
+      groupsClaim: groups
+    sessionTTL: 12h
+    # API tokens: gitopsify server token --name ci --role operator
+    tokens: []
+  rbac:
+    # Role of anyone who signs in and matches no binding: "", viewer, operator or admin.
+    defaultRole: ""
+    bindings: []
+    #  - role: admin
+    #    groups: [platform-team]
+    #  - role: operator
+    #    groups: [shop-team]
+    #    clusters: [staging-*]
+  # Clusters besides this one (inCluster below). Mount their kubeconfigs or
+  # tokens with extraVolumes and refer to the files.
+  clusters: []
+  #  - name: prod-eu
+  #    description: Production, Frankfurt
+  #    impersonate: true
+  #    access:
+  #      apiServer: https://prod-eu.example.com:6443
+  #      certificateAuthority: /etc/gitopsify/clusters/prod-eu/ca.crt
+  #    token: {file: /etc/gitopsify/clusters/prod-eu/token}
+  git:
+    credentials: []
+    #  - host: github.com
+    #    token: {env: GITHUB_TOKEN}
+  runs:
+    concurrency: 2
+    timeout: 30m
+    retention: 720h
+  audit:
+    stdout: true
+    retention: 2160h
+  # The ingress controller sets X-Forwarded-For.
+  trustForwardedFor: true
+
+# This cluster, as a source and target, through the pod's ServiceAccount.
+inCluster:
+  enabled: true
+  name: in-cluster
+  description: The cluster gitopsify runs in
+  # Read as the signed-in person (Kubernetes RBAC applies per person); the
+  # ServiceAccount then needs the impersonate verb (rbac.impersonate).
+  impersonate: false
+
+rbac:
+  create: true
+  # get/list/watch on every resource, cluster-wide: what a scan reads.
+  clusterReader: true
+  # impersonate users and groups, for inCluster.impersonate.
+  impersonate: false
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+secrets:
+  # Signs and encrypts session cookies. Generated (and kept across upgrades)
+  # when empty and no existingSecret is given.
+  sessionKey: ""
+  # The OIDC client secret.
+  oidcClientSecret: ""
+  # A Secret holding session-key and oidc-client-secret instead.
+  existingSecret: ""
+
+# Extra environment variables (Git tokens, ...), as in a container spec.
+extraEnv: []
+#  - name: GITHUB_TOKEN
+#    valueFrom: {secretKeyRef: {name: gitopsify-git, key: token}}
+extraVolumes: []
+extraVolumeMounts: []
+
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  existingClaim: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: gitopsify.example.com
+  tls: []
+  #  - secretName: gitopsify-tls
+  #    hosts: [gitopsify.example.com]
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+networkPolicy:
+  # Allow ingress only from these namespaces' pods (the ingress controller,
+  # Prometheus); egress stays open (clusters, Git, the identity provider).
+  enabled: false
+  ingressNamespaces: [ingress-nginx, monitoring]
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {memory: 2Gi}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: {type: RuntimeDefault}
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""

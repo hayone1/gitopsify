@@ -24,11 +24,15 @@ func rank(role string) int {
 // atLeast reports whether role is want or higher.
 func atLeast(role, want string) bool { return rank(role) >= rank(want) && rank(want) > 0 }
 
-// grant is a role, everywhere (no clusters) or on some clusters.
+// grant is a role, everywhere (no clusters and no tools) or on some
+// clusters and tools.
 type grant struct {
 	Role     string
 	Clusters []string
+	Tools    []string
 }
+
+func (g grant) everywhere() bool { return len(g.Clusters) == 0 && len(g.Tools) == 0 }
 
 // policy decides what people may do.
 type policy struct {
@@ -49,7 +53,7 @@ func (p *policy) grants(u *User, tokens []config.ServerToken) []grant {
 	if u.Via == "token" {
 		var out []grant
 		for _, t := range tokens {
-			out = append(out, grant{Role: t.Role, Clusters: t.Clusters})
+			out = append(out, grant{Role: t.Role, Clusters: t.Clusters, Tools: t.Tools})
 		}
 		return out
 	}
@@ -59,7 +63,7 @@ func (p *policy) grants(u *User, tokens []config.ServerToken) []grant {
 	}
 	for _, b := range p.bindings {
 		if matchesAny(b.Users, u.Username) || matchesAny(b.Users, u.Email) || slices.ContainsFunc(u.Groups, func(g string) bool { return matchesAny(b.Groups, g) }) {
-			out = append(out, grant{Role: b.Role, Clusters: b.Clusters})
+			out = append(out, grant{Role: b.Role, Clusters: b.Clusters, Tools: b.Tools})
 		}
 	}
 	return out
@@ -84,7 +88,21 @@ func matchesAny(patterns []string, v string) bool {
 func roleOn(gs []grant, cluster string) string {
 	best := ""
 	for _, g := range gs {
-		if len(g.Clusters) > 0 && !matchesAny(g.Clusters, cluster) {
+		if !g.everywhere() && !matchesAny(g.Clusters, cluster) {
+			continue
+		}
+		if rank(g.Role) > rank(best) {
+			best = g.Role
+		}
+	}
+	return best
+}
+
+// roleOnTool is the highest role the grants give on a tool.
+func roleOnTool(gs []grant, tool string) string {
+	best := ""
+	for _, g := range gs {
+		if !g.everywhere() && !matchesAny(g.Tools, tool) {
 			continue
 		}
 		if rank(g.Role) > rank(best) {
@@ -99,7 +117,7 @@ func roleOn(gs []grant, cluster string) string {
 func serverRole(gs []grant) string {
 	best := ""
 	for _, g := range gs {
-		if len(g.Clusters) == 0 && rank(g.Role) > rank(best) {
+		if g.everywhere() && rank(g.Role) > rank(best) {
 			best = g.Role
 		}
 	}

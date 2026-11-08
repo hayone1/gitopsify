@@ -9,12 +9,15 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/hayone1/gitopsify/pkg/config"
 )
 
 var (
@@ -353,5 +356,38 @@ func TestRateLimit(t *testing.T) {
 	}
 	if !l.allow("5.6.7.8", true) {
 		t.Error("another address was limited")
+	}
+}
+
+func TestNotifications(t *testing.T) {
+	got := make(chan map[string]any, 4)
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got <- body
+	}))
+	defer hook.Close()
+	t.Setenv("HOOK_URL", hook.URL)
+	e := newTestEnv(t, func(c *config.Server) {
+		c.Spec.Notifications = []config.ServerNotification{
+			{Name: "slack", URL: config.SettingValue{Env: "HOOK_URL"}, Format: "slack"},
+			{Name: "audit", URL: config.SettingValue{Env: "HOOK_URL"}, Events: []string{"run.canceled"}},
+		}
+	})
+	r := fakeMigration(t, e.s, "dev", nil)
+	waitRun(t, e.s, r.ID)
+	select {
+	case body := <-got:
+		text, _ := body["text"].(string)
+		if !strings.Contains(text, "migration shop succeeded on dev") || !strings.Contains(text, "/runs/"+r.ID) {
+			t.Errorf("slack message: %q", text)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no notification")
+	}
+	select {
+	case body := <-got:
+		t.Errorf("a hook for other events posted: %v", body)
+	case <-time.After(300 * time.Millisecond):
 	}
 }

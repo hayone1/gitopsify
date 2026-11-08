@@ -16,7 +16,7 @@ const rendered = ref(true)
 onMounted(async () => {
   try {
     files.value = await api<FileEntry[]>(`/runs/${props.runId}/files`)
-    const first = files.value.find(f => f.path.endsWith('MIGRATION_REPORT.md')) || files.value[0]
+    const first = files.value.find(f => f.path.endsWith('MIGRATION_REPORT.md') || f.path.endsWith('EXPORT_REPORT.md')) || files.value[0]
     if (first) await open(first.path)
   } catch (e) {
     notify.error('Loading the files failed', e)
@@ -42,6 +42,7 @@ function icon(p: string) {
   if (p.endsWith('.md')) return 'i-lucide-file-text'
   if (p.endsWith('.yaml') || p.endsWith('.yml')) return 'i-lucide-file-code'
   if (p.endsWith('.sh')) return 'i-lucide-file-terminal'
+  if (p.endsWith('.tf') || p.endsWith('.json')) return 'i-lucide-file-code-2'
   return 'i-lucide-file'
 }
 

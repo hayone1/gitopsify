@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
@@ -24,6 +25,8 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/hayone1/gitopsify/pkg/config"
+	"github.com/hayone1/gitopsify/pkg/provider"
+	"github.com/hayone1/gitopsify/sdk"
 )
 
 // Options configure a Server.
@@ -55,6 +58,8 @@ type Server struct {
 	metrics    *metrics
 	ui         *uiHandler
 	limits     *limiter
+	descs      *describes
+	notify     *notifier
 	handler    http.Handler
 	stop       chan struct{}
 	stopOnce   sync.Once
@@ -102,7 +107,15 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		config.Duration(cfg.Runs.Retention), o.Log, s.metrics); err != nil {
 		return nil, fmt.Errorf("data directory %s: %w", cfg.DataDir, err)
 	}
+	s.notify = &notifier{hooks: cfg.Notifications, external: external.String(), client: &http.Client{Timeout: 15 * time.Second}, s: s}
+	s.runs.finished = s.notify.runFinished
 	s.ui = newUIHandler(o.UI)
+	s.descs = &describes{byID: map[string]*sdk.Description{}}
+	if !o.Local && os.Getenv(provider.EnvDir) == "" {
+		// Providers live with the server's data (gitopsify ui uses the
+		// user's, like the CLI).
+		_ = os.Setenv(provider.EnvDir, cfg.Providers.Dir)
+	}
 	s.limits = newLimiter()
 	s.handler = s.routes()
 	go s.housekeeping()

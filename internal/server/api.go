@@ -54,6 +54,12 @@ func (s *Server) routes() http.Handler {
 	s.api(mux, "GET /api/v1/runs/{id}/files/{path...}", config.RoleViewer, s.runFile)
 	s.api(mux, "GET /api/v1/runs/{id}/archive", config.RoleViewer, s.runArchive)
 
+	s.api(mux, "GET /api/v1/tools", config.RoleViewer, s.listTools)
+	s.api(mux, "GET /api/v1/tools/{name}/check", config.RoleViewer, s.checkTool)
+	s.api(mux, "GET /api/v1/providers", config.RoleViewer, s.listProviders)
+	s.api(mux, "POST /api/v1/providers", config.RoleAdmin, s.installProvider)
+	s.api(mux, "GET /api/v1/export/template", config.RoleViewer, s.exportTemplate)
+
 	s.api(mux, "GET /api/v1/audit", config.RoleAdmin, s.listAudit)
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeError(w, http.StatusNotFound, "no such API") })
@@ -139,6 +145,7 @@ type me struct {
 	Role       string            `json:"role"`
 	ServerRole string            `json:"serverRole"`
 	Clusters   map[string]string `json:"clusters"`
+	Tools      map[string]string `json:"tools"`
 	CSRF       string            `json:"csrf,omitempty"`
 	AuthMode   string            `json:"authMode"`
 	Version    string            `json:"version"`
@@ -147,7 +154,12 @@ type me struct {
 
 func (s *Server) getMe(w http.ResponseWriter, _ *http.Request, ri *reqInfo) {
 	m := me{User: *ri.user, Role: anyRole(ri.grants), ServerRole: serverRole(ri.grants), Clusters: map[string]string{},
-		AuthMode: s.auth.mode, Version: s.version}
+		Tools: map[string]string{}, AuthMode: s.auth.mode, Version: s.version}
+	for _, t := range s.cfg.Tools {
+		if role := roleOnTool(ri.grants, t.Name); role != "" {
+			m.Tools[t.Name] = role
+		}
+	}
 	if ri.session != nil {
 		m.CSRF = ri.session.CSRF
 		t := time.Unix(ri.session.Expires, 0).UTC()
@@ -226,16 +238,42 @@ func (s *Server) validateMigration(w http.ResponseWriter, r *http.Request, ri *r
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	cfg, err := s.prepareMigration(req.Migration, req.Cluster, ri.user)
-	if err == nil {
-		cfg.Default()
-		err = cfg.Validate()
+	var err error
+	if req.Type == RunExport {
+		_, _, err = s.prepareExport(req.Export, req.Tool)
+	} else {
+		var cfg *config.Config
+		cfg, err = s.prepareMigration(req.Migration, req.Cluster, ri.user)
+		if err == nil {
+			cfg.Default()
+			err = cfg.Validate()
+		}
 	}
 	if err != nil {
 		writeJSONResponse(w, http.StatusOK, map[string]any{"valid": false, "error": err.Error()})
 		return
 	}
 	writeJSONResponse(w, http.StatusOK, map[string]any{"valid": true})
+}
+
+// exportTemplate is a starting Export for a tool.
+func (s *Server) exportTemplate(w http.ResponseWriter, r *http.Request, _ *reqInfo) {
+	t, err := s.tool(r.URL.Query().Get("tool"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	x := &config.Export{Spec: config.ExportSpec{Provider: config.ProviderRef{Name: t.Provider}}}
+	x.Metadata.Name = t.Name
+	x.Default()
+	x.Spec.Instances = nil
+	x.Spec.Output.Dir = ""
+	b, err := x.Marshal()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSONResponse(w, http.StatusOK, map[string]string{"export": string(b)})
 }
 
 func (s *Server) migrationSchema(w http.ResponseWriter, _ *http.Request, _ *reqInfo) {
@@ -257,7 +295,7 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 		limit = 100
 	}
 	list := s.runs.list(func(run *Run) bool {
-		return roleOn(ri.grants, run.Cluster) != "" &&
+		return roleForRun(ri.grants, run) != "" &&
 			(q.Get("type") == "" || run.Type == q.Get("type")) &&
 			(q.Get("cluster") == "" || run.Cluster == q.Get("cluster")) &&
 			(q.Get("status") == "" || run.Status == q.Get("status")) &&
@@ -278,27 +316,41 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !s.can(w, r, ri, config.RoleOperator, req.Cluster, "runs.create") {
-		return
+	var run *Run
+	var err error
+	if req.Type == RunExport {
+		if !atLeast(roleOnTool(ri.grants, req.Tool), config.RoleOperator) {
+			s.deny(r, "runs.create", req.Tool, "needs operator")
+			writeError(w, http.StatusForbidden, "you need the operator role on tool "+req.Tool)
+			return
+		}
+		run, err = s.startExport(req, ri.user)
+	} else {
+		if !s.can(w, r, ri, config.RoleOperator, req.Cluster, "runs.create") {
+			return
+		}
+		run, err = s.startRun(req, ri.user)
 	}
-	run, err := s.startRun(req, ri.user)
+	where := firstNonEmpty(req.Cluster, req.Tool)
 	if err != nil {
-		s.event(r, "run.create", "error", req.Cluster, req.Type, err.Error())
+		s.event(r, "run.create", "error", where, req.Type, err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.event(r, "run.create", "ok", req.Cluster, run.ID, req.Type+" "+run.Name)
+	s.event(r, "run.create", "ok", where, run.ID, req.Type+" "+run.Name)
 	writeJSONResponse(w, http.StatusCreated, run)
 }
 
 // visibleRun returns the run if the caller has role on its cluster.
 func (s *Server) visibleRun(w http.ResponseWriter, r *http.Request, ri *reqInfo, role, action string) (*Run, bool) {
 	run, ok := s.runs.get(r.PathValue("id"))
-	if !ok || roleOn(ri.grants, run.Cluster) == "" {
+	if !ok || roleForRun(ri.grants, run) == "" {
 		writeError(w, http.StatusNotFound, "no such run")
 		return nil, false
 	}
-	if !s.can(w, r, ri, role, run.Cluster, action) {
+	if !atLeast(roleForRun(ri.grants, run), role) {
+		s.deny(r, action, run.Cluster+run.Tool, "needs "+role)
+		writeError(w, http.StatusForbidden, fmt.Sprintf("you need the %s role on %s", role, firstNonEmpty(run.Cluster, run.Tool)))
 		return nil, false
 	}
 	return run, true
@@ -315,8 +367,11 @@ func (s *Server) deleteRun(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 	if !ok {
 		return
 	}
-	// The person who started it may delete it; otherwise admins of the cluster.
-	if run.CreatedBy != ri.user.Username && !s.can(w, r, ri, config.RoleAdmin, run.Cluster, "runs.delete") {
+	// The person who started it may delete it; otherwise admins of its
+	// cluster or tool.
+	if run.CreatedBy != ri.user.Username && !atLeast(roleForRun(ri.grants, run), config.RoleAdmin) {
+		s.deny(r, "runs.delete", run.Cluster+run.Tool, "needs admin")
+		writeError(w, http.StatusForbidden, "only the person who started it, or an admin, can delete a run")
 		return
 	}
 	if err := s.runs.remove(run.ID); err != nil {
@@ -345,8 +400,8 @@ func (s *Server) publishRun(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 	if !ok {
 		return
 	}
-	if run.Type != RunMigrate || run.Status != StatusSucceeded {
-		writeError(w, http.StatusConflict, "only migrations that succeeded can be pushed")
+	if run.Type == RunScan || run.Status != StatusSucceeded {
+		writeError(w, http.StatusConflict, "only migrations and exports that succeeded can be pushed")
 		return
 	}
 	var req publishRequest

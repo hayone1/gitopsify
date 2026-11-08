@@ -30,9 +30,20 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
+      # The web UI (ui/, Nuxt), embedded in the binary.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - run: npm install -g pnpm@10.20.0
+      - run: make ui
       - run: make lint
       - run: make test
       - run: make build
+      # The chart renders with test values and fails without an OIDC issuer.
+      - run: |
+          helm lint charts/gitopsify -f charts/gitopsify/ci/test-values.yaml
+          helm template t charts/gitopsify -f charts/gitopsify/ci/test-values.yaml >/dev/null
+          ! helm template t charts/gitopsify >/dev/null 2>&1
 
   e2e:
     # Real clusters take ~15 minutes: run on demand and weekly.

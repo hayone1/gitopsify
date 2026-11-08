@@ -6,3 +6,7 @@ dist
 gitops
 testdata/golden
 test/live/hetzner/.state*
+ui/node_modules
+ui/.nuxt
+ui/.output
+ui/dist

@@ -55,12 +55,19 @@ type ServerSpec struct {
 	RBAC ServerRBAC `json:"rbac,omitzero"`
 	// Clusters are the clusters people can read and target, by name.
 	Clusters []ServerCluster `json:"clusters,omitempty"`
+	// Tools are instances of other tools (Grafana, Keycloak...) people can
+	// export through providers, by name.
+	Tools []ServerTool `json:"tools,omitempty"`
+	// Providers configures where providers are installed from and to.
+	Providers ServerProviders `json:"providers,omitzero"`
 	// Git holds credentials for pushing generated repositories.
 	Git ServerGit `json:"git,omitzero"`
 	// Runs limits the work the server does.
 	Runs ServerRuns `json:"runs,omitzero"`
 	// Audit configures the audit log.
 	Audit ServerAudit `json:"audit,omitzero"`
+	// Notifications post to webhooks when runs finish.
+	Notifications []ServerNotification `json:"notifications,omitempty"`
 	// TrustForwardedFor takes the client address from X-Forwarded-For (for
 	// rate limits and the audit log). Set it only behind a proxy that
 	// overwrites the header.
@@ -94,7 +101,8 @@ type ServerOIDC struct {
 	Issuer       string       `json:"issuer"`
 	ClientID     string       `json:"clientID"`
 	ClientSecret SettingValue `json:"clientSecret,omitzero"`
-	// Scopes requested besides openid; default profile, email, groups.
+	// Scopes requested besides openid; default profile and email. Dex
+	// needs groups too for the groups claim.
 	Scopes []string `json:"scopes,omitempty"`
 	// UsernameClaim names the user (default email, then preferred_username,
 	// then sub).
@@ -113,9 +121,10 @@ type ServerToken struct {
 	// SHA256 is the hex SHA-256 of the token (gitopsify server token makes
 	// one and prints both).
 	SHA256 string `json:"sha256"`
-	// Role and Clusters are what the token may do, as in a binding.
+	// Role, Clusters and Tools are what the token may do, as in a binding.
 	Role     string   `json:"role"`
 	Clusters []string `json:"clusters,omitempty"`
+	Tools    []string `json:"tools,omitempty"`
 }
 
 // ServerRBAC maps people to roles.
@@ -133,10 +142,51 @@ type ServerBinding struct {
 	Role   string   `json:"role"`
 	Users  []string `json:"users,omitempty"`
 	Groups []string `json:"groups,omitempty"`
-	// Clusters limits the binding to these clusters (globs); empty means
-	// all. Server-wide actions (audit log, provider installs) need a binding
-	// without clusters.
+	// Clusters and Tools limit the binding to these clusters and tools
+	// (globs). With neither, it applies everywhere, and server-wide actions
+	// (the audit log, installing providers) need such a binding. With
+	// clusters only, it gives nothing on tools, and the other way round.
 	Clusters []string `json:"clusters,omitempty"`
+	Tools    []string `json:"tools,omitempty"`
+}
+
+// ServerTool is an instance of a tool people can export.
+type ServerTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Provider reads the tool, such as grafana.
+	Provider string `json:"provider"`
+	// Settings are the provider's connection settings; secrets from env or
+	// file. Settings left out come from the provider's environment
+	// variables (GRAFANA_URL...), as with gitopsify export.
+	Settings map[string]SettingValue `json:"settings,omitempty"`
+}
+
+// ServerNotification posts run results to a webhook.
+type ServerNotification struct {
+	Name string `json:"name"`
+	// URL of the webhook; usually a secret (Slack and Teams URLs are), so
+	// from env or file.
+	URL SettingValue `json:"url"`
+	// Format is slack, teams or json (the run, as the API returns it).
+	Format string `json:"format,omitempty"`
+	// Events are run.succeeded, run.failed and run.canceled (default the
+	// first two).
+	Events []string `json:"events,omitempty"`
+	// Types limits it to scan, migrate or export runs (default all).
+	Types []string `json:"types,omitempty"`
+}
+
+// ServerProviders configures providers on the server.
+type ServerProviders struct {
+	// Dir holds installed providers (default <dataDir>/providers).
+	Dir string `json:"dir,omitempty"`
+	// Index is the provider index, a URL or a file (default the published
+	// one).
+	Index string `json:"index,omitempty"`
+	// DisableInstall stops admins from installing providers from the UI
+	// (for air-gapped servers whose image brings its providers).
+	DisableInstall bool `json:"disableInstall,omitempty"`
 }
 
 // ServerCluster is a cluster people can use by name.
@@ -245,7 +295,9 @@ func (s *Server) Default() {
 	}
 	if o := sp.Auth.OIDC; o != nil {
 		if len(o.Scopes) == 0 {
-			o.Scopes = []string{"profile", "email", "groups"}
+			// Not "groups": Keycloak, Okta, Entra ID and Google refuse unknown
+			// scopes; Dex wants it (spec.auth.oidc.scopes: [profile, email, groups]).
+			o.Scopes = []string{"profile", "email"}
 		}
 		if o.GroupsClaim == "" {
 			o.GroupsClaim = "groups"
@@ -262,6 +314,18 @@ func (s *Server) Default() {
 	}
 	if sp.Audit.Retention == "" {
 		sp.Audit.Retention = "2160h"
+	}
+	for i := range sp.Notifications {
+		n := &sp.Notifications[i]
+		if n.Format == "" {
+			n.Format = "json"
+		}
+		if len(n.Events) == 0 {
+			n.Events = []string{"run.succeeded", "run.failed"}
+		}
+	}
+	if sp.Providers.Dir == "" {
+		sp.Providers.Dir = path.Join(sp.DataDir, "providers")
 	}
 	for i := range sp.Git.Credentials {
 		if sp.Git.Credentials[i].Username == "" {
@@ -348,6 +412,42 @@ func (s *Server) Validate() error {
 		names[c.Name] = true
 		if err := c.Access.Validate(); err != nil {
 			add("spec.clusters[%d] (%s): %v", i, c.Name, err)
+		}
+	}
+	for i, n := range sp.Notifications {
+		if n.Name == "" {
+			add("spec.notifications[%d] has no name", i)
+		}
+		if n.URL == (SettingValue{}) {
+			add("spec.notifications[%d] (%s) has no url", i, n.Name)
+		}
+		if n.Format != "json" && n.Format != "slack" && n.Format != "teams" {
+			add("spec.notifications[%d].format %q: want json, slack or teams", i, n.Format)
+		}
+		for _, e := range n.Events {
+			if e != "run.succeeded" && e != "run.failed" && e != "run.canceled" {
+				add("spec.notifications[%d].events: %q: want run.succeeded, run.failed or run.canceled", i, e)
+			}
+		}
+	}
+	tools := map[string]bool{}
+	for i, t := range sp.Tools {
+		if !resourceName.MatchString(t.Name) || len(t.Name) > 63 {
+			add("spec.tools[%d].name %q: lowercase letters, digits and dashes", i, t.Name)
+		}
+		if tools[t.Name] {
+			add("spec.tools[%d].name %q is used twice", i, t.Name)
+		}
+		tools[t.Name] = true
+		if t.Provider == "" {
+			add("spec.tools[%d] (%s) names no provider", i, t.Name)
+		}
+	}
+	for i, b := range sp.RBAC.Bindings {
+		for _, c := range b.Tools {
+			if _, err := path.Match(c, ""); err != nil {
+				add("spec.rbac.bindings[%d].tools: %q: %v", i, c, err)
+			}
 		}
 	}
 	for i, g := range sp.Git.Credentials {

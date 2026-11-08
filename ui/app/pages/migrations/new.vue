@@ -99,10 +99,10 @@ async function resumeFrom(id: string) {
   try {
     const r = await api<Run>(`/runs/${id}`)
     scanRun.value = r
-    cluster.value = r.cluster
+    cluster.value = r.cluster || ''
     doc.value = r.spec as Record<string, any>
     const sp = doc.value.spec || {}
-    name.value = doc.value.metadata?.name || defaultName(r.cluster)
+    name.value = doc.value.metadata?.name || defaultName(r.cluster || '')
     namespaces.value = sp.scope?.namespaces || []
     selector.value = sp.scope?.labelSelector || ''
     excludeApps.value = sp.scope?.excludeApps || []
@@ -134,7 +134,8 @@ async function template(): Promise<Record<string, any>> {
 
 // --- building the Migration resource --------------------------------------------
 function build(base: Record<string, any>): Record<string, any> {
-  const d = structuredClone(base)
+  // A plain copy: structuredClone can't copy Vue's reactive proxies.
+  const d = JSON.parse(JSON.stringify(base))
   d.metadata = { ...(d.metadata || {}), name: name.value }
   const sp = d.spec || (d.spec = {})
   sp.scope = sp.scope || {}
@@ -202,6 +203,8 @@ function follow(id: string) {
 }
 
 // --- step 2: apps --------------------------------------------------------------
+// In apply order: wave, then name.
+const sortedApps = computed(() => [...(scan.value?.apps || [])].sort((a, b) => a.wave - b.wave || a.name.localeCompare(b.name)))
 const included = computed(() => scan.value?.apps.filter(a => !excludeApps.value.includes(a.name)) || [])
 function toggleApp(a: string, on: boolean) {
   excludeApps.value = on ? excludeApps.value.filter(x => x !== a) : [...excludeApps.value, a]
@@ -238,10 +241,15 @@ const appColumns: TableColumn<AppSummary>[] = [
 
 // --- step 4: review --------------------------------------------------------------
 async function toReview() {
-  if (!doc.value) doc.value = build(await template())
-  doc.value = applyTarget(build(doc.value))
-  yamlText.value = stringify(doc.value)
-  step.value = 3
+  try {
+    if (!doc.value) doc.value = build(await template())
+    doc.value = applyTarget(build(doc.value))
+    yamlText.value = stringify(doc.value)
+    step.value = 3
+  } catch (e) {
+    notify.error('Preparing the migration failed', e)
+    return
+  }
   await validate()
 }
 
@@ -364,7 +372,7 @@ const toolItems = [
           </template>
           <UAlert v-if="scan.secretActions.length" color="info" variant="subtle" icon="i-lucide-key-round" class="mb-3"
             :title="`${scan.secretActions.length} Secrets need a decision`" description="The next step picks how Secrets reach Git safely." />
-          <UTable :data="scan.apps" :columns="appColumns" class="max-h-[55vh]" sticky />
+          <UTable :data="sortedApps" :columns="appColumns" class="max-h-[55vh]" sticky />
         </UCard>
 
         <!-- 3. Target -->

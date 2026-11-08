@@ -15,6 +15,7 @@ export interface Me {
   role: Role
   serverRole: Role
   clusters: Record<string, Role>
+  tools: Record<string, Role>
   csrf?: string
   authMode: 'local' | 'oidc'
   version: string
@@ -41,7 +42,7 @@ export interface ClusterCheck {
   error?: string
 }
 
-export type RunType = 'scan' | 'migrate'
+export type RunType = 'scan' | 'migrate' | 'export'
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
 
 export interface RunSummary {
@@ -68,7 +69,9 @@ export interface Run {
   id: string
   type: RunType
   name: string
-  cluster: string
+  cluster?: string
+  tool?: string
+  repo?: { url: string, branch?: string }
   status: RunStatus
   createdBy: string
   createdAt: string
@@ -179,4 +182,56 @@ export function bytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`
   return `${(n / 1024 / 1024).toFixed(1)} MiB`
+}
+
+export interface Tool {
+  name: string
+  description?: string
+  provider: string
+  role: Role
+  installed: boolean
+  title?: string
+}
+
+export interface ProviderInfo {
+  name: string
+  title?: string
+  description?: string
+  source?: string
+  homepage?: string
+  maturity?: string
+  outputs?: string[]
+  installed?: string
+  kinds?: string[]
+}
+
+// What a provider describes (the parts the UI uses).
+export interface ProviderDescription {
+  name: string
+  title: string
+  version: string
+  partition: { singular: string, plural: string }
+  kinds: { name: string, plural?: string, description?: string, optional?: boolean, terraform?: unknown, crossplane?: unknown }[]
+  terraform?: { source: string, version: string }
+  crossplane?: { package: string }
+}
+
+export interface ToolCheck {
+  description?: ProviderDescription
+  check?: {
+    target: string
+    identity?: string
+    partitions: { id: string, name: string }[]
+    kinds?: { kind: string, ok: boolean, message?: string }[]
+    warnings?: string[]
+  }
+  error?: string
+}
+
+export function runTarget(r: Run): string {
+  return r.cluster || r.tool || ''
+}
+
+export function runTypeLabel(t: RunType): string {
+  return t === 'migrate' ? 'migration' : t
 }

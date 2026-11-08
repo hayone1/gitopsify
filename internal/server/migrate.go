@@ -27,8 +27,18 @@ type runRequest struct {
 	Migration string `json:"migration"`
 	// From is the scan this migration was configured from.
 	From string `json:"from,omitempty"`
-	// Publish pushes the output when the migration succeeds.
+	// Publish pushes the output when the run succeeds.
 	Publish *publishRequest `json:"publish,omitempty"`
+
+	// Tool is the tool an export reads, by name.
+	Tool string `json:"tool,omitempty"`
+	// Export is the Export resource (YAML or JSON text).
+	Export string `json:"export,omitempty"`
+	// Repo is where an export's output can be pushed.
+	Repo *RunRepo `json:"repo,omitempty"`
+	// AllowPartial writes an export even if the provider couldn't read
+	// everything.
+	AllowPartial bool `json:"allowPartial,omitempty"`
 }
 
 type publishRequest struct {
@@ -265,22 +275,30 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 	return nil
 }
 
-// publish commits and pushes a migration's output.
+// publish commits and pushes a migration's or an export's output.
 func (s *Server) publish(id string, u *User, message string, rc *runContext) error {
 	r, ok := s.runs.get(id)
 	if !ok {
 		return os.ErrNotExist
 	}
-	cfg, err := config.ParseMigration("migration.json", r.Spec)
-	if err != nil {
-		return err
+	var cfg *config.Config
+	if r.Type == RunExport {
+		if r.Repo == nil || r.Repo.URL == "" {
+			return errors.New("the export has no repository to push to")
+		}
+		cfg = &config.Config{Output: config.Output{Repo: config.Repo{URL: r.Repo.URL, Revision: r.Repo.Branch}}}
+	} else {
+		var err error
+		if cfg, err = config.ParseMigration("migration.json", r.Spec); err != nil {
+			return err
+		}
 	}
 	cfg.Output.Dir = s.runs.outputDir(id)
-	if cfg.Output.Repo.URL == "" && len(cfg.Environments) > 0 && cfg.Environments[0].RepoURL == "" {
+	if cfg.Output.Repo.URL == "" && (cfg.Output.Layout != config.LayoutRepoPerEnv || len(cfg.Environments) == 0 || cfg.Environments[0].RepoURL == "") {
 		return errors.New("the migration has no spec.output.repo.url to push to")
 	}
 	if message == "" {
-		message = fmt.Sprintf("gitopsify: %s from %s (run %s)", firstNonEmpty(cfg.Metadata.Name, "migration"), r.Cluster, id)
+		message = fmt.Sprintf("gitopsify: %s from %s (run %s)", firstNonEmpty(r.Name, "migration"), firstNonEmpty(r.Cluster, r.Tool), id)
 	}
 	name, email := s.cfg.Git.AuthorName, s.cfg.Git.AuthorEmail
 	if name == "" {

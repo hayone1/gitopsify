@@ -19,6 +19,7 @@ import (
 const (
 	RunScan    = "scan"
 	RunMigrate = "migrate"
+	RunExport  = "export"
 
 	StatusQueued    = "queued"
 	StatusRunning   = "running"
@@ -29,10 +30,15 @@ const (
 
 // Run is one piece of work: a scan or a migration.
 type Run struct {
-	ID         string          `json:"id"`
-	Type       string          `json:"type"`
-	Name       string          `json:"name"`
-	Cluster    string          `json:"cluster"`
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Cluster string `json:"cluster,omitempty"`
+	// Tool is the tool an export read (exports have no cluster).
+	Tool string `json:"tool,omitempty"`
+	// Repo is where an export's output is pushed (migrations name theirs in
+	// their spec).
+	Repo       *RunRepo        `json:"repo,omitempty"`
 	Status     string          `json:"status"`
 	CreatedBy  string          `json:"createdBy"`
 	CreatedAt  time.Time       `json:"createdAt"`
@@ -44,6 +50,12 @@ type Run struct {
 	Publishes  []Publish       `json:"publishes,omitempty"`
 	// From is the scan a migration was made from.
 	From string `json:"from,omitempty"`
+}
+
+// RunRepo is a Git repository and branch.
+type RunRepo struct {
+	URL    string `json:"url"`
+	Branch string `json:"branch,omitempty"`
 }
 
 // RunSummary is what a run found or wrote.
@@ -93,6 +105,8 @@ type runs struct {
 	sem       chan struct{}
 	log       *slog.Logger
 	metrics   *metrics
+	// finished is told about every run that finishes (notifications).
+	finished func(Run)
 
 	mu     sync.Mutex
 	byID   map[string]*runState
@@ -305,6 +319,12 @@ func (rs *runs) finish(rc *runContext, err error) {
 	st.subs = map[chan runEvent]struct{}{}
 	st.mu.Unlock()
 	rs.metrics.runFinished(rc.st.run.Type, status)
+	if rs.finished != nil {
+		st.mu.Lock()
+		r := st.run
+		st.mu.Unlock()
+		rs.finished(r)
+	}
 }
 
 // get returns a copy of a run.

@@ -19,13 +19,17 @@ const pushMessage = ref('')
 const tab = ref('log')
 let source: EventSource | null = null
 
-const role = computed(() => (run.value && me.value?.clusters[run.value.cluster]) || '')
+const role = computed(() => {
+  if (!run.value) return ''
+  return (run.value.tool ? me.value?.tools?.[run.value.tool] : me.value?.clusters[run.value.cluster || '']) || ''
+})
 const canOperate = computed(() => atLeast(role.value, 'operator'))
 const canDelete = computed(() => run.value && (run.value.createdBy === me.value?.user.username || atLeast(role.value, 'admin')))
 const finished = computed(() => run.value && ['succeeded', 'failed', 'canceled'].includes(run.value.status))
 const spec = computed(() => run.value?.spec as Record<string, any> | undefined)
 const specYAML = computed(() => spec.value ? stringify(spec.value) : '')
-const repoURL = computed(() => spec.value?.spec?.output?.repo?.url as string | undefined)
+const repoURL = computed(() => run.value?.type === 'export' ? run.value.repo?.url : spec.value?.spec?.output?.repo?.url as string | undefined)
+const produces = computed(() => run.value && run.value.type !== 'scan')
 
 async function loadScan() {
   try {
@@ -71,7 +75,7 @@ onUnmounted(() => source?.close())
 const tabs = computed<TabsItem[]>(() => {
   const t: TabsItem[] = [{ label: 'Log', value: 'log', icon: 'i-lucide-terminal' }]
   if (scan.value) t.push({ label: `Apps (${scan.value.apps.length})`, value: 'apps', icon: 'i-lucide-boxes' })
-  if (run.value?.type === 'migrate' && run.value.status === 'succeeded') t.push({ label: 'Files', value: 'files', icon: 'i-lucide-folder-tree' })
+  if (produces.value && run.value?.status === 'succeeded') t.push({ label: 'Files', value: 'files', icon: 'i-lucide-folder-tree' })
   t.push({ label: 'Configuration', value: 'config', icon: 'i-lucide-file-cog' })
   if (run.value?.publishes?.length) t.push({ label: `Pushes (${run.value.publishes.length})`, value: 'pushes', icon: 'i-lucide-git-commit-horizontal' })
   return t
@@ -111,8 +115,33 @@ async function remove() {
   }
 }
 
+const summaryCards = computed(() => {
+  const s = run.value?.summary
+  if (!s || !run.value) return []
+  if (run.value.type === 'export') {
+    return [
+      { label: 'Workspaces', value: s.apps },
+      { label: 'Objects', value: s.objects },
+      { label: 'Skipped', value: s.excluded },
+      { label: 'Warnings', value: s.warnings },
+      { label: 'Files written', value: s.files }
+    ]
+  }
+  return [
+    { label: 'Apps', value: s.apps },
+    { label: 'Objects', value: s.objects },
+    { label: 'Left out', value: s.excluded },
+    { label: 'Warnings', value: s.warnings },
+    { label: run.value.type === 'migrate' ? 'Files written' : 'Secrets to handle', value: run.value.type === 'migrate' ? s.files : s.secretActions }
+  ]
+})
+
 const cli = computed(() => {
   if (!run.value) return ''
+  if (run.value.type === 'export') {
+    const p = (spec.value?.spec?.provider?.name as string) || 'provider'
+    return `# gitopsify-${p}.yaml holds the export above (it's also in the output);\n# set the provider's environment variables for the connection, then:\ngitopsify export --config gitopsify-${p}.yaml --no-input`
+  }
   const cmd = run.value.type === 'scan' ? 'gitopsify scan' : 'gitopsify generate'
   return `# gitopsify.yaml holds the configuration above\n${cmd} --config gitopsify.yaml --context ${run.value.cluster}`
 })
@@ -148,7 +177,7 @@ async function copy(text: string) {
               label="Generate from this scan"
               :to="{ path: '/migrations/new', query: { from: run.id } }"
             />
-            <template v-if="run.type === 'migrate' && run.status === 'succeeded'">
+            <template v-if="produces && run.status === 'succeeded'">
               <UButton icon="i-lucide-download" color="neutral" variant="outline" label="Download" :href="`/api/v1/runs/${run.id}/archive`" external />
               <UButton v-if="canOperate && repoURL" icon="i-lucide-upload" label="Push to Git" @click="pushOpen = true" />
             </template>
@@ -163,8 +192,8 @@ async function copy(text: string) {
       <template v-else-if="run">
         <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
           <RunStatus :status="run.status" />
-          <span class="flex items-center gap-1.5"><UIcon name="i-lucide-tag" class="text-(--ui-text-dimmed)" />{{ run.type === 'migrate' ? 'Migration' : 'Scan' }}</span>
-          <span class="flex items-center gap-1.5"><UIcon name="i-lucide-server" class="text-(--ui-text-dimmed)" />{{ run.cluster }}</span>
+          <span class="flex items-center gap-1.5 capitalize"><UIcon name="i-lucide-tag" class="text-(--ui-text-dimmed)" />{{ runTypeLabel(run.type) }}</span>
+          <span class="flex items-center gap-1.5"><UIcon :name="run.tool ? 'i-lucide-blocks' : 'i-lucide-server'" class="text-(--ui-text-dimmed)" />{{ runTarget(run) }}</span>
           <span class="flex items-center gap-1.5"><UIcon name="i-lucide-user-round" class="text-(--ui-text-dimmed)" />{{ run.createdBy }}</span>
           <span class="flex items-center gap-1.5" :title="formatTime(run.createdAt)"><UIcon name="i-lucide-clock" class="text-(--ui-text-dimmed)" />{{ ago(run.createdAt) }}<template v-if="run.startedAt"> · {{ duration(run.startedAt, run.finishedAt) }}</template></span>
           <NuxtLink v-if="run.from" :to="`/runs/${run.from}`" class="flex items-center gap-1.5 hover:underline"><UIcon name="i-lucide-scan-search" class="text-(--ui-text-dimmed)" />from scan {{ run.from }}</NuxtLink>
@@ -174,13 +203,7 @@ async function copy(text: string) {
         <UAlert v-if="run.error" color="error" variant="subtle" icon="i-lucide-circle-x" :title="run.status === 'canceled' ? 'Canceled' : 'The run failed'" :description="run.error" />
 
         <div v-if="run.summary" class="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <UCard v-for="s in [
-            { label: 'Apps', value: run.summary.apps },
-            { label: 'Objects', value: run.summary.objects },
-            { label: 'Left out', value: run.summary.excluded },
-            { label: 'Warnings', value: run.summary.warnings },
-            { label: run.type === 'migrate' ? 'Files written' : 'Secrets to handle', value: run.type === 'migrate' ? run.summary.files : run.summary.secretActions }
-          ]" :key="s.label" :ui="{ body: 'py-3 sm:py-3' }">
+          <UCard v-for="s in summaryCards" :key="s.label" :ui="{ body: 'py-3 sm:py-3' }">
             <p class="text-xl font-semibold">{{ s.value ?? 0 }}</p>
             <p class="text-xs text-(--ui-text-muted)">{{ s.label }}</p>
           </UCard>
@@ -198,7 +221,7 @@ async function copy(text: string) {
               </ul>
             </template>
           </UAlert>
-          <UTable :data="scan.apps" :columns="appColumns" />
+          <UTable :data="[...scan.apps].sort((a, b) => a.wave - b.wave || a.name.localeCompare(b.name))" :columns="appColumns" />
           <UCollapsible v-if="scan.excluded?.length" class="mt-2">
             <UButton color="neutral" variant="ghost" trailing-icon="i-lucide-chevron-down" :label="`${scan.excluded.length} objects left out, and why`" />
             <template #content>
@@ -215,7 +238,7 @@ async function copy(text: string) {
           <UCard>
             <template #header>
               <div class="flex items-center justify-between">
-                <h3 class="font-semibold">gitopsify.yaml</h3>
+                <h3 class="font-semibold">{{ run.type === 'export' ? 'Export' : 'gitopsify.yaml' }}</h3>
                 <UButton size="xs" variant="ghost" icon="i-lucide-copy" label="Copy" @click="copy(specYAML)" />
               </div>
             </template>

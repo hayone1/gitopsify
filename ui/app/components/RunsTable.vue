@@ -20,9 +20,9 @@ const columns = computed<TableColumn<Run>[]>(() => {
     {
       accessorKey: 'type',
       header: 'Type',
-      cell: ({ row }) => h(UBadge, { variant: 'outline', color: 'neutral', class: 'capitalize' }, () => row.original.type === 'migrate' ? 'migration' : 'scan')
+      cell: ({ row }) => h(UBadge, { variant: 'outline', color: 'neutral', class: 'capitalize' }, () => runTypeLabel(row.original.type))
     },
-    { accessorKey: 'cluster', header: 'Cluster' },
+    { id: 'target', header: 'Cluster or tool', cell: ({ row }) => runTarget(row.original) },
     { accessorKey: 'status', header: 'Status', cell: ({ row }) => h(RunStatus, { status: row.original.status }) }
   ]
   if (!props.compact) {
