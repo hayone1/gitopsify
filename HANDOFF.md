@@ -2,7 +2,8 @@
 
 State as of 2026-11-08. Repo: https://github.com/hayone1/gitopsify (public
 since 2026-11-07; history scanned for credentials first: clean). Latest
-release: v0.1.1. The provider system (PR #1) is merged into `main`; the SDK is
+release: v0.2.0 (2026-11-08, not announced: the user announces once the
+registry and web UI are done). The provider system (PR #1) is merged into `main`; the SDK is
 tagged `sdk/v0.1.0` (on the merge commit), `go.mod` requires it and the
 committed `go.work` points development and CI at `sdk/` (see
 docs/development.md, "The SDK module"). Sibling repositories, both public:
@@ -259,11 +260,14 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
 ## Open / next (providers), in order
 1. GitGuardian incident 39798306 (PR #1) is a false positive (a SHA-256 file
    hash in a pre-squash commit); mark it so in the GitGuardian dashboard.
-2. Release the Grafana provider v0.1.0 (`git tag v0.1.0 && git push --tags`
-   in its repo), add its `repoId` (`gh api repos/hayone1/gitopsify-provider-grafana --jq .id`)
-   to `providers/index.yaml`, then release gitopsify v0.2.0 (the release
-   workflow checks that sdk/ is unchanged since the required SDK tag).
-3. TODO.md: registry website, web UI.
+2. Released 2026-11-08: gitopsify-provider-grafana v0.1.0 (listed in
+   providers/index.yaml, repoId 1449686256; `gitopsify provider install
+   grafana` and `hayone1/grafana` verified in a clean home) and gitopsify
+   v0.2.0 (installers verified on Linux/macOS/Windows by the workflow,
+   Docker image published, `go install ...@v0.2.0` verified).
+3. TODO.md: registry website and web UI. Design proposals in
+   docs/DESIGN-registry.md and docs/DESIGN-webui.md wait for the user's answers
+   to their open questions (domain, stack, local-only, order).
 4. Continuous use: three-way merge of re-exports with hand edits (the base
    is in export.json's file hashes), then a `gitopsify sync` loop or a
    controller reconciling `Export` resources (DESIGN-providers §11).
