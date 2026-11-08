@@ -711,4 +711,31 @@ func TestLeaseLoss(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Error("an expired lease wasn't noticed")
 	}
+
+	// The database unreachable: lost half a lease after the last renewal.
+	pg2, err := newPGStore(ctx, url, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = pg.pool.Exec(ctx, `UPDATE gitopsify_runs SET lock_until = NULL, lock_owner = '' WHERE id = $1`, r.ID)
+	lctx2, unlock2, ok, err := pg2.lockRun(ctx, r.ID)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	pg2.pool.Close()
+	select {
+	case <-lctx2.Done():
+		if !errors.Is(context.Cause(lctx2), errLockLost) {
+			t.Errorf("cause: %v", context.Cause(lctx2))
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("an unreachable database wasn't noticed in time")
+	}
+	done := make(chan struct{})
+	go func() { unlock2(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("unlock hung")
+	}
 }

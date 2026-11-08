@@ -191,6 +191,7 @@ func (p *pgStore) addPublishes(ctx context.Context, id string, ps []Publish, bum
 // context it returns ends if the lease is lost.
 func (p *pgStore) lockRun(ctx context.Context, id string) (context.Context, func(), bool, error) {
 	token := randomString(12)
+	asked := time.Now()
 	var exists, locked int
 	err := p.pool.QueryRow(ctx, `
 		WITH l AS (
@@ -212,7 +213,8 @@ func (p *pgStore) lockRun(ctx context.Context, id string) (context.Context, func
 	// The lock counts as lost half a lease after the last renewal that was
 	// sent and acknowledged: well before it can expire in the database,
 	// however long the database takes to answer.
-	deadline := time.AfterFunc(lease/2, lost)
+	deadline := time.AfterFunc(lease/2-time.Since(asked), lost)
+	isLost := func() bool { return errors.Is(context.Cause(lctx), errLockLost) }
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -224,9 +226,10 @@ func (p *pgStore) lockRun(ctx context.Context, id string) (context.Context, func
 			select {
 			case <-stop:
 				return
-			case <-lctx.Done():
-				return
 			case <-t.C:
+				if isLost() {
+					return
+				}
 				sent := time.Now()
 				rctx, cancel := context.WithTimeout(context.Background(), lease/4)
 				tag, err := p.pool.Exec(rctx, `UPDATE gitopsify_runs SET lock_until = now() + make_interval(secs => $3)
@@ -236,7 +239,7 @@ func (p *pgStore) lockRun(ctx context.Context, id string) (context.Context, func
 				case err == nil && tag.RowsAffected() == 0:
 					lost() // expired, or the run is gone
 					return
-				case err == nil && lctx.Err() == nil:
+				case err == nil && !isLost():
 					// Valid until sent+lease in the database's time: lost
 					// half a lease from sending.
 					deadline.Reset(lease/2 - time.Since(sent))

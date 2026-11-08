@@ -425,18 +425,24 @@ func resolveCharts(ctx context.Context, inv *model.Inventory, cfg *config.Config
 func credentialName(k, parent string) bool {
 	l := strings.ToLower(k)
 	return (credentialKey.MatchString(k) || redactKey.MatchString(k)) && !strings.Contains(l, "secretname") &&
-		!strings.HasSuffix(l, "ref") && !strings.HasPrefix(l, "existing") && !strings.HasSuffix(l, "passwordkey") &&
-		!strings.Contains(l, "pullsecret") && !secretNameKey(l) && !strings.Contains(strings.ToLower(parent), "secretkeys")
+		!strings.HasSuffix(l, "ref") && !strings.Contains(l, "existing") && !strings.HasSuffix(l, "passwordkey") &&
+		!strings.Contains(l, "pullsecret") && !secretNameKey(l) && !keySetting.MatchString(k) &&
+		!strings.Contains(strings.ToLower(parent), "secretkeys") && !strings.Contains(strings.ToLower(parent), "expiry")
 }
+
+// keySetting matches keys about a credential rather than holding one
+// (token_url, bearer_token_file, tokenIssuer, secretFieldSelector).
+var keySetting = regexp.MustCompile(`(?i)(url|uri|file|path|issuer|ttl|expiry|expiration|selector|algorithm|rotationpolicy|duration|size|length|timeout|interval|enabled|type|mode|format|policy|provider|backend|endpoint|audience)s?$`)
 
 // redactKey adds credentials known by other names (Airflow's fernetKey and
 // connection pass, MongoDB's replicaSetKey, LDAP bind passwords, Grafana's
 // secureJsonData, Argo CD's repository keys, alerting integration keys).
-var redactKey = regexp.MustCompile(`(?i)(passphrase|fernet|bindpw|replicasetkey|securejsondata|tlsclientcertkey|tlsclientkey|serviceaccountkey|routing_key|service_key|user_key|integrationkey|(^|[_.-])pass$|dsn$|(^|[_.-])key$)`)
+var redactKey = regexp.MustCompile(`(?i)(passphrase|fernet|bindpw|replicasetkey|securejsondata|tlsclientcertkey|tlsclientkey|serviceaccountkey|routing_key|service_key|user_key|integrationkey|(^|[_.-])pass$|dsn$|[_.-]key$)`)
 
 // secretNameKey reports keys whose string is the name of a Secret.
 func secretNameKey(l string) bool {
-	for _, suffix := range []string{"fromsecret", "certificatessecret", "certificatesecret", "tlssecret", "certsecret", "secretnames"} {
+	for _, suffix := range []string{"fromsecret", "certificatessecret", "certificatesecret", "tlssecret", "certsecret", "secretnames",
+		"keysecret", "passwordsecretkey", "configsecretkey"} {
 		if strings.HasSuffix(l, suffix) {
 			return true
 		}
@@ -528,6 +534,9 @@ func redactCredentials(v any, prefix string) []string {
 				}
 				out = append(out, redactCredentials(x, join(k))...)
 			case []any:
+				if container(k) && credentialName(k, parent) {
+					out = append(out, redactLeaves(x, join(k))...) // maps in it; strings are names
+				}
 				out = append(out, redactCredentials(x, join(k))...)
 			default:
 				if numberCredential(k) && redactable(x) {
@@ -567,7 +576,7 @@ func redactLeaves(v any, prefix string) []string {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if skipSubtree(k) || reference(k) || settingKeys[strings.ToLower(k)] || secretNameKey(strings.ToLower(k)) {
+			if skipSubtree(k) || reference(k) || settingKeys[strings.ToLower(k)] || secretNameKey(strings.ToLower(k)) || keySetting.MatchString(k) {
 				continue
 			}
 			if s, ok := t[k].(string); ok {
@@ -594,6 +603,19 @@ func redactLeaves(v any, prefix string) []string {
 func referenceShape(m map[string]any) bool {
 	if len(m) == 0 {
 		return false
+	}
+	if _, ok := m["secretName"]; ok {
+		return true // a Secret volume or a TLS block: it names one
+	}
+	if _, key := m["key"]; key {
+		if _, path := m["path"]; path { // a volume's items: {key, path, mode}
+			for k := range m {
+				if k != "key" && k != "path" && k != "mode" {
+					return false
+				}
+			}
+			return true
+		}
 	}
 	for k, v := range m {
 		switch k {
@@ -631,7 +653,7 @@ func reference(k string) bool {
 var settingKeys = map[string]bool{"create": true, "enabled": true, "mountpath": true, "subpath": true, "path": true, "type": true,
 	"mode": true, "defaultmode": true, "driver": true, "prefix": true, "provider": true, "format": true, "encoding": true,
 	"refreshinterval": true, "namespace": true, "kind": true, "apiversion": true, "scope": true, "immutable": true,
-	"resourcespreset": true, "image": true, "resources": true}
+	"resourcespreset": true, "image": true, "resources": true, "env": true, "algorithm": true, "rotationpolicy": true}
 
 // envCredential reports env variable names that hold a credential:
 // DB_PASSWORD, SECRET_KEY_BASE, FERNET_KEY, SENTRY_DSN; not settings about
@@ -688,9 +710,12 @@ func redactURLs(s string) (string, bool) {
 		if r, ok := redactURL(s[start:end]); ok {
 			s = s[:start] + r + s[end:]
 			changed = true
-			end = start + len(r)
+			// Go on after the password: more URLs may follow in the same
+			// piece (http://u:p@es1,http://u:p2@es2).
+			from = start + strings.Index(r, "<redacted>") + len("<redacted>")
+			continue
 		}
-		from = end
+		from = i + 3
 	}
 }
 
@@ -749,7 +774,11 @@ var (
 func redactable(v any) bool {
 	switch x := v.(type) {
 	case string:
-		return x != "" && x != RedactedValue
+		switch strings.ToLower(x) {
+		case "", "true", "false", "on", "off", "yes", "no", "enabled", "disabled":
+			return false
+		}
+		return x != RedactedValue && !strings.Contains(x, "{{")
 	case int, int64, float64, json.Number:
 		return true
 	}

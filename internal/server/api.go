@@ -449,7 +449,9 @@ func (s *Server) publishRun(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 			return
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	// A push isn't stopped halfway by a closed tab: it finishes (or times
+	// out) and stores the output.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
 	defer cancel()
 	if err := s.publish(ctx, run.ID, ri.user, req.Message, nil); err != nil {
 		code := http.StatusBadGateway

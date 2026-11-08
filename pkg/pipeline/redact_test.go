@@ -79,6 +79,15 @@ func TestRedactCredentials(t *testing.T) {
 		"alertmanagerSpec":      map[string]any{"secrets": []any{"am-config"}},
 		"externalRedis":         map[string]any{"secretAnnotations": map[string]any{"helm.sh/resource-policy": "keep"}},
 		"passwordUpdateJob":     map[string]any{"resourcesPreset": "micro"},
+		"tolerations":           []any{map[string]any{"key": "dedicated", "operator": "Equal", "value": "db"}},
+		"affinity":              map[string]any{"matchExpressions": []any{map[string]any{"key": "zone", "operator": "In"}}},
+		"extraVolumes":          []any{map[string]any{"secret": map[string]any{"secretName": "x", "items": []any{map[string]any{"key": "k", "path": "p"}}}}},
+		"grafana.ini":           map[string]any{"auth.generic_oauth": map[string]any{"token_url": "https://idp/token", "client_secret": "cs"}},
+		"expiry":                map[string]any{"idTokens": "24h"},
+		"nginx":                 map[string]any{"server-tokens": "off"},
+		"basicAuth":             map[string]any{"htpasswd": "{{ htpasswd .Values.user .Values.pass }}"},
+		"moreSecrets":           []any{map[string]any{"name": "github", "value": "ghp_y"}},
+		"es":                    map[string]any{"hosts": "http://u:p@es1:9200,http://u:p2@es2:9200"},
 		"passwordMinLength":     8,
 		"tokenTTL":              3600,
 		"maxToken":              4096,
@@ -88,7 +97,7 @@ func TestRedactCredentials(t *testing.T) {
 		"apiKey":                987,
 	}
 	got := redactCredentials(values, "")
-	want := []string{"DBPassword", "adminPin", "apiKey", "args[0]", "auth.fernetKey", "auth.pin.password", "auth.postgresPassword", "auth.replicaSetKey",
+	want := []string{"DBPassword", "adminPin", "apiKey", "args[0]", "es.hosts", "moreSecrets[0].value", "grafana.ini.auth.generic_oauth.client_secret", "auth.fernetKey", "auth.pin.password", "auth.postgresPassword", "auth.replicaSetKey",
 		"configs.secret.extra.ldap.bindPW", "credentials.accessKey", "credentials.key", "credentials.secretContents.cloud",
 		"data.metadataConnection.pass", "datasources[0].secureJsonData.httpHeaderValue1", "datasources[0].secureJsonData.tlsClientKey",
 		"env[0].value", "env[3].value", "env[5].value", "env[6].value", "env[8].value",
@@ -112,6 +121,9 @@ func TestRedactCredentials(t *testing.T) {
 	}
 	if a := values["args"].([]any)[0]; a != "--db=postgres://u:<redacted>@h/db --log=info" {
 		t.Errorf("args: %v", a)
+	}
+	if h := values["es"].(map[string]any)["hosts"]; h != "http://u:<redacted>@es1:9200,http://u:<redacted>@es2:9200" {
+		t.Errorf("hosts: %v", h)
 	}
 	if again := redactCredentials(values, ""); len(again) != 0 {
 		t.Errorf("redacted twice: %v", again)

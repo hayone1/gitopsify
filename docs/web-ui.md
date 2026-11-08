@@ -308,11 +308,13 @@ Everything the UI does goes through `/api/v1`, with the session cookie (and an
     replaced with `<redacted by gitopsify: set from a Secret>` and the run
     warns about each:
     - strings under keys such as `password`, `token`, `secret`, `apiKey`,
-      `fernetKey`, `bindpw` or `pass`, and the strings of maps under keys
-      whose last word is one (`secrets`, `extraSecrets`, `credentials`,
-      `secureJsonData`), but names, references (`existingSecret`,
-      `{name, key}`, GitLab's `{secret, key}`, `valueFrom`, pull secrets)
-      and settings (`mountPath`, `type`, `annotations`);
+      `fernetKey`, `bindpw` or `pass`, and the strings of maps (and of
+      lists of maps) under keys whose last word is one (`secrets`,
+      `extraSecrets`, `credentials`, `secureJsonData`), but names,
+      references (`existingSecret`, `{name, key}`, GitLab's `{secret,
+      key}`, `secretName`, `valueFrom`, pull secrets), settings
+      (`mountPath`, `token_url`, `tokenIssuer`, `annotations`), templates
+      (`{{ ... }}`) and switches (`on`, `off`);
     - numbers under keys ending in a credential word (`adminPin`,
       `apiKey`; not `passwordMinLength`, `tokenTTL` or `maxToken`);
     - the value of env pairs such as `{name: DB_PASSWORD, value: ...}`
