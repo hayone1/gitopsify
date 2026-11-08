@@ -12,6 +12,10 @@
 | `pkg/target` | `check`, `diff`, `adopt`, `status` |
 | `pkg/bootstrap` | Installs Argo CD or Flux |
 | `pkg/render` | Writes the repository from the inventory |
+| `sdk/` | The provider protocol and Go SDK: its own module (`github.com/hayone1/gitopsify/sdk`), standard library only; `sdk/sdktest` tests providers |
+| `pkg/provider` | Finds, installs (GitHub releases, checksums) and runs providers; the index |
+| `pkg/iac` | Turns a provider's inventory into Terraform and Crossplane: workspaces, stable names, adoption, secrets, safe re-exports |
+| `providers/index.yaml` | The provider index (embedded in the binary) |
 | `skills/` | Agent skills, embedded in the binary; also the Claude Code plugin and Gemini CLI extension content |
 | `testdata/clusters/clickops.yaml` | A real cluster dump the golden tests run on |
 | `testdata/golden/*` | Expected output of every mode |
@@ -26,7 +30,7 @@
 make build     # bin/gitopsify
 make test      # unit, golden and CLI tests; needs kubectl and helm for the Kustomize build checks
 make lint      # go vet and gofmt
-make golden    # regenerate testdata/golden after an intended output change
+make golden    # regenerate the golden trees (migrations and exports) after an intended output change
 make docs      # regenerate docs/commands.md after changing a command or flag
 make e2e       # kind clusters on this machine: auth, round trip, plain, Argo CD, Flux, SOPS, takeover
 make e2e-vm    # the same suite on a throwaway Hetzner machine (needs TF_VAR_hcloud_token)
@@ -81,3 +85,22 @@ commented in `.goreleaser.yaml`. Try a release locally with
 
 Argo CD v3.5.6 and Flux v2.9.6 are the defaults `bootstrap` installs
 (`pkg/config/defaults.go`). After bumping them, run the e2e test.
+
+## The SDK module
+
+`sdk/` is a separate Go module so providers don't inherit gitopsify's
+dependencies. During development the main `go.mod` points at it with
+`replace github.com/hayone1/gitopsify/sdk => ./sdk`, and `make test lint`
+cover both modules. A release can't keep the replace directive (`go install
+...@vX.Y.Z` refuses it; the release workflow checks), so before tagging the CLI:
+
+```sh
+git tag sdk/v0.1.0 && git push origin sdk/v0.1.0       # if sdk/ changed since its last tag
+go mod edit -dropreplace github.com/hayone1/gitopsify/sdk
+go get github.com/hayone1/gitopsify/sdk@v0.1.0 && go mod tidy
+git commit -am "Require sdk v0.1.0"                     # then tag vX.Y.Z as usual
+go mod edit -replace github.com/hayone1/gitopsify/sdk=./sdk   # back to development
+```
+
+Protocol changes are additive within `v1alpha1`; anything else needs a new
+protocol version that gitopsify and providers both list.

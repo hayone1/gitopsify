@@ -27,11 +27,12 @@ Which one?
 Mix them with overrides, first match wins:
 
 ```yaml
-secrets:
-  strategy: sealed-secrets
-  overrides:
-    - {namespaces: [monitoring], strategy: local}
-    - {names: ["*-tls"], strategy: skip}
+spec:
+  secrets:
+    strategy: sealed-secrets
+    overrides:
+      - {namespaces: [monitoring], strategy: local}
+      - {names: ["*-tls"], strategy: skip}
 ```
 
 Some Secrets are never migrated, whatever the strategy: TLS Secrets issued by

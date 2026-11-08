@@ -1,14 +1,15 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
-
-	"sigs.k8s.io/yaml"
 )
 
 // Default versions installed by bootstrap.
@@ -54,6 +55,9 @@ func (c *Config) Default() {
 	}
 	if c.Kind == "" {
 		c.Kind = Kind
+	}
+	if c.Metadata.Name == "" {
+		c.Metadata.Name = NameFor(c.Source.Context)
 	}
 	if c.Scope.IncludeDependencies == nil {
 		c.Scope.IncludeDependencies = boolPtr(true)
@@ -212,6 +216,9 @@ func (c *Config) Validate() error {
 	if c.APIVersion != APIVersion || c.Kind != Kind {
 		add("apiVersion/kind must be %s/%s, got %s/%s", APIVersion, Kind, c.APIVersion, c.Kind)
 	}
+	if err := c.Metadata.validate(); err != nil {
+		errs = append(errs, err)
+	}
 	oneOf := func(field, v string, allowed ...string) {
 		for _, a := range allowed {
 			if v == a {
@@ -345,16 +352,89 @@ func (t Transform) Validate() error {
 // Load reads a configuration file. Unknown fields are errors so typos don't
 // silently fall back to defaults.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	docs, err := ReadDocuments(path)
 	if err != nil {
-		return nil, err
+		return nil, err // names the file
 	}
-	c := &Config{}
-	if err := yaml.UnmarshalStrict(data, c); err != nil {
+	if len(docs) == 0 {
+		return &Config{}, nil // empty, or only comments: the defaults, as in v0.1
+	}
+	var migrations []Document
+	for _, d := range docs {
+		if d.Kind == Kind || d.Kind == "" {
+			migrations = append(migrations, d)
+		}
+	}
+	switch {
+	case len(migrations) == 0 && len(Find(docs, KindExport, "")) > 0:
+		return nil, fmt.Errorf("%s describes a provider export; run gitopsify export --config %s", path, path)
+	case len(migrations) == 0:
+		return nil, fmt.Errorf("%s holds no %s", path, Kind)
+	case len(migrations) > 1:
+		return nil, fmt.Errorf("%s holds several migrations; gitopsify reads one per file", path)
+	}
+	c, err := decodeMigration(migrations[0])
+	if err != nil {
 		if strings.Contains(err.Error(), `unknown field "token"`) {
 			return nil, fmt.Errorf("parsing %s: tokens don't belong in gitopsify.yaml, which generate copies into the repository; use tokenFile, --token or a kubeconfig instead", path)
 		}
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return c, nil
+}
+
+// migrationDocument is the Migration resource as written in files.
+type migrationDocument struct {
+	APIVersion string     `json:"apiVersion"`
+	Kind       string     `json:"kind"`
+	Metadata   ObjectMeta `json:"metadata,omitzero"`
+	Spec       Config     `json:"spec"`
+}
+
+// decodeMigration accepts both forms of a migration: the resource form
+// (apiVersion, kind, metadata, spec) and the layout gitopsify v0.1 wrote,
+// with the spec's fields next to apiVersion and kind and no metadata.
+//
+// Both decode into Config directly: sigs.k8s.io/yaml converts values to the
+// fields' types (labelSelector: 4.5 → "4.5") only for fields it finds
+// without following embedded structs.
+func decodeMigration(doc Document) (*Config, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(doc.JSON, &probe); err != nil {
+		return nil, err
+	}
+	if _, ok := probe["spec"]; ok {
+		var top migrationDocument
+		if err := decodeStrict(doc.Raw, &top); err != nil {
+			var misplaced []string
+			for k := range probe {
+				if specField(k) {
+					misplaced = append(misplaced, k)
+				}
+			}
+			if len(misplaced) > 0 {
+				sort.Strings(misplaced)
+				verb := "goes"
+				if len(misplaced) > 1 {
+					verb = "go"
+				}
+				return nil, fmt.Errorf("%w (%s %s under spec)", err, strings.Join(misplaced, ", "), verb)
+			}
+			return nil, err
+		}
+		c := top.Spec
+		if c.APIVersion != "" || c.Kind != "" {
+			return nil, errors.New("spec: apiVersion and kind go at the top of the resource, not in spec")
+		}
+		c.APIVersion, c.Kind, c.Metadata = top.APIVersion, top.Kind, top.Metadata
+		return &c, nil
+	}
+	c := &Config{}
+	if err := decodeStrict(doc.Raw, c); err != nil {
+		if _, ok := probe["metadata"]; ok {
+			return nil, fmt.Errorf("%w (with metadata, the migration's fields go under spec)", err)
+		}
+		return nil, err
 	}
 	return c, nil
 }
@@ -380,9 +460,51 @@ func ExpandHome(p string) string {
 	return strings.Join(parts, string(os.PathListSeparator))
 }
 
-// Marshal renders the configuration as YAML.
-func (c *Config) Marshal() ([]byte, error) {
-	return yaml.Marshal(c)
+// specField reports whether name is a field of a migration's spec.
+func specField(name string) bool {
+	t := reflect.TypeOf(Config{})
+	for i := 0; i < t.NumField(); i++ {
+		tag, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if tag == name && tag != "apiVersion" && tag != "kind" {
+			return true
+		}
+	}
+	return false
+}
+
+// Document returns the Migration resource, ready to be encoded (see Encode).
+func (c *Config) Document() any {
+	spec := *c
+	spec.APIVersion, spec.Kind = "", ""
+	return migrationDocument{APIVersion: c.APIVersion, Kind: c.Kind, Metadata: c.Metadata, Spec: spec}
+}
+
+// Marshal renders the Migration resource as YAML, with the fields in their
+// documented order.
+func (c *Config) Marshal() ([]byte, error) { return marshalOrdered(c.Document()) }
+
+// NameFor turns a kube context into a migration name: lowercase letters,
+// digits and dashes, at most 63; "migration" when nothing is left.
+func NameFor(context string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(context) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			dash = false
+		} else if !dash && b.Len() > 0 {
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	name := strings.TrimRight(b.String(), "-")
+	if len(name) > 63 {
+		name = strings.TrimRight(name[:63], "-")
+	}
+	if name == "" {
+		return "migration"
+	}
+	return name
 }
 
 // Env returns the environment with the given name.

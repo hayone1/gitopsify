@@ -68,10 +68,15 @@ const (
 	HelmManifests = "manifests"
 )
 
-// Config is the content of gitopsify.yaml.
+// Config is a migration: the spec of the Migration resource in
+// gitopsify.yaml.
 type Config struct {
-	APIVersion   string        `json:"apiVersion"`
-	Kind         string        `json:"kind"`
+	// APIVersion, Kind and Metadata are the resource's, written around the
+	// spec. APIVersion and Kind are JSON fields only for v0.1's layout, which
+	// had the spec's fields next to them (see decodeMigration).
+	APIVersion   string        `json:"apiVersion,omitempty"`
+	Kind         string        `json:"kind,omitempty"`
+	Metadata     ObjectMeta    `json:"-"`
 	Source       Source        `json:"source"`
 	Scope        Scope         `json:"scope"`
 	Helm         Helm          `json:"helm"`

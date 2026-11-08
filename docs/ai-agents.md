@@ -17,6 +17,7 @@ time.
 | `gitopsify-secrets` | choose a Secret strategy and carry it out: install Sealed Secrets, set up SOPS keys, load values into AWS, Google, Azure or Vault |
 | `gitopsify-takeover` | let Argo CD or Flux take over a running cluster with a clean diff and no restarts |
 | `gitopsify-troubleshoot` | fix apps that don't sync after bootstrap |
+| `gitopsify-export` | turn Grafana (or another tool with a provider) into Terraform or Crossplane with `gitopsify export` |
 
 The skills are opinionated, recommending a default for each decision, while
 still covering the alternatives. They tell the agent never to change a cluster,

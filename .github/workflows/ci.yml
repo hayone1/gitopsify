@@ -26,6 +26,10 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: v3.19.0
+      # pkg/iac checks the Terraform it writes with terraform fmt.
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
       - run: make lint
       - run: make test
       - run: make build

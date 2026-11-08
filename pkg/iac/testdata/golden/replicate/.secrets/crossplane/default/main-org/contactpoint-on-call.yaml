@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: contactpoint-on-call
+  namespace: grafana-main-org
+stringData:
+  url: https://hooks.slack.com/x

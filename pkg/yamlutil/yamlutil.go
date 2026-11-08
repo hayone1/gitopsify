@@ -108,6 +108,10 @@ var yaml11Bools = map[string]bool{
 	"on": true, "On": true, "ON": true, "off": true, "Off": true, "OFF": true,
 }
 
+// YAML11Bool reports whether s is a plain word YAML 1.1 parsers (and so
+// sigs.k8s.io/yaml) read as a boolean: such strings must be quoted.
+func YAML11Bool(s string) bool { return yaml11Bools[s] }
+
 // scalar returns a string node; yaml.v3 quotes it when it would otherwise
 // read back as another type ("true", "1.0", "null").
 func scalar(s string) *yamlv3.Node {

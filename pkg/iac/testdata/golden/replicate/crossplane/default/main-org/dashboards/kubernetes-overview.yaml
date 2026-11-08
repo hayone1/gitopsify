@@ -1,0 +1,31 @@
+apiVersion: oss.grafana.m.crossplane.io/v1alpha1
+kind: Dashboard
+metadata:
+  name: kubernetes-overview
+  namespace: grafana-main-org
+  labels:
+    gitopsify.io/provider: grafana
+spec:
+  forProvider:
+    configJson: |
+      {
+        "uid": "k8s",
+        "title": "Kubernetes / Overview",
+        "templating": {
+          "list": [
+            {
+              "query": "${DS}"
+            }
+          ]
+        }
+      }
+    folderRef:
+      name: kubernetes
+  managementPolicies:
+    - Observe
+    - Create
+    - Update
+    - Delete
+  providerConfigRef:
+    kind: ClusterProviderConfig
+    name: grafana-main-org

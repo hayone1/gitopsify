@@ -1,0 +1,21 @@
+apiVersion: oss.grafana.m.crossplane.io/v1alpha1
+kind: Folder
+metadata:
+  name: kubernetes
+  namespace: grafana-main-org
+  labels:
+    gitopsify.io/provider: grafana
+spec:
+  forProvider:
+    folderRef:
+      name: sre
+    title: Kubernetes
+    uid: sre-k8s
+  managementPolicies:
+    - Observe
+    - Create
+    - Update
+    - Delete
+  providerConfigRef:
+    kind: ClusterProviderConfig
+    name: grafana-main-org

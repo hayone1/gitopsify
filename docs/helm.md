@@ -35,10 +35,11 @@ to and how. Check it's the one your team trusts; pinning it in
 `gitopsify.yaml` makes the result independent of whoever runs gitopsify:
 
 ```yaml
-helm:
-  repositories:
-    ingress-nginx: https://kubernetes.github.io/ingress-nginx
-    redis: oci://registry-1.docker.io/bitnamicharts
+spec:
+  helm:
+    repositories:
+      ingress-nginx: https://kubernetes.github.io/ingress-nginx
+      redis: oci://registry-1.docker.io/bitnamicharts
 ```
 
 ## How each release is written
@@ -57,13 +58,14 @@ aren't migrated in manifests mode.
 Set the mode per release, and override chart details when needed:
 
 ```yaml
-helm:
-  mode: auto
-  releases:
-    tools/inhouse: {mode: vendor}
-    shop/legacy: {skip: true}
-    kube-system/metrics-server: {include: true}   # releases in system namespaces are skipped otherwise
-    data/redis: {repo: "oci://registry.acme.io/charts", version: "19.6.4"}
+spec:
+  helm:
+    mode: auto
+    releases:
+      tools/inhouse: {mode: vendor}
+      shop/legacy: {skip: true}
+      kube-system/metrics-server: {include: true}   # releases in system namespaces are skipped otherwise
+      data/redis: {repo: "oci://registry.acme.io/charts", version: "19.6.4"}
 ```
 
 Values go to `apps/<app>/base/values.yaml`; values that differ per environment

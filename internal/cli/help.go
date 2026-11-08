@@ -12,6 +12,10 @@ import (
 	"github.com/hayone1/gitopsify/pkg/kube"
 )
 
+// noClusterFlags marks commands whose help leaves out the cluster access
+// flags.
+const noClusterFlags = "gitopsify_no_cluster_flags"
+
 // groupOrder is the order of the flag sections in --help.
 var groupOrder = []string{groupScope, groupHelm, groupShape, groupTransform, groupSecrets, groupOutput, groupGit,
 	groupBootstrap, groupTarget, groupSource}
@@ -70,6 +74,11 @@ func flagSections(cmd *cobra.Command) string {
 	}
 	add(cmd.LocalFlags(), "Flags")
 	add(cmd.InheritedFlags(), "Global Flags")
+	// Provider commands don't talk to clusters: leave the cluster flags out.
+	if _, ok := cmd.Annotations[noClusterFlags]; ok {
+		delete(sections, groupSource)
+		delete(sections, groupTarget)
+	}
 	var b strings.Builder
 	write := func(name string) {
 		if fs := sections[name]; fs != nil && fs.HasAvailableFlags() {

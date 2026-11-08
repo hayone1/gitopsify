@@ -1,0 +1,19 @@
+apiVersion: oss.grafana.m.crossplane.io/v1alpha1
+kind: Folder
+metadata:
+  name: r-de10ae
+  namespace: grafana-team-unicode
+  labels:
+    gitopsify.io/provider: grafana
+spec:
+  forProvider:
+    title: Апп
+    uid: apps
+  managementPolicies:
+    - Observe
+    - Create
+    - Update
+    - Delete
+  providerConfigRef:
+    kind: ClusterProviderConfig
+    name: grafana-team-unicode

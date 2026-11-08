@@ -1,4 +1,5 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# --match: the SDK's tags (sdk/vX.Y.Z) aren't versions of the CLI.
+VERSION ?= $(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/hayone1/gitopsify/internal/cli.Version=$(VERSION)
 
 .PHONY: build test golden docs gifs lint e2e e2e-vm live clean
@@ -6,21 +7,25 @@ LDFLAGS := -s -w -X github.com/hayone1/gitopsify/internal/cli.Version=$(VERSION)
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/gitopsify ./cmd/gitopsify
 
+# The SDK (sdk/) is its own Go module, so it is tested and vetted separately.
 test:
 	go test ./...
+	cd sdk && go test ./...
 
-# Regenerate testdata/golden after an intended change of the output. The
-# golden trees contain generated .gitignore files that ignore .secrets/, so
-# those fixtures are added with git add -f.
+# Regenerate the golden trees (migrations: testdata/golden; exports:
+# pkg/iac/testdata/golden) after an intended change of the output. They
+# contain generated .gitignore files that ignore the secret files (.secrets/,
+# *.secrets.auto.tfvars), so those fixtures are added with git add -f.
 golden:
 	go test ./pkg/pipeline -run TestGolden -update
-	git add -f testdata/golden/*/.secrets
+	go test ./pkg/iac -run TestGolden -update
+	find testdata/golden pkg/iac/testdata/golden \( -type d -name .secrets -print -prune \) -o -name '*.secrets.auto.tfvars' -print | xargs -r git add -f
 
 # Regenerate docs/commands.md and docs/gitopsify.schema.json after changing a
 # command, a flag or the configuration.
 docs:
 	UPDATE_DOCS=1 go test ./internal/cli -run TestCommandReferenceIsCurrent
-	UPDATE_DOCS=1 go test ./pkg/config -run TestSchemaIsCurrent
+	UPDATE_DOCS=1 go test ./pkg/config -run "TestSchemaIsCurrent|TestExportSchemaIsCurrent"
 
 # Terminal recordings in docs/images, from docs/tapes, with VHS in Docker.
 gifs:
@@ -31,6 +36,7 @@ gifs:
 
 lint:
 	go vet ./...
+	cd sdk && go vet ./...
 	gofmt -l . | (! grep .)
 
 # Real clusters: kind, Argo CD, Flux, sealed-secrets. About 15 minutes.

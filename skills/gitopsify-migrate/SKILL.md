@@ -83,17 +83,20 @@ decision and makes the run repeatable; show it to the person.
 ```yaml
 apiVersion: gitopsify.io/v1alpha1
 kind: Migration
-source: {context: test}
-scope: {namespaces: [shop, payments]}
-secrets: {strategy: sealed-secrets}
-output:
-  tool: argocd
-  repo: {url: https://github.com/acme/platform-gitops.git}
-environments:
-  - name: uat
-    cluster: {context: uat}
-    transforms:
-      - {type: replace, from: test.acme.io, to: uat.acme.io}
+metadata:
+  name: shop
+spec:
+  source: {context: test}
+  scope: {namespaces: [shop, payments]}
+  secrets: {strategy: sealed-secrets}
+  output:
+    tool: argocd
+    repo: {url: https://github.com/acme/platform-gitops.git}
+  environments:
+    - name: uat
+      cluster: {context: uat}
+      transforms:
+        - {type: replace, from: test.acme.io, to: uat.acme.io}
 ```
 
 ## 5. Scan, then refine

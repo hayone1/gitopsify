@@ -14,13 +14,14 @@ gitopsify generate --tool argocd --env uat=uat-context --env prod=prod-context -
 or in `gitopsify.yaml`:
 
 ```yaml
-environments:
-  - name: uat
-    cluster: {context: uat}
-  - name: prod
-    cluster:
-      context: prod
-      server: https://kubernetes.default.svc   # where Argo CD deploys, as Argo CD sees it
+spec:
+  environments:
+    - name: uat
+      cluster: {context: uat}
+    - name: prod
+      cluster:
+        context: prod
+        server: https://kubernetes.default.svc   # where Argo CD deploys, as Argo CD sees it
 ```
 
 The `cluster` settings are how gitopsify reaches the environment (see [Cluster
@@ -59,16 +60,17 @@ every environment and change the base; an environment's `transforms` become its
 Kustomize patches or Helm values overlay.
 
 ```yaml
-transforms:
-  - {type: image, from: test.azurecr.io/, to: acme.azurecr.io/}
-environments:
-  - name: prod
-    transforms:
-      - {type: replace, from: test.acme.io, to: acme.io}
-      - {type: storageClass, map: {standard: premium-ssd}}
-      - {type: ingressClass, map: {nginx: alb}}
-      - {type: set, target: {kinds: [Deployment], names: [api]}, path: spec.replicas, value: 3}
-      - {type: set, target: {apps: [redis]}, path: values.replica.replicaCount, value: 3}
+spec:
+  transforms:
+    - {type: image, from: test.azurecr.io/, to: acme.azurecr.io/}
+  environments:
+    - name: prod
+      transforms:
+        - {type: replace, from: test.acme.io, to: acme.io}
+        - {type: storageClass, map: {standard: premium-ssd}}
+        - {type: ingressClass, map: {nginx: alb}}
+        - {type: set, target: {kinds: [Deployment], names: [api]}, path: spec.replicas, value: 3}
+        - {type: set, target: {apps: [redis]}, path: values.replica.replicaCount, value: 3}
 ```
 
 | Type | Fields | What it does |

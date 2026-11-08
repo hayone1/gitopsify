@@ -1,0 +1,19 @@
+apiVersion: oss.grafana.m.crossplane.io/v1alpha1
+kind: Folder
+metadata:
+  name: sre
+  namespace: grafana-main-org
+  labels:
+    gitopsify.io/provider: grafana
+spec:
+  forProvider:
+    title: SRE
+    uid: sre
+  managementPolicies:
+    - Observe
+    - Create
+    - Update
+    - Delete
+  providerConfigRef:
+    kind: ClusterProviderConfig
+    name: grafana-main-org

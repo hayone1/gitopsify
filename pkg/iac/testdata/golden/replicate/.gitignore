@@ -1,0 +1,7 @@
+# Written by gitopsify export.
+.secrets/
+*.secrets.auto.tfvars
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log

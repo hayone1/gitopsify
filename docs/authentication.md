@@ -28,13 +28,14 @@ In `gitopsify.yaml`, `source` and each environment's `cluster` take the same
 settings, so you don't repeat flags:
 
 ```yaml
-source:
-  context: test
-environments:
-  - name: uat
-    cluster:
-      kubeconfig: ~/.kube/uat.yaml
-      context: uat-admin
+spec:
+  source:
+    context: test
+  environments:
+    - name: uat
+      cluster:
+        kubeconfig: ~/.kube/uat.yaml
+        context: uat-admin
 ```
 
 ## All the options

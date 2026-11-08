@@ -5,6 +5,8 @@ FROM --platform=$BUILDPLATFORM golang:1.27 AS build
 ARG TARGETOS TARGETARCH VERSION=dev COMMIT="" DATE=""
 WORKDIR /src
 COPY go.mod go.sum ./
+# go.mod replaces the SDK with ./sdk during development.
+COPY sdk/go.mod sdk/
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \

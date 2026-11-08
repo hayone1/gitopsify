@@ -27,7 +27,11 @@ func newInit(o *options) *cobra.Command {
 		Long: `Writes gitopsify.yaml. On a terminal it asks for the source cluster, the
 namespaces, the GitOps tool and pattern, the environments and the Secret
 strategy; otherwise (or with --no-input) it uses the flags. Every other command
-reads gitopsify.yaml from the current directory.`,
+reads gitopsify.yaml from the current directory.
+
+The file is a Kubernetes-style resource (apiVersion, kind, metadata, spec).
+--file picks the syntax by extension: .json for JSON, .hcl for HCL, YAML
+otherwise.`,
 		Example: "  gitopsify init\n  gitopsify init --no-input --context test --tool flux --env uat=uat --repo-url git@github.com:acme/gitops.git",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -48,12 +52,11 @@ reads gitopsify.yaml from the current directory.`,
 			if err := cfg.Validate(); err != nil {
 				return err
 			}
-			b, err := cfg.Marshal()
+			b, err := config.Encode(file, cfg.Document(), config.SchemaHeader, "# gitopsify migration. Reference: https://github.com/hayone1/gitopsify/blob/main/docs/configuration.md\n")
 			if err != nil {
 				return err
 			}
-			header := config.SchemaHeader + "# gitopsify migration. Reference: https://github.com/hayone1/gitopsify/blob/main/docs/configuration.md\n"
-			if err := os.WriteFile(file, append([]byte(header), b...), 0o644); err != nil {
+			if err := os.WriteFile(file, b, 0o644); err != nil {
 				return err
 			}
 			u.Success("wrote %s", file)
