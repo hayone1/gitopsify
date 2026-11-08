@@ -362,6 +362,11 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   {secret, key}), lease loss detected late and a dropped client skipping
   the output: all fixed with tests (commits "fifth review" and "sixth
   review"); round 6 found the server, store and transform code sound.
+  Round 7 (narrow, with fuzzing and 37 charts' default values) found a
+  bare `key` taken for a credential (tolerations) and later URLs in a
+  string missed, plus wrong redactions of settings: fixed (commit
+  "seventh review"); round 8 checked that commit (see the end of this
+  section).
 - GitHub release downloads returned 504 for every project on 2026-11-08
   (from Hetzner, WSL and GitHub Actions); the Dockerfile now falls back to
   the API asset endpoint (pinned asset IDs, same checksums), and the
@@ -384,7 +389,12 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
 - A replica re-unpacking an output can break a download in progress on the
   same replica (rare: only after another replica pushed that run).
 - A replica that dies while pushing blocks that run's pushes and deletion
-  for the lease (2 minutes).
+  for the lease (2 minutes). A replica that can't renew its lease for a
+  minute stops its push and doesn't store the output; archive writes
+  aren't fenced on the lease beyond that.
+- `session: {secret: <random hex>}` looks like a Secret name and stays;
+  a Secret named in `runners.secret`-style keys may be redacted. The run
+  warns about every redaction, so mistakes show.
 - Helm value redaction is by names and shapes (keys, containers, env
   pairs, URL passwords): reviewed against bitnami, grafana, argo-cd,
   kube-prometheus-stack, velero, airflow and gitlab values over rounds
