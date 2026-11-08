@@ -23,11 +23,14 @@ Every command reads `./gitopsify.yaml` when it exists (or `--config`); flags ove
 | [`gitopsify provider search`](#gitopsify-provider-search) | Search the provider index |
 | [`gitopsify rules`](#gitopsify-rules) | List the built-in exclusion rules |
 | [`gitopsify scan`](#gitopsify-scan) | Inventory the source cluster: what would be migrated, how, and what is left out |
+| [`gitopsify server`](#gitopsify-server) | Run the shared web server (single sign-on, roles, audit log) |
+| [`gitopsify server token`](#gitopsify-server-token) | Make an API token for automation |
 | [`gitopsify skills`](#gitopsify-skills) | Install the gitopsify skills for AI coding agents (Claude Code, Codex, Gemini CLI, Cursor, Copilot) |
 | [`gitopsify skills install`](#gitopsify-skills-install) | Copy the skills to where your AI coding agents find them |
 | [`gitopsify skills list`](#gitopsify-skills-list) | List the bundled skills |
 | [`gitopsify skills show`](#gitopsify-skills-show) | Print a skill's SKILL.md |
 | [`gitopsify status`](#gitopsify-status) | Show whether Argo CD or Flux has synced every app of an environment |
+| [`gitopsify ui`](#gitopsify-ui) | Open the web UI on this machine |
 | [`gitopsify version`](#gitopsify-version) | Print the version |
 | `gitopsify completion bash\|zsh\|fish\|powershell` | Shell completion scripts |
 
@@ -1168,6 +1171,51 @@ Usage: `gitopsify scan [flags]`
 | `--storage-class` |  | map StorageClasses: from=to (repeatable) |
 
 
+## gitopsify server
+
+Run the shared web server (single sign-on, roles, audit log).
+
+```text
+Runs gitopsify's web UI and API for a team: people sign in with OpenID Connect
+(Dex, Keycloak, Okta, Entra ID, Google...), get roles per cluster from their
+groups, and every action lands in an audit log. Runs (scans and migrations)
+work in the background and are kept in the data directory.
+
+The configuration is a Server resource (--config, default
+/etc/gitopsify/server.yaml); docs/web-ui.md describes it, and the Helm chart in
+charts/gitopsify deploys it in a cluster.
+```
+
+Usage: `gitopsify server [flags]`
+
+```sh
+  gitopsify server --config server.yaml
+  gitopsify server token --name ci --role operator
+```
+
+
+## gitopsify server token
+
+Make an API token for automation.
+
+```text
+Prints a new API token and the spec.auth.tokens entry that admits it. The server
+stores only the token's SHA-256; keep the token itself in your CI's secrets and
+send it as "Authorization: Bearer <token>".
+```
+
+Usage: `gitopsify server token [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--cluster` |  | limit the token to these clusters (globs) |
+| `--name` | `automation` | the token's name, as the audit log shows it |
+| `--role` | `operator` | viewer, operator or admin |
+| `--tool` |  | limit the token to these tools (globs) |
+
+
 ## gitopsify skills
 
 Install the gitopsify skills for AI coding agents (Claude Code, Codex, Gemini CLI, Cursor, Copilot).
@@ -1285,6 +1333,36 @@ Usage: `gitopsify status [flags]`
 | `--target-tls-server-name` |  | server name to verify the target cluster's API server certificate against |
 | `--target-token` |  | bearer token for the target cluster (or $GITOPSIFY_TARGET_TOKEN); never written to files |
 | `--target-token-file` |  | file with a bearer token for the target cluster |
+
+
+## gitopsify ui
+
+Open the web UI on this machine.
+
+```text
+Starts the web UI on localhost for you alone and opens it in the browser. It uses
+the clusters of your kubeconfig, as the CLI does, and keeps its runs in
+--data-dir.
+
+For a shared, multi-user server with single sign-on, roles and an audit log,
+run gitopsify server (or the Helm chart) instead.
+```
+
+Usage: `gitopsify ui [flags]`
+
+```sh
+  gitopsify ui
+  gitopsify ui --listen 127.0.0.1:8080 --no-browser
+```
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--data-dir` |  | where runs are kept (default: the user cache directory) |
+| `--kubeconfig` |  | kubeconfig whose contexts the UI offers (default: KUBECONFIG or ~/.kube/config) |
+| `--listen` | `127.0.0.1:0` | address to listen on (localhost only; port 0 picks a free one) |
+| `--no-browser` |  | print the address instead of opening the browser |
 
 
 ## gitopsify version

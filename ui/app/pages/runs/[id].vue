@@ -28,7 +28,11 @@ const canDelete = computed(() => run.value && (run.value.createdBy === me.value?
 const finished = computed(() => run.value && ['succeeded', 'failed', 'canceled'].includes(run.value.status))
 const spec = computed(() => run.value?.spec as Record<string, any> | undefined)
 const specYAML = computed(() => spec.value ? stringify(spec.value) : '')
-const repoURL = computed(() => run.value?.type === 'export' ? run.value.repo?.url : spec.value?.spec?.output?.repo?.url as string | undefined)
+const repoURL = computed(() => {
+  if (run.value?.type === 'export') return run.value.repo?.url
+  const sp = spec.value?.spec
+  return (sp?.output?.repo?.url as string | undefined) || (sp?.environments || []).map((e: any) => e.repoURL).filter(Boolean).join(', ') || undefined
+})
 const produces = computed(() => run.value && run.value.type !== 'scan')
 
 async function loadScan() {
@@ -53,9 +57,12 @@ function connect() {
   })
   source.addEventListener('end', () => { live.value = false; source?.close() })
   source.onerror = () => {
-    live.value = false
-    source?.close()
-    if (!run.value) notFound.value = true
+    // The browser reconnects by itself and the server carries on after the
+    // last line it sent; give up only when it closed for good.
+    if (source?.readyState === EventSource.CLOSED) {
+      live.value = false
+      if (!run.value) notFound.value = true
+    }
   }
 }
 

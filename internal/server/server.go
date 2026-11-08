@@ -59,10 +59,16 @@ type Server struct {
 	ui         *uiHandler
 	limits     *limiter
 	descs      *describes
+	proxies    []*net.IPNet
+	metricsKey string
+	store      store
+	pubMu      sync.Mutex
+	pushing    keyLocks
 	notify     *notifier
 	handler    http.Handler
 	stop       chan struct{}
 	stopOnce   sync.Once
+	closeOnce  sync.Once
 }
 
 // New builds a server: it connects to the OIDC provider, opens the data
@@ -100,11 +106,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 	s.policy = &policy{local: s.auth.mode == config.AuthLocal, def: cfg.RBAC.DefaultRole, bindings: cfg.RBAC.Bindings}
-	if s.audit, err = newAuditLog(filepath.Join(cfg.DataDir, "audit"), cfg.Audit.Stdout, config.Duration(cfg.Audit.Retention), o.Log); err != nil {
-		return nil, fmt.Errorf("data directory %s: %w", cfg.DataDir, err)
+	if s.store, err = openStore(ctx, cfg); err != nil {
+		return nil, err
 	}
-	if s.runs, err = newRuns(filepath.Join(cfg.DataDir, "runs"), cfg.Runs.Concurrency, config.Duration(cfg.Runs.Timeout),
+	s.audit = newAuditLog(s.store, cfg.Audit.Stdout, config.Duration(cfg.Audit.Retention), o.Log)
+	if s.runs, err = newRuns(s.store, filepath.Join(cfg.DataDir, "runs"), cfg.Runs.Concurrency, config.Duration(cfg.Runs.Timeout),
 		config.Duration(cfg.Runs.Retention), o.Log, s.metrics); err != nil {
+		_ = s.store.close()
 		return nil, fmt.Errorf("data directory %s: %w", cfg.DataDir, err)
 	}
 	s.notify = &notifier{hooks: cfg.Notifications, external: external.String(), client: &http.Client{Timeout: 15 * time.Second}, s: s}
@@ -117,6 +125,23 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		_ = os.Setenv(provider.EnvDir, cfg.Providers.Dir)
 	}
 	s.limits = newLimiter()
+	for _, p := range cfg.TrustedProxies {
+		if !strings.Contains(p, "/") {
+			if strings.Contains(p, ":") {
+				p += "/128"
+			} else {
+				p += "/32"
+			}
+		}
+		if _, n, err := net.ParseCIDR(p); err == nil {
+			s.proxies = append(s.proxies, n)
+		}
+	}
+	if cfg.Metrics.Token != (config.SettingValue{}) {
+		if s.metricsKey, err = cfg.Metrics.Token.Resolve(); err != nil {
+			return nil, fmt.Errorf("spec.metrics.token: %w", err)
+		}
+	}
 	s.handler = s.routes()
 	go s.housekeeping()
 	return s, nil
@@ -130,6 +155,9 @@ func (s *Server) Handler() http.Handler { return s.handler }
 func (s *Server) ListenAndServe(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second,
 		ErrorLog: slog.NewLogLogger(s.log.Handler(), slog.LevelWarn)}
+	// Live log streams never end on their own: end them, and stop the runs
+	// (recorded as canceled), before waiting for requests to finish.
+	srv.RegisterOnShutdown(func() { s.stopOnce.Do(func() { close(s.stop) }) })
 	errc := make(chan error, 1)
 	go func() {
 		if t := s.cfg.TLS; t != nil {
@@ -145,10 +173,14 @@ func (s *Server) ListenAndServe(ctx context.Context, ln net.Listener) error {
 		return err
 	case <-ctx.Done():
 	}
-	shutdown, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	s.stopOnce.Do(func() { close(s.stop) })
+	stopRuns, cancelRuns := context.WithTimeout(context.Background(), 15*time.Second)
+	s.runs.shutdown(stopRuns)
+	cancelRuns()
+	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	err := srv.Shutdown(shutdown)
-	s.close(shutdown)
+	s.close(context.Background())
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
 	}
@@ -157,8 +189,29 @@ func (s *Server) ListenAndServe(ctx context.Context, ln net.Listener) error {
 
 func (s *Server) close(ctx context.Context) {
 	s.stopOnce.Do(func() { close(s.stop) })
-	s.runs.shutdown(ctx)
-	s.audit.close()
+	s.closeOnce.Do(func() {
+		s.runs.shutdown(ctx)
+		_ = s.store.close()
+	})
+}
+
+// openStore opens the configured storage.
+func openStore(ctx context.Context, cfg *config.ServerSpec) (store, error) {
+	if cfg.Storage.Type == "postgres" {
+		url, err := cfg.Storage.Postgres.URL.Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("spec.storage.postgres.url: %w", err)
+		}
+		if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+			return nil, err
+		}
+		return newPGStore(ctx, url, cfg.Storage.Postgres.MaxConnections)
+	}
+	st, err := newFileStore(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("data directory %s: %w", cfg.DataDir, err)
+	}
+	return st, nil
 }
 
 func (s *Server) housekeeping() {
@@ -171,6 +224,7 @@ func (s *Server) housekeeping() {
 			return
 		case <-t.C:
 			s.runs.prune()
+			s.audit.prune()
 			s.limits.cleanup()
 		}
 	}
@@ -283,20 +337,42 @@ func sanitizeID(s string) string {
 	return s
 }
 
-// clientIP is the caller's address: the first X-Forwarded-For hop when the
-// server sits behind a proxy it trusts.
+// clientIP is the caller's address. From a trusted proxy, it is the last
+// X-Forwarded-For entry that isn't one (proxies append; the entries before
+// a trusted one are whatever the client sent).
 func (s *Server) clientIP(r *http.Request) string {
-	if s.cfg.TrustForwardedFor {
-		if f := r.Header.Get("X-Forwarded-For"); f != "" {
-			ip, _, _ := strings.Cut(f, ",")
-			return strings.TrimSpace(ip)
-		}
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if !s.trusted(host) {
+		return host
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		h := strings.TrimSpace(hops[i])
+		if net.ParseIP(h) == nil {
+			break
+		}
+		if !s.trusted(h) {
+			return h
+		}
+		host = h
 	}
 	return host
+}
+
+func (s *Server) trusted(ip string) bool {
+	addr := net.ParseIP(ip)
+	if addr == nil {
+		return false
+	}
+	for _, n := range s.proxies {
+		if n.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // handlerFunc is an API handler with its request's info.

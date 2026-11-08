@@ -12,7 +12,7 @@ const installing = ref('')
 const UBadge = resolveComponent('UBadge')
 const UButton = resolveComponent('UButton')
 
-const isAdmin = computed(() => atLeast(me.value?.serverRole, 'admin'))
+const isAdmin = computed(() => !!me.value?.canInstall)
 
 async function load() {
   try {

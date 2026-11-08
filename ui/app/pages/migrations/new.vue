@@ -72,9 +72,20 @@ onMounted(async () => {
   }
 })
 
+// resuming is set while a scan's configuration is loaded, so the cluster
+// watcher keeps it instead of starting over.
+let resuming = false
 watch(cluster, async (c) => {
   if (!c) return
-  namespaces.value = []
+  if (!resuming) {
+    // Another cluster: what was scanned and chosen belongs to the old one.
+    namespaces.value = []
+    scan.value = null
+    scanRun.value = null
+    scanLines.value = []
+    excludeApps.value = []
+    doc.value = null
+  }
   allNamespaces.value = []
   nsLoading.value = true
   try {
@@ -96,10 +107,12 @@ function defaultName(c: string) {
 
 // resumeFrom continues from a finished scan: its configuration and apps.
 async function resumeFrom(id: string) {
+  resuming = true
   try {
     const r = await api<Run>(`/runs/${id}`)
     scanRun.value = r
     cluster.value = r.cluster || ''
+    await nextTick()
     doc.value = r.spec as Record<string, any>
     const sp = doc.value.spec || {}
     name.value = doc.value.metadata?.name || defaultName(r.cluster || '')
@@ -111,6 +124,9 @@ async function resumeFrom(id: string) {
     step.value = 1
   } catch (e) {
     notify.error('Loading the scan failed', e)
+  } finally {
+    // After the cluster watcher ran.
+    setTimeout(() => { resuming = false }, 0)
   }
 }
 
@@ -199,7 +215,11 @@ function follow(id: string) {
       step.value = 1
     }
   })
-  es.onerror = () => { es.close(); scanning.value = false }
+  es.onerror = () => {
+    // The browser reconnects by itself (and the server resumes after the
+    // last line); give up only when it can't.
+    if (es.readyState === EventSource.CLOSED) scanning.value = false
+  }
 }
 
 // --- step 2: apps --------------------------------------------------------------
@@ -265,6 +285,37 @@ async function validate() {
   }
 }
 
+// back leaves the review: edits to the YAML carry over to the form.
+function back() {
+  if (step.value === 3 && yamlText.value) {
+    try {
+      const d = parse(yamlText.value) as Record<string, any>
+      if (d?.spec) {
+        doc.value = d
+        const sp = d.spec
+        namespaces.value = sp.scope?.namespaces || []
+        selector.value = sp.scope?.labelSelector || ''
+        excludeApps.value = sp.scope?.excludeApps || []
+        name.value = d.metadata?.name || name.value
+        readTarget(sp)
+      }
+    } catch {
+      // Unparsable YAML: the form keeps what it had.
+    }
+  }
+  step.value--
+}
+
+// pushTarget is where the reviewed YAML pushes to, if anywhere.
+const pushTarget = computed(() => {
+  try {
+    const sp = (parse(yamlText.value) as Record<string, any>)?.spec
+    return (sp?.output?.repo?.url as string) || (sp?.environments || []).map((e: any) => e.repoURL).filter(Boolean).join(', ')
+  } catch {
+    return ''
+  }
+})
+
 async function generate() {
   creating.value = true
   try {
@@ -275,7 +326,7 @@ async function generate() {
         cluster: cluster.value,
         migration: yamlText.value,
         ...(scanRun.value && { from: scanRun.value.id }),
-        ...(pushAfter.value && { publish: { message: commitMessage.value } })
+        ...(pushAfter.value && pushTarget.value && { publish: { message: commitMessage.value } })
       }
     })
     notify.ok('Migration started')
@@ -290,7 +341,10 @@ async function generate() {
 const canNext = computed(() => {
   if (step.value === 0) return !!scan.value
   if (step.value === 1) return included.value.length > 0
-  if (step.value === 2) return envs.value.some(e => e.name) && (tool.value === 'none' || !!repoURL.value || layout.value === 'repo-per-env')
+  if (step.value === 2) {
+    return envs.value.some(e => e.name) && (tool.value === 'none' || !!repoURL.value || layout.value === 'repo-per-env') &&
+      (secrets.value !== 'sealed-secrets' || !!envs.value[0]?.cluster)
+  }
   return false
 })
 
@@ -430,6 +484,8 @@ const toolItems = [
           <UCard>
             <template #header><h2 class="font-semibold">Secrets</h2></template>
             <URadioGroup v-model="secrets" :items="strategyItems" variant="card" />
+            <UAlert v-if="secrets === 'sealed-secrets' && !envs[0]?.cluster" color="warning" variant="subtle" icon="i-lucide-triangle-alert" class="mt-4"
+              description="Sealing needs the controller's certificate: pick the first environment's target cluster, or choose another strategy." />
             <UFormField v-if="secrets === 'sealed-secrets'" label="Sealing scope" class="mt-4">
               <USelect v-model="sealedScope" :items="['strict', 'namespace-wide', 'cluster-wide']" class="w-full" />
             </UFormField>
@@ -470,7 +526,7 @@ const toolItems = [
               <li class="flex gap-2"><UIcon name="i-lucide-git-branch" class="mt-0.5 shrink-0" />{{ toolLabel }}, {{ envs.map(e => e.name).filter(Boolean).join(', ') }}</li>
               <li class="flex gap-2"><UIcon name="i-lucide-key-round" class="mt-0.5 shrink-0" />Secrets: {{ strategyLabel }}</li>
             </ul>
-            <USwitch v-model="pushAfter" :disabled="!repoURL" label="Push when it's done" :description="repoURL ? repoURL : 'Set a repository URL to push'" />
+            <USwitch v-model="pushAfter" :disabled="!pushTarget" label="Push when it's done" :description="pushTarget || 'Set a repository URL to push'" />
             <UFormField v-if="pushAfter" label="Commit message" class="mt-3">
               <UInput v-model="commitMessage" class="w-full" placeholder="gitopsify: migrate from the cluster" />
             </UFormField>
@@ -480,7 +536,7 @@ const toolItems = [
         </div>
 
         <div class="flex justify-between">
-          <UButton v-if="step > 0" color="neutral" variant="outline" icon="i-lucide-arrow-left" label="Back" @click="step--" />
+          <UButton v-if="step > 0" color="neutral" variant="outline" icon="i-lucide-arrow-left" label="Back" @click="back" />
           <span v-else />
           <UButton v-if="step < 3" trailing-icon="i-lucide-arrow-right" :label="step === 2 ? 'Review' : 'Next'" :disabled="!canNext" @click="next" />
         </div>

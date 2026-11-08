@@ -306,6 +306,11 @@ func (s *Server) startExport(req runRequest, u *User) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
+	if req.Repo != nil {
+		if err := s.checkRepo(req.Repo.URL, req.Repo.Branch, "", t.Name); err != nil {
+			return nil, fmt.Errorf("repo: %w", err)
+		}
+	}
 	in, d, err := s.describe(context.Background(), t.Provider)
 	if err != nil {
 		return nil, err
@@ -321,7 +326,7 @@ func (s *Server) startExport(req runRequest, u *User) (*Run, error) {
 			return err
 		}
 		if req.Publish != nil {
-			return s.publish(rc.ID(), u, req.Publish.Message, rc)
+			_ = s.publish(ctx, rc.ID(), u, req.Publish.Message, rc) // recorded on the run
 		}
 		return nil
 	})

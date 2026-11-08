@@ -3,12 +3,13 @@ package server
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -24,7 +25,13 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
-	mux.Handle("GET /metrics", s.metrics)
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		if s.metricsKey != "" && !constantEq(r.Header.Get("Authorization"), "Bearer "+s.metricsKey) {
+			writeError(w, http.StatusUnauthorized, "send the metrics token")
+			return
+		}
+		s.metrics.ServeHTTP(w, r)
+	})
 
 	s.api(mux, "GET /api/v1/info", "public", s.getInfo)
 	s.api(mux, "GET /api/v1/auth/login", "public", s.login)
@@ -92,7 +99,12 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 	if err != nil {
 		s.metrics.login("failed")
 		s.audit.record(AuditEvent{Action: "auth.login", Outcome: "error", Detail: err.Error(), IP: ri.ip, Request: ri.id, Via: "oidc"})
-		http.Redirect(w, r, "/login?error="+url.QueryEscape(err.Error()), http.StatusFound)
+		code := "failed"
+		var le *loginError
+		if errors.As(err, &le) {
+			code = le.code
+		}
+		http.Redirect(w, r, "/login?error="+code, http.StatusFound)
 		return
 	}
 	full := *u
@@ -117,10 +129,11 @@ func (s *Server) localLogin(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 		writeError(w, http.StatusNotFound, "this server doesn't use local sign-in")
 		return
 	}
-	if !constantEq(r.URL.Query().Get("token"), s.auth.local) {
+	// The link works once: it may sit in the browser's history.
+	if !s.auth.useLocalToken(r.URL.Query().Get("token")) {
 		s.metrics.login("failed")
-		s.audit.record(AuditEvent{Action: "auth.login", Outcome: "denied", Detail: "wrong local token", IP: ri.ip, Request: ri.id, Via: "local"})
-		http.Redirect(w, r, "/login?error="+url.QueryEscape("That sign-in link is wrong or old. Use the one gitopsify ui printed."), http.StatusFound)
+		s.audit.record(AuditEvent{Action: "auth.login", Outcome: "denied", Detail: "wrong or used local token", IP: ri.ip, Request: ri.id, Via: "local"})
+		http.Redirect(w, r, "/login?error=link", http.StatusFound)
 		return
 	}
 	u := User{Username: "local", Name: "You", Via: "local"}
@@ -148,13 +161,16 @@ type me struct {
 	Tools      map[string]string `json:"tools"`
 	CSRF       string            `json:"csrf,omitempty"`
 	AuthMode   string            `json:"authMode"`
-	Version    string            `json:"version"`
-	Expires    *time.Time        `json:"expires,omitempty"`
+	// CanInstall reports whether the caller may install providers.
+	CanInstall bool       `json:"canInstall"`
+	Version    string     `json:"version"`
+	Expires    *time.Time `json:"expires,omitempty"`
 }
 
 func (s *Server) getMe(w http.ResponseWriter, _ *http.Request, ri *reqInfo) {
 	m := me{User: *ri.user, Role: anyRole(ri.grants), ServerRole: serverRole(ri.grants), Clusters: map[string]string{},
-		Tools: map[string]string{}, AuthMode: s.auth.mode, Version: s.version}
+		Tools: map[string]string{}, AuthMode: s.auth.mode, Version: s.version,
+		CanInstall: !s.cfg.Providers.DisableInstall && atLeast(serverRole(ri.grants), config.RoleAdmin)}
 	for _, t := range s.cfg.Tools {
 		if role := roleOnTool(ri.grants, t.Name); role != "" {
 			m.Tools[t.Name] = role
@@ -238,6 +254,15 @@ func (s *Server) validateMigration(w http.ResponseWriter, r *http.Request, ri *r
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Only for what the caller may use: no probing for names.
+	if req.Type == RunExport {
+		if roleOnTool(ri.grants, req.Tool) == "" {
+			writeError(w, http.StatusForbidden, "you have no role on tool "+req.Tool)
+			return
+		}
+	} else if !s.can(w, r, ri, config.RoleViewer, req.Cluster, "migration.validate") {
+		return
+	}
 	var err error
 	if req.Type == RunExport {
 		_, _, err = s.prepareExport(req.Export, req.Tool)
@@ -316,6 +341,11 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	busy := s.runs.list(func(x *Run) bool { return x.CreatedBy == ri.user.Username && !x.finished() })
+	if len(busy) >= s.cfg.Runs.MaxQueuedPerUser {
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("you have %d runs queued or working; wait for them or cancel some", len(busy)))
+		return
+	}
 	var run *Run
 	var err error
 	if req.Type == RunExport {
@@ -378,7 +408,7 @@ func (s *Server) deleteRun(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	s.event(r, "run.delete", "ok", run.Cluster, run.ID, "")
+	s.event(r, "run.delete", "ok", run.Cluster+run.Tool, run.ID, "")
 	writeJSONResponse(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -391,7 +421,7 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		writeError(w, http.StatusConflict, "the run has finished")
 		return
 	}
-	s.event(r, "run.cancel", "ok", run.Cluster, run.ID, "")
+	s.event(r, "run.cancel", "ok", run.Cluster+run.Tool, run.ID, "")
 	writeJSONResponse(w, http.StatusOK, map[string]string{"status": "canceling"})
 }
 
@@ -411,12 +441,16 @@ func (s *Server) publishRun(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 			return
 		}
 	}
-	if err := s.publish(run.ID, ri.user, req.Message, nil); err != nil {
-		s.event(r, "run.publish", "error", run.Cluster, run.ID, err.Error())
-		writeError(w, http.StatusBadGateway, err.Error())
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	if err := s.publish(ctx, run.ID, ri.user, req.Message, nil); err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, errPushing) {
+			code = http.StatusConflict
+		}
+		writeError(w, code, err.Error())
 		return
 	}
-	s.event(r, "run.publish", "ok", run.Cluster, run.ID, "")
 	run, _ = s.runs.get(run.ID)
 	writeJSONResponse(w, http.StatusOK, run)
 }
@@ -432,10 +466,15 @@ func (s *Server) runEvents(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		writeError(w, http.StatusInternalServerError, "streaming isn't supported")
 		return
 	}
-	lines, ch, unsubscribe, ok := s.runs.subscribe(run.ID)
+	snapshot, lines, ch, unsubscribe, ok := s.runs.subscribe(r.Context(), run.ID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "no such run")
 		return
+	}
+	// A browser reconnecting sends the last event it had: carry on from there.
+	from := 0
+	if last, err := strconv.Atoi(r.Header.Get("Last-Event-ID")); err == nil && last >= 0 {
+		from = last + 1
 	}
 	defer unsubscribe()
 	h := w.Header()
@@ -449,12 +488,22 @@ func (s *Server) runEvents(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		flusher.Flush()
 		return err == nil
 	}
-	for _, l := range lines {
-		if !send("log", l) {
+	sendLog := func(seq int, l *LogLine) bool {
+		if seq < from {
+			return true
+		}
+		b, _ := json.Marshal(l)
+		_, err := fmt.Fprintf(w, "id: %d\nevent: log\ndata: %s\n\n", seq, b)
+		flusher.Flush()
+		return err == nil
+	}
+	_, _ = fmt.Fprint(w, "retry: 3000\n\n")
+	for i := range lines {
+		if !sendLog(i, &lines[i]) {
 			return
 		}
 	}
-	send("run", run)
+	send("run", snapshot)
 	if ch == nil {
 		send("end", map[string]string{})
 		return
@@ -464,6 +513,8 @@ func (s *Server) runEvents(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-s.stop:
 			return
 		case <-heartbeat.C:
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
@@ -478,7 +529,7 @@ func (s *Server) runEvents(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 				send("end", map[string]string{})
 				return
 			}
-			if ev.Log != nil && !send("log", ev.Log) {
+			if ev.Log != nil && !sendLog(ev.Seq, ev.Log) {
 				return
 			}
 			if ev.Run != nil && !send("run", ev.Run) {
@@ -493,8 +544,7 @@ func (s *Server) runLog(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 	if !ok {
 		return
 	}
-	lines, _, unsubscribe, _ := s.runs.subscribe(run.ID)
-	unsubscribe()
+	lines := s.runs.readLog(run.ID)
 	if lines == nil {
 		lines = []LogLine{}
 	}
@@ -506,7 +556,7 @@ func (s *Server) runScan(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 	if !ok {
 		return
 	}
-	b, err := os.ReadFile(filepath.Join(s.runs.runDir(run.ID), "scan.json"))
+	b, err := s.runs.getBlob(run.ID, "scan.json")
 	if err != nil {
 		writeError(w, http.StatusNotFound, "this run has no scan result (yet)")
 		return
@@ -536,8 +586,12 @@ func (s *Server) runFiles(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 	if !ok {
 		return
 	}
-	root := s.runs.outputDir(run.ID)
 	out := []fileEntry{}
+	root, err := s.runs.ensureOutput(r.Context(), run.ID)
+	if err != nil {
+		writeJSONResponse(w, http.StatusOK, out)
+		return
+	}
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -572,7 +626,12 @@ func (s *Server) runFile(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 		writeError(w, http.StatusNotFound, "no such file")
 		return
 	}
-	root, err := os.OpenRoot(s.runs.outputDir(run.ID))
+	dir, err := s.runs.ensureOutput(r.Context(), run.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no such file")
+		return
+	}
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "no such file")
 		return
@@ -604,18 +663,18 @@ func (s *Server) runArchive(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 	if !ok {
 		return
 	}
-	root := s.runs.outputDir(run.ID)
-	if _, err := os.Stat(root); err != nil {
+	root, err := s.runs.ensureOutput(r.Context(), run.ID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "this run wrote no files")
 		return
 	}
 	name := firstNonEmpty(run.Name, "gitopsify") + "-" + run.ID
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.tar.gz"`, name))
-	s.event(r, "run.download", "ok", run.Cluster, run.ID, "")
+	s.event(r, "run.download", "ok", run.Cluster+run.Tool, run.ID, "")
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"path"
 	"strings"
@@ -47,8 +48,11 @@ type ServerSpec struct {
 	// ExternalURL is the address people reach the server at, such as
 	// https://gitopsify.example.com. OIDC redirects and cookies use it.
 	ExternalURL string `json:"externalURL,omitempty"`
-	// DataDir holds runs, their output and the audit log.
+	// DataDir holds runs, their output and the audit log (with file
+	// storage), or this replica's working copies (with PostgreSQL).
 	DataDir string `json:"dataDir,omitempty"`
+	// Storage is where runs and the audit log are kept.
+	Storage ServerStorage `json:"storage,omitzero"`
 	// TLS serves HTTPS itself; usually an ingress terminates TLS instead.
 	TLS  *ServerTLS `json:"tls,omitempty"`
 	Auth ServerAuth `json:"auth,omitzero"`
@@ -68,10 +72,37 @@ type ServerSpec struct {
 	Audit ServerAudit `json:"audit,omitzero"`
 	// Notifications post to webhooks when runs finish.
 	Notifications []ServerNotification `json:"notifications,omitempty"`
-	// TrustForwardedFor takes the client address from X-Forwarded-For (for
-	// rate limits and the audit log). Set it only behind a proxy that
-	// overwrites the header.
-	TrustForwardedFor bool `json:"trustForwardedFor,omitempty"`
+	// TrustedProxies are the addresses (CIDRs) of the proxies in front of
+	// the server, such as the ingress controller's pods. From them, the client
+	// address (for rate limits and the audit log) is the last
+	// X-Forwarded-For entry that isn't a trusted proxy.
+	TrustedProxies []string `json:"trustedProxies,omitempty"`
+	// Metrics protects /metrics.
+	Metrics ServerMetrics `json:"metrics,omitzero"`
+}
+
+// ServerMetrics protects /metrics.
+type ServerMetrics struct {
+	// Token, when set, must be sent as "Authorization: Bearer <token>".
+	Token SettingValue `json:"token,omitzero"`
+}
+
+// ServerStorage is where runs and the audit log are kept.
+type ServerStorage struct {
+	// Type is file (dataDir; one replica) or postgres (shared, so several
+	// replicas can serve and work).
+	Type     string          `json:"type,omitempty"`
+	Postgres *ServerPostgres `json:"postgres,omitempty"`
+}
+
+// ServerPostgres is a PostgreSQL database.
+type ServerPostgres struct {
+	// URL is a connection string, such as
+	// postgres://gitopsify:<password>@db:5432/gitopsify?sslmode=require,
+	// usually from env or file.
+	URL SettingValue `json:"url"`
+	// MaxConnections caps the connection pool (default 4 per CPU).
+	MaxConnections int `json:"maxConnections,omitempty"`
 }
 
 // ServerTLS is a certificate and its key, as PEM files.
@@ -109,8 +140,12 @@ type ServerOIDC struct {
 	UsernameClaim string `json:"usernameClaim,omitempty"`
 	// GroupsClaim lists the user's groups (default groups).
 	GroupsClaim string `json:"groupsClaim,omitempty"`
-	// AllowedDomains, when set, admits only these email domains.
+	// AllowedDomains, when set, admits only these (verified) email domains.
 	AllowedDomains []string `json:"allowedDomains,omitempty"`
+	// TrustUnverifiedEmail uses the email claim even when the token doesn't
+	// say email_verified: true. Only for providers whose emails can't be set
+	// by users; Microsoft Entra ID's can (use usernameClaim: oid there).
+	TrustUnverifiedEmail bool `json:"trustUnverifiedEmail,omitempty"`
 	// CAFile trusts a private CA for the issuer.
 	CAFile string `json:"caFile,omitempty"`
 }
@@ -197,20 +232,42 @@ type ServerCluster struct {
 	Access Access `json:"access,omitzero"`
 	// Impersonate makes requests as the signed-in user and their groups
 	// (Kubernetes RBAC then applies per person). The server's own identity
-	// needs the impersonate verb.
+	// needs the impersonate verb. Groups and usernames starting with
+	// "system:" are never impersonated.
 	Impersonate bool `json:"impersonate,omitempty"`
+	// ImpersonateUserPrefix and ImpersonateGroupPrefix are put before the
+	// username and groups, as the API server's --oidc-username-prefix and
+	// --oidc-groups-prefix do (for example "oidc:").
+	ImpersonateUserPrefix  string `json:"impersonateUserPrefix,omitempty"`
+	ImpersonateGroupPrefix string `json:"impersonateGroupPrefix,omitempty"`
 	// Token is a bearer token for the cluster, from env or file.
 	Token SettingValue `json:"token,omitzero"`
 }
 
 // ServerGit is how the server pushes to Git remotes.
 type ServerGit struct {
+	// Repositories are the remotes runs may check out and push to, per
+	// cluster and tool: the server's credentials write to them on people's
+	// behalf. Empty allows every https and ssh remote, which suits a server
+	// for one team only.
+	Repositories []GitRepository `json:"repositories,omitempty"`
 	// Credentials by host. HTTPS remotes get the token; SSH remotes the key.
 	Credentials []GitCredential `json:"credentials,omitempty"`
+	// AllowHTTP allows plain http:// remotes (test servers).
+	AllowHTTP bool `json:"allowHTTP,omitempty"`
 	// AuthorName and AuthorEmail sign the server's commits (default:
 	// gitopsify, the signed-in user's email when known).
 	AuthorName  string `json:"authorName,omitempty"`
 	AuthorEmail string `json:"authorEmail,omitempty"`
+}
+
+// GitRepository allows remotes matching URL (a glob, such as
+// https://github.com/acme/shop-*) for runs on these clusters and tools
+// (globs; with neither, all).
+type GitRepository struct {
+	URL      string   `json:"url"`
+	Clusters []string `json:"clusters,omitempty"`
+	Tools    []string `json:"tools,omitempty"`
 }
 
 // GitCredential authenticates to one Git host.
@@ -238,6 +295,14 @@ type ServerRuns struct {
 	// AllowSecretValues allows the local and plain Secret strategies, which
 	// store Secret values on the server and in its downloads.
 	AllowSecretValues bool `json:"allowSecretValues,omitempty"`
+	// SOPSRecipients are the age, PGP or KMS recipients SOPS may encrypt
+	// to. A migration whose recipients aren't all listed is refused, unless
+	// its cluster impersonates (people then only read what Kubernetes lets
+	// them). Empty: SOPS only on impersonating clusters.
+	SOPSRecipients []string `json:"sopsRecipients,omitempty"`
+	// MaxQueuedPerUser caps the runs one person has queued or working
+	// (default 10).
+	MaxQueuedPerUser int `json:"maxQueuedPerUser,omitempty"`
 }
 
 // ServerAudit configures the audit log (JSON lines in dataDir/audit).
@@ -266,6 +331,9 @@ func LoadServer(path string) (*Server, error) {
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	if s.Spec.Auth.Mode == AuthLocal {
+		return nil, fmt.Errorf("%s: spec.auth.mode: local is for gitopsify ui on one machine; a server signs people in with oidc", path)
+	}
 	return s, nil
 }
 
@@ -286,6 +354,9 @@ func (s *Server) Default() {
 	}
 	if sp.DataDir == "" {
 		sp.DataDir = "/var/lib/gitopsify"
+	}
+	if sp.Storage.Type == "" {
+		sp.Storage.Type = "file"
 	}
 	if sp.Auth.Mode == "" {
 		sp.Auth.Mode = AuthOIDC
@@ -311,6 +382,9 @@ func (s *Server) Default() {
 	}
 	if sp.Runs.Retention == "" {
 		sp.Runs.Retention = "720h"
+	}
+	if sp.Runs.MaxQueuedPerUser == 0 {
+		sp.Runs.MaxQueuedPerUser = 10
 	}
 	if sp.Audit.Retention == "" {
 		sp.Audit.Retention = "2160h"
@@ -345,6 +419,20 @@ func (s *Server) Validate() error {
 	if sp.ExternalURL != "" {
 		if u, err := url.Parse(sp.ExternalURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			add("spec.externalURL %q isn't an http(s) URL", sp.ExternalURL)
+		} else if strings.Trim(u.Path, "/") != "" {
+			add("spec.externalURL %q has a path; serve gitopsify at the root of a host", sp.ExternalURL)
+		}
+	}
+	for i, c := range sp.TrustedProxies {
+		if _, _, err := net.ParseCIDR(c); err != nil {
+			if net.ParseIP(c) == nil {
+				add("spec.trustedProxies[%d] %q isn't a CIDR or an address", i, c)
+			}
+		}
+	}
+	for i, r := range sp.Git.Repositories {
+		if r.URL == "" {
+			add("spec.git.repositories[%d] has no url", i)
 		}
 	}
 	switch sp.Auth.Mode {
@@ -360,8 +448,17 @@ func (s *Server) Validate() error {
 	default:
 		add("spec.auth.mode %q: want local or oidc", sp.Auth.Mode)
 	}
-	if _, err := time.ParseDuration(sp.Auth.SessionTTL); err != nil {
-		add("spec.auth.sessionTTL: %v", err)
+	switch sp.Storage.Type {
+	case "file":
+	case "postgres":
+		if sp.Storage.Postgres == nil || sp.Storage.Postgres.URL == (SettingValue{}) {
+			add("spec.storage.postgres.url is needed with spec.storage.type: postgres")
+		}
+	default:
+		add("spec.storage.type %q: want file or postgres", sp.Storage.Type)
+	}
+	if d, err := time.ParseDuration(sp.Auth.SessionTTL); err != nil || d <= 0 {
+		add("spec.auth.sessionTTL %q: want a positive duration, such as 12h", sp.Auth.SessionTTL)
 	}
 	for _, d := range []struct{ name, v string }{{"runs.timeout", sp.Runs.Timeout}, {"runs.retention", sp.Runs.Retention}, {"audit.retention", sp.Audit.Retention}} {
 		if _, err := time.ParseDuration(d.v); err != nil {
@@ -453,6 +550,9 @@ func (s *Server) Validate() error {
 	for i, g := range sp.Git.Credentials {
 		if g.Host == "" {
 			add("spec.git.credentials[%d].host is empty", i)
+		}
+		if g.SSHKeyFile != "" && g.KnownHostsFile == "" {
+			add("spec.git.credentials[%d] (%s): sshKeyFile needs knownHostsFile (the host keys to trust)", i, g.Host)
 		}
 	}
 	if len(errs) > 0 {

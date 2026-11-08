@@ -5,10 +5,17 @@ metadata:
   labels:
     {{- include "gitopsify.labels" . | nindent 4 }}
 spec:
+  {{- if eq .Values.storage.type "postgres" }}
+  # Replicas share PostgreSQL: any of them serves any run.
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+  {{- else }}
   # One replica: runs work in this pod and its volume holds their output.
   replicas: 1
   strategy:
     type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "gitopsify.selectorLabels" . | nindent 6 }}
@@ -53,6 +60,13 @@ spec:
             - name: GITOPSIFY_OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef: {name: {{ include "gitopsify.secretName" . }}, key: oidc-client-secret, optional: true}
+            {{- if eq .Values.storage.type "postgres" }}
+            - name: GITOPSIFY_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (include "gitopsify.secretName" .) .Values.storage.postgres.existingSecret }}
+                  key: {{ if .Values.storage.postgres.existingSecret }}{{ .Values.storage.postgres.secretKey }}{{ else }}postgres-url{{ end }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -84,7 +98,7 @@ spec:
           configMap:
             name: {{ include "gitopsify.fullname" . }}
         - name: data
-          {{- if .Values.persistence.enabled }}
+          {{- if and .Values.persistence.enabled (ne .Values.storage.type "postgres") }}
           persistentVolumeClaim:
             claimName: {{ default (include "gitopsify.fullname" .) .Values.persistence.existingClaim }}
           {{- else }}

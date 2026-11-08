@@ -282,7 +282,7 @@ func TestOIDCRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.Request.URL.Path != "/login" || !strings.Contains(resp.Request.URL.RawQuery, "access_denied") {
+	if resp.Request.URL.Path != "/login" || resp.Request.URL.RawQuery != "error=refused" {
 		t.Errorf("refused sign-in ended at %s", resp.Request.URL)
 	}
 	// A callback without the login cookie (CSRF on the sign-in) is refused.

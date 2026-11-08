@@ -46,6 +46,12 @@ server:
   #      certificateAuthority: /etc/gitopsify/clusters/prod-eu/ca.crt
   #    token: {file: /etc/gitopsify/clusters/prod-eu/token}
   git:
+    # The repositories runs may check out and push to with the credentials
+    # below, per cluster or tool. Empty allows any https/ssh repository:
+    # only for a server that serves one team.
+    repositories: []
+    #  - url: https://github.com/acme/shop-*
+    #    clusters: [shop-*]
     credentials: []
     #  - host: github.com
     #    token: {env: GITHUB_TOKEN}
@@ -56,8 +62,26 @@ server:
   audit:
     stdout: true
     retention: 2160h
-  # The ingress controller sets X-Forwarded-For.
-  trustForwardedFor: true
+  # The proxies in front (the ingress controller's pods): from them, the
+  # client address comes from X-Forwarded-For.
+  trustedProxies: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7]
+  # /metrics needs this bearer token when set (the ingress exposes it):
+  # metrics: {token: {env: METRICS_TOKEN}}
+
+# Where runs and the audit log are kept: file (the PVC below; one replica)
+# or postgres (shared by several replicas: high availability).
+storage:
+  type: file
+  postgres:
+    # The connection string (postgres://user:password@host:5432/db?sslmode=require),
+    # from an existing Secret (key below) or stored in the chart's Secret.
+    existingSecret: ""
+    secretKey: url
+    url: ""
+    maxConnections: 0
+
+# More than one needs storage.type: postgres.
+replicaCount: 1
 
 # This cluster, as a source and target, through the pod's ServiceAccount.
 inCluster:
@@ -65,7 +89,10 @@ inCluster:
   name: in-cluster
   description: The cluster gitopsify runs in
   # Read as the signed-in person (Kubernetes RBAC applies per person); the
-  # ServiceAccount then needs the impersonate verb (rbac.impersonate).
+  # ServiceAccount then needs the impersonate verb (rbac.impersonate), and
+  # loses its own read access (rbac.clusterReader applies only without).
+  # Without impersonation, operators can migrate everything the
+  # ServiceAccount reads, Secrets included.
   impersonate: false
 
 rbac:
@@ -82,7 +109,9 @@ serviceAccount:
 
 secrets:
   # Signs and encrypts session cookies. Generated (and kept across upgrades)
-  # when empty and no existingSecret is given.
+  # by helm install/upgrade when empty and no existingSecret is given. With
+  # Argo CD, Flux or helm template there is no lookup: set it (or
+  # existingSecret), or every sync makes a new key and signs everyone out.
   sessionKey: ""
   # The OIDC client secret.
   oidcClientSecret: ""
@@ -96,6 +125,8 @@ extraEnv: []
 extraVolumes: []
 extraVolumeMounts: []
 
+# The data directory (file storage). With postgres, replicas keep only
+# working copies there, in an emptyDir.
 persistence:
   enabled: true
   storageClass: ""

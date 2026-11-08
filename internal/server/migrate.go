@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hayone1/gitopsify/pkg/config"
@@ -138,8 +139,69 @@ func (s *Server) prepareMigration(text, cluster string, u *User) (*config.Config
 			}
 		}
 	}
+	if err := s.checkSOPS(cfg, c); err != nil {
+		return nil, err
+	}
+	// Repositories: the server checks them out and pushes to them with its
+	// own credentials.
+	if cfg.Output.Repo.URL != "" {
+		if err := s.checkRepo(cfg.Output.Repo.URL, cfg.Output.Repo.Revision, cluster, ""); err != nil {
+			return nil, fmt.Errorf("spec.output.repo: %w", err)
+		}
+	} else if err := checkBranch(cfg.Output.Repo.Revision); err != nil {
+		return nil, fmt.Errorf("spec.output.repo.revision: %w", err)
+	}
+	for i, e := range cfg.Environments {
+		if e.RepoURL != "" {
+			if err := s.checkRepo(e.RepoURL, cfg.Output.Repo.Revision, cluster, ""); err != nil {
+				return nil, fmt.Errorf("spec.environments[%d].repoURL: %w", i, err)
+			}
+		}
+	}
+	if usesSealedSecrets(cfg) && (len(cfg.Environments) == 0 || !cfg.Environments[0].Cluster.Access.Configured()) {
+		return nil, errors.New("Sealed Secrets are sealed with the controller's certificate, which the server fetches from the first environment's cluster: pick that cluster (spec.environments[0].cluster.context), or use sops, external-secrets or skip")
+	}
 	cfg.Output.Dir = "" // set per run
 	return cfg, nil
+}
+
+// checkSOPS refuses SOPS recipients the operator chose themselves on a
+// cluster read with the server's identity: they could decrypt Secrets
+// Kubernetes wouldn't let them read.
+func (s *Server) checkSOPS(cfg *config.Config, c *config.ServerCluster) error {
+	uses := cfg.Secrets.Strategy == config.SecretsSOPS
+	for _, o := range cfg.Secrets.Overrides {
+		uses = uses || o.Strategy == config.SecretsSOPS
+	}
+	if !uses || c.Impersonate {
+		return nil
+	}
+	sp := cfg.Secrets.SOPS
+	var recipients []string
+	for _, l := range [][]string{sp.Age, sp.PGP, sp.KMS, sp.GCPKMS, sp.AzureKV} {
+		recipients = append(recipients, l...)
+	}
+	if len(s.cfg.Runs.SOPSRecipients) == 0 {
+		return fmt.Errorf("SOPS on cluster %s needs recipients an admin approved (spec.runs.sopsRecipients), or a cluster that impersonates you", c.Name)
+	}
+	for _, r := range recipients {
+		if !contains(s.cfg.Runs.SOPSRecipients, r) {
+			return fmt.Errorf("SOPS recipient %s isn't one an admin approved (spec.runs.sopsRecipients)", r)
+		}
+	}
+	return nil
+}
+
+func usesSealedSecrets(cfg *config.Config) bool {
+	if cfg.Secrets.Strategy == config.SecretsSealedSecrets {
+		return true
+	}
+	for _, o := range cfg.Secrets.Overrides {
+		if o.Strategy == config.SecretsSealedSecrets {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) grantsOf(u *User) []grant {
@@ -169,7 +231,7 @@ func (s *Server) startRun(req runRequest, u *User) (*Run, error) {
 	}
 	// The resource as submitted (with the defaults), without the access
 	// settings the server filled in.
-	spec, _ := json.Marshal(publicDocument(cfg, req.Cluster))
+	spec, _ := json.Marshal(publicDocument(cfg))
 	r := Run{Type: req.Type, Name: cfg.Metadata.Name, Cluster: req.Cluster, CreatedBy: u.Username, Spec: spec, From: req.From}
 	switch req.Type {
 	case RunScan:
@@ -180,7 +242,9 @@ func (s *Server) startRun(req runRequest, u *User) (*Run, error) {
 				return err
 			}
 			if req.Publish != nil {
-				return s.publish(rc.ID(), u, req.Publish.Message, rc)
+				// A failed push is recorded on the run, which keeps its
+				// output: push again once the cause is fixed.
+				_ = s.publish(ctx, rc.ID(), u, req.Publish.Message, rc)
 			}
 			return nil
 		})
@@ -190,7 +254,7 @@ func (s *Server) startRun(req runRequest, u *User) (*Run, error) {
 
 // publicDocument is the migration without server-side access settings,
 // with environment clusters named by their registered name.
-func publicDocument(cfg *config.Config, cluster string) any {
+func publicDocument(cfg *config.Config) any {
 	c := *cfg
 	c.Source.Access = config.Access{}
 	c.Environments = append([]config.Environment(nil), cfg.Environments...)
@@ -198,7 +262,6 @@ func publicDocument(cfg *config.Config, cluster string) any {
 		c.Environments[i].Cluster.Access = config.Access{Context: cfg.Environments[i].Cluster.Access.Context}
 	}
 	c.Output.Dir = ""
-	_ = cluster
 	return c.Document()
 }
 
@@ -214,7 +277,7 @@ func (s *Server) scan(ctx context.Context, rc *runContext, cfg *config.Config) e
 		return err
 	}
 	out := summarize(res)
-	if err := writeJSON(filepath.Join(s.runs.runDir(rc.ID()), "scan.json"), out); err != nil {
+	if err := s.putJSON(rc.ID(), "scan.json", out); err != nil {
 		return err
 	}
 	rc.update(func(r *Run) { r.Summary = summaryOf(res, 0) })
@@ -236,16 +299,22 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 	// Continue the remote's history, as generate --push does.
 	if cfg.Output.Repo.URL != "" {
 		for d, remote := range layoutDirs(cfg) {
-			env, err := gitEnv(s.cfg.Git.Credentials, remote)
+			env, err := gitEnv(s.cfg.Git, remote)
 			if err != nil {
 				return err
 			}
-			done, err := gitrepo.CheckoutEnv(d, remote, cfg.Output.Repo.Revision, env)
+			done, err := gitrepo.CheckoutEnv(ctx, d, remote, cfg.Output.Repo.Revision, env)
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				rc.Warn("couldn't check out %s (%v); the output starts a new history and pushing it may be refused", remote, err)
 				continue
 			}
 			if done {
+				if err := noSymlinks(d); err != nil {
+					return err
+				}
 				rc.Info("checked out %s (%s)", remote, firstNonEmpty(cfg.Output.Repo.Revision, "main"))
 			}
 		}
@@ -259,7 +328,7 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 	if err := pipeline.Finish(ctx, popts, res); err != nil {
 		return err
 	}
-	if err := writeJSON(filepath.Join(s.runs.runDir(rc.ID()), "scan.json"), summarize(res)); err != nil {
+	if err := s.putJSON(rc.ID(), "scan.json", summarize(res)); err != nil {
 		return err
 	}
 	written, _, err := res.Tree.Write(dir, true)
@@ -276,24 +345,28 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 }
 
 // publish commits and pushes a migration's or an export's output.
-func (s *Server) publish(id string, u *User, message string, rc *runContext) error {
+func (s *Server) publish(ctx context.Context, id string, u *User, message string, rc *runContext) error {
+	if !s.pushing.TryLock(id) {
+		return errPushing
+	}
+	defer s.pushing.Unlock(id)
 	r, ok := s.runs.get(id)
 	if !ok {
 		return os.ErrNotExist
 	}
 	var cfg *config.Config
+	var err error
 	if r.Type == RunExport {
 		if r.Repo == nil || r.Repo.URL == "" {
 			return errors.New("the export has no repository to push to")
 		}
 		cfg = &config.Config{Output: config.Output{Repo: config.Repo{URL: r.Repo.URL, Revision: r.Repo.Branch}}}
-	} else {
-		var err error
-		if cfg, err = config.ParseMigration("migration.json", r.Spec); err != nil {
-			return err
-		}
+	} else if cfg, err = config.ParseMigration("migration.json", r.Spec); err != nil {
+		return err
 	}
-	cfg.Output.Dir = s.runs.outputDir(id)
+	if cfg.Output.Dir, err = s.runs.ensureOutput(context.Background(), id); err != nil {
+		return fmt.Errorf("the run's output: %w", err)
+	}
 	if cfg.Output.Repo.URL == "" && (cfg.Output.Layout != config.LayoutRepoPerEnv || len(cfg.Environments) == 0 || cfg.Environments[0].RepoURL == "") {
 		return errors.New("the migration has no spec.output.repo.url to push to")
 	}
@@ -318,19 +391,30 @@ func (s *Server) publish(id string, u *User, message string, rc *runContext) err
 		remote := dirs[d]
 		p := Publish{At: time.Now().UTC(), By: u.Username, Dir: strings.TrimPrefix(strings.TrimPrefix(d, cfg.Output.Dir), "/"),
 			Remote: remote, Branch: firstNonEmpty(cfg.Output.Repo.Revision, "main")}
-		env, err := gitEnv(s.cfg.Git.Credentials, remote)
+		env, err := gitEnv(s.cfg.Git, remote)
+		if err == nil {
+			err = s.checkRepo(remote, p.Branch, r.Cluster, r.Tool)
+		}
+		if err == nil {
+			err = noSymlinks(d)
+		}
 		if err == nil {
 			var res *gitrepo.Result
 			res, err = gitrepo.Publish(gitrepo.Options{Dir: d, Remote: remote, Branch: p.Branch, Message: message, Push: true,
-				AuthorName: name, AuthorEmail: email, Env: env})
+				AuthorName: name, AuthorEmail: email, Env: env, Context: ctx})
 			if err == nil {
 				p.Commit, p.Pushed = res.Commit, res.Pushed
 			}
 		}
+		outcome, detail := "ok", p.Remote+" "+p.Branch+" "+p.Commit
 		if err != nil {
 			p.Error = err.Error()
 			failed = err
+			outcome, detail = "error", p.Remote+": "+err.Error()
 		}
+		// Every push is audited, from the button or as part of a run.
+		s.audit.record(AuditEvent{Actor: u.Username, Via: u.Via, Action: "run.publish", Outcome: outcome,
+			Cluster: firstNonEmpty(r.Cluster, r.Tool), Target: id, Detail: detail})
 		if rc != nil {
 			if err != nil {
 				rc.Warn("pushing to %s failed: %v", remote, err)
@@ -338,9 +422,11 @@ func (s *Server) publish(id string, u *User, message string, rc *runContext) err
 				rc.Info("pushed %s to %s (%s)", p.Commit, remote, p.Branch)
 			}
 		}
-		if st, ok := s.runs.state(id); ok {
-			s.runs.update(st, func(r *Run) { r.Publishes = append(r.Publishes, p) })
-		}
+		s.recordPublish(id, p, rc)
+	}
+	// Keep the commit for later pushes from any replica.
+	if err := s.runs.saveOutput(id); err != nil {
+		s.log.Warn("storing the output after a push", "run", id, "error", err)
 	}
 	return failed
 }
@@ -402,10 +488,58 @@ func summaryOf(res *pipeline.Result, files int) *RunSummary {
 	return s
 }
 
-func writeJSON(path string, v any) error {
+func (s *Server) putJSON(id, name string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o600)
+	return s.runs.putBlob(id, name, b)
+}
+
+// recordPublish adds a push to a run: through its run context while it
+// works, in the store afterwards.
+func (s *Server) recordPublish(id string, p Publish, rc *runContext) {
+	if rc != nil {
+		rc.update(func(r *Run) { r.Publishes = append(r.Publishes, p) })
+		return
+	}
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	r, ok := s.runs.get(id)
+	if !ok {
+		return
+	}
+	r.Publishes = append(r.Publishes, p)
+	ctx, cancel := bg()
+	defer cancel()
+	if err := s.store.saveRun(ctx, r, ""); err != nil {
+		s.log.Warn("recording a push", "run", id, "error", err)
+	}
+}
+
+var errPushing = errors.New("this run is being pushed already")
+
+// keyLocks are try-locks by key (a push per run at a time).
+type keyLocks struct {
+	mu   sync.Mutex
+	held map[string]bool
+}
+
+func (k *keyLocks) TryLock(key string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.held == nil {
+		k.held = map[string]bool{}
+	}
+	if k.held[key] {
+		return false
+	}
+	k.held[key] = true
+	return true
+}
+
+func (k *keyLocks) Unlock(key string) {
+	k.mu.Lock()
+	delete(k.held, key)
+	k.mu.Unlock()
 }

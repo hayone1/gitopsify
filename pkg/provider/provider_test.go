@@ -13,9 +13,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -28,7 +30,13 @@ const helperEnv = "GITOPSIFY_TEST_PROVIDER"
 
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(helperEnv); mode != "" {
-		os.Exit(sdk.Run(context.Background(), helper{mode: mode}, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+		// Like sdk.Serve: the client's interrupt cancels the context (the
+		// slow mode waits for it; on a quiet machine a context that never
+		// ends would be a deadlock the runtime kills with exit status 2).
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		code := sdk.Run(ctx, helper{mode: mode}, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+		stop()
+		os.Exit(code)
 	}
 	os.Exit(m.Run())
 }

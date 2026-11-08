@@ -282,14 +282,18 @@ func TestCancelAndRestart(t *testing.T) {
 	}
 	// A run the server was working on when it stopped is failed on restart.
 	r2 := fakeMigration(t, e.s, "dev", make(chan struct{}))
-	dir := e.s.runs.dir
-	b, _ := os.ReadFile(filepath.Join(dir, r2.ID, "run.json"))
-	again, err := newRuns(dir, 1, time.Minute, time.Hour, e.s.log, nil)
+	dataDir := e.s.cfg.DataDir
+	st, err := newFileStore(dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := again.get(r2.ID); got == nil || got.Status != StatusFailed || !strings.Contains(got.Error, "restarted") {
-		t.Errorf("after restart: %+v (was %s)", got, b)
+	again, err := newRuns(st, filepath.Join(dataDir, "runs"), 1, time.Minute, time.Hour, e.s.log, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.shutdown(context.Background())
+	if got, _ := again.get(r2.ID); got == nil || got.Status != StatusFailed || !strings.Contains(got.Error, "stopped") {
+		t.Errorf("after restart: %+v", got)
 	}
 	e.s.runs.cancel(r2.ID)
 }

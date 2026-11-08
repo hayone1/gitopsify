@@ -20,6 +20,7 @@ export interface Me {
   authMode: 'local' | 'oidc'
   version: string
   expires?: string
+  canInstall?: boolean
 }
 
 export interface Info {

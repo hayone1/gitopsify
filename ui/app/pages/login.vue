@@ -5,10 +5,24 @@ definePageMeta({ layout: 'blank' })
 
 const route = useRoute()
 const info = ref<Info | null>(null)
-const error = computed(() => (route.query.error as string) || '')
+// Fixed messages by code: the page never shows text from its URL.
+const messages: Record<string, string> = {
+  expired: 'The sign-in took too long or your browser blocks cookies. Sign in again.',
+  refused: 'Your identity provider refused the sign-in.',
+  token: 'The identity provider\'s answer couldn\'t be verified. Sign in again; if it keeps happening, tell your administrator.',
+  domain: 'Your account isn\'t in a domain this server admits, or its email isn\'t verified.',
+  claims: 'Your account can\'t be used here: it has no usable name. Ask your administrator.',
+  link: 'That sign-in link was already used or is wrong. Stop gitopsify ui and start it again for a new one.',
+  failed: 'The sign-in failed. Try again, or ask your administrator.'
+}
+const error = computed(() => {
+  const code = route.query.error as string | undefined
+  return code ? (messages[code] || messages.failed) : ''
+})
 const redirect = computed(() => {
   const r = (route.query.redirect as string) || '/'
-  return r.startsWith('/') && !r.startsWith('//') ? r : '/'
+  // eslint-disable-next-line no-control-regex
+  return r.startsWith('/') && !r.startsWith('//') && !/[\\\x00-\x1f\x7f]/.test(r) ? r : '/'
 })
 
 onMounted(async () => {

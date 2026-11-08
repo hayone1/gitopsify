@@ -47,8 +47,10 @@ until curl -fsS http://localhost:8180/realms/acme/.well-known/openid-configurati
 
 log "Git server"
 rm -rf "$work/git" && mkdir -p "$work/git" && git init -q --bare -b main "$work/git/gitops.git"
+git -C "$work/git/gitops.git" config http.receivepack true
 (cd "$root" && go build -o "$work/githttp" ./test/e2e/githttp)
 pkill -x githttp 2>/dev/null || true
+sleep 1
 (setsid nohup "$work/githttp" -root "$work/git" -addr 127.0.0.1:8099 >"$work/githttp.log" 2>&1 &)
 
 log "gitopsify with the UI"
@@ -79,6 +81,10 @@ spec:
       description: The e2e source cluster
       impersonate: true
       access: {kubeconfig: $HOME/.kube/config, context: kind-gitopsify-ui}
+  git:
+    allowHTTP: true                  # the local test Git server
+    repositories:
+      - {url: "http://localhost:8099/*", clusters: [kind]}
   audit: {stdout: true}
 YAML
 rm -rf "$work/data"

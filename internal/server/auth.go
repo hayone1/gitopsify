@@ -19,6 +19,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -152,7 +153,8 @@ type authenticator struct {
 	ttl      time.Duration
 	secure   bool
 	tokens   []config.ServerToken
-	local    string // the local mode's sign-in token
+	local    string // the local mode's sign-in token, until it is used
+	localMu  sync.Mutex
 	oidc     *oidcLogin
 	external *url.URL
 }
@@ -166,7 +168,7 @@ type oidcLogin struct {
 }
 
 func newOIDC(ctx context.Context, c *config.ServerOIDC, external *url.URL) (*oidcLogin, error) {
-	client := http.DefaultClient
+	client := &http.Client{Timeout: 30 * time.Second}
 	if c.CAFile != "" {
 		pem, err := os.ReadFile(c.CAFile)
 		if err != nil {
@@ -251,9 +253,15 @@ func (a *authenticator) clearSession(w http.ResponseWriter) {
 }
 
 // safeRedirect keeps only same-site paths, so the login can't be used to
-// send people elsewhere.
+// send people elsewhere. Browsers drop tabs and newlines and read
+// backslashes as slashes, so those are refused outright.
 func safeRedirect(p string) string {
-	if p == "" || !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || strings.HasPrefix(p, "/\\") || strings.ContainsAny(p, "\r\n") {
+	if p == "" || !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\") ||
+		strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return "/"
+	}
+	u, err := url.Parse(p)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil || strings.HasPrefix(u.Path, "//") || strings.HasPrefix(p, "//") {
 		return "/"
 	}
 	return p
@@ -274,44 +282,58 @@ func (a *authenticator) startLogin(w http.ResponseWriter, r *http.Request) error
 	return nil
 }
 
+// loginError is a failed sign-in: a code the login page turns into a fixed
+// message (it never shows text from the URL), and the details for the
+// audit log.
+type loginError struct {
+	code string
+	err  error
+}
+
+func (e *loginError) Error() string { return e.err.Error() }
+
+func loginFailed(code string, format string, args ...any) error {
+	return &loginError{code: code, err: fmt.Errorf(format, args...)}
+}
+
 // finishLogin handles the provider's redirect back and returns the user and
 // where to send them.
 func (a *authenticator) finishLogin(w http.ResponseWriter, r *http.Request) (*User, string, error) {
 	c, err := r.Cookie(loginCookie)
 	if err != nil {
-		return nil, "", errors.New("the sign-in expired or cookies are blocked; sign in again")
+		return nil, "", loginFailed("expired", "the sign-in expired or cookies are blocked")
 	}
 	http.SetCookie(w, &http.Cookie{Name: loginCookie, Value: "", Path: "/api/v1/auth", MaxAge: -1, HttpOnly: true, Secure: a.secure})
 	var st loginState
 	if err := a.sealer.open(loginCookie, c.Value, &st); err != nil || time.Now().Unix() > st.Expires {
-		return nil, "", errors.New("the sign-in expired; sign in again")
+		return nil, "", loginFailed("expired", "the sign-in expired")
 	}
 	q := r.URL.Query()
 	if e := q.Get("error"); e != "" {
-		return nil, "", fmt.Errorf("the identity provider refused the sign-in: %s %s", e, q.Get("error_description"))
+		return nil, "", loginFailed("refused", "the identity provider refused the sign-in: %.100s %.300s", e, q.Get("error_description"))
 	}
 	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(st.State)) != 1 {
-		return nil, "", errors.New("the sign-in state doesn't match; sign in again")
+		return nil, "", loginFailed("expired", "the sign-in state doesn't match")
 	}
 	ctx := oidc.ClientContext(r.Context(), a.oidc.client)
 	tok, err := a.oidc.oauth.Exchange(ctx, q.Get("code"), oauth2.VerifierOption(st.Verifier))
 	if err != nil {
-		return nil, "", fmt.Errorf("exchanging the code: %w", err)
+		return nil, "", loginFailed("token", "exchanging the code: %w", err)
 	}
 	raw, ok := tok.Extra("id_token").(string)
 	if !ok {
-		return nil, "", errors.New("the identity provider returned no ID token")
+		return nil, "", loginFailed("token", "the identity provider returned no ID token")
 	}
 	idt, err := a.oidc.verifier.Verify(ctx, raw)
 	if err != nil {
-		return nil, "", fmt.Errorf("verifying the ID token: %w", err)
+		return nil, "", loginFailed("token", "verifying the ID token: %w", err)
 	}
 	if subtle.ConstantTimeCompare([]byte(idt.Nonce), []byte(st.Nonce)) != 1 {
-		return nil, "", errors.New("the ID token's nonce doesn't match")
+		return nil, "", loginFailed("token", "the ID token's nonce doesn't match")
 	}
 	var claims map[string]any
 	if err := idt.Claims(&claims); err != nil {
-		return nil, "", err
+		return nil, "", loginFailed("token", "reading the ID token: %w", err)
 	}
 	u, err := userFromClaims(a.oidc.cfg, claims)
 	if err != nil {
@@ -324,10 +346,8 @@ func (a *authenticator) finishLogin(w http.ResponseWriter, r *http.Request) (*Us
 func userFromClaims(c *config.ServerOIDC, claims map[string]any) (*User, error) {
 	str := func(k string) string { s, _ := claims[k].(string); return s }
 	email := str("email")
-	if email != "" {
-		if v, ok := claims["email_verified"].(bool); ok && !v {
-			email = "" // unverified addresses don't identify anyone
-		}
+	if verified, _ := claims["email_verified"].(bool); !verified && !c.TrustUnverifiedEmail {
+		email = "" // an address nobody verified identifies nobody
 	}
 	u := &User{Name: str("name"), Email: email, Via: "oidc"}
 	switch {
@@ -341,7 +361,11 @@ func userFromClaims(c *config.ServerOIDC, claims map[string]any) (*User, error) 
 		u.Username = str("sub")
 	}
 	if u.Username == "" {
-		return nil, fmt.Errorf("the ID token has no %s claim", firstNonEmpty(c.UsernameClaim, "email, preferred_username or sub"))
+		return nil, loginFailed("claims", "the ID token has no %s claim", firstNonEmpty(c.UsernameClaim, "verified email, preferred_username or sub"))
+	}
+	// Names the server uses itself, and Kubernetes' reserved ones.
+	if u.Username == "local" || strings.HasPrefix(u.Username, "token:") || strings.HasPrefix(u.Username, "system:") {
+		return nil, loginFailed("claims", "the username %q is reserved", u.Username)
 	}
 	if u.Name == "" {
 		u.Name = u.Username
@@ -354,12 +378,16 @@ func userFromClaims(c *config.ServerOIDC, claims map[string]any) (*User, error) 
 			}
 		}
 	case string:
-		u.Groups = strings.Split(g, ",")
+		for _, g := range strings.Split(g, ",") {
+			if g = strings.TrimSpace(g); g != "" {
+				u.Groups = append(u.Groups, g)
+			}
+		}
 	}
 	if len(c.AllowedDomains) > 0 {
 		_, domain, ok := strings.Cut(email, "@")
 		if !ok || !slices.ContainsFunc(c.AllowedDomains, func(d string) bool { return strings.EqualFold(d, domain) }) {
-			return nil, fmt.Errorf("%s isn't in an allowed email domain", firstNonEmpty(email, u.Username))
+			return nil, loginFailed("domain", "%s isn't in an allowed email domain (or not verified)", firstNonEmpty(email, u.Username))
 		}
 	}
 	return u, nil
@@ -387,4 +415,15 @@ func firstNonEmpty(s ...string) string {
 		}
 	}
 	return ""
+}
+
+// useLocalToken accepts the local mode's sign-in token once.
+func (a *authenticator) useLocalToken(t string) bool {
+	a.localMu.Lock()
+	defer a.localMu.Unlock()
+	if a.local == "" || !constantEq(t, a.local) {
+		return false
+	}
+	a.local = ""
+	return true
 }

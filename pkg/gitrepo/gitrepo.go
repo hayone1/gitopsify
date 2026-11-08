@@ -4,6 +4,7 @@ package gitrepo
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,6 +25,8 @@ type Options struct {
 	// Env is added to git's environment (credentials for the remote, as the
 	// web server passes them).
 	Env []string
+	// Context stops git when it ends (nil: never).
+	Context context.Context
 }
 
 // Result describes what Publish did.
@@ -42,12 +45,13 @@ type Result struct {
 // repository, holds files, or the remote has no such branch. It reports
 // whether it checked anything out.
 func Checkout(dir, remote, branch string) (bool, error) {
-	return CheckoutEnv(dir, remote, branch, nil)
+	return CheckoutEnv(context.Background(), dir, remote, branch, nil)
 }
 
-// CheckoutEnv is Checkout with env added to git's environment.
-func CheckoutEnv(dir, remote, branch string, env []string) (bool, error) {
-	git := func(dir string, args ...string) (string, error) { return gitEnv(dir, env, args...) }
+// CheckoutEnv is Checkout with env added to git's environment, stopped
+// when ctx ends.
+func CheckoutEnv(ctx context.Context, dir, remote, branch string, env []string) (bool, error) {
+	git := func(dir string, args ...string) (string, error) { return gitEnv(ctx, dir, env, args...) }
 	if remote == "" {
 		return false, nil
 	}
@@ -60,7 +64,7 @@ func CheckoutEnv(dir, remote, branch string, env []string) (bool, error) {
 	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
 		return false, nil
 	}
-	out, err := git("", "ls-remote", "--heads", remote, branch)
+	out, err := git("", "ls-remote", "--heads", "--", remote, branch)
 	if err != nil {
 		return false, err
 	}
@@ -72,8 +76,8 @@ func CheckoutEnv(dir, remote, branch string, env []string) (bool, error) {
 	}
 	for _, args := range [][]string{
 		{"init", "-q", "-b", branch},
-		{"remote", "add", "origin", remote},
-		{"fetch", "-q", "origin", branch},
+		{"remote", "add", "--", "origin", remote},
+		{"fetch", "-q", "origin", "--", branch},
 		{"checkout", "-q", "-B", branch, "FETCH_HEAD"},
 	} {
 		if _, err := git(dir, args...); err != nil {
@@ -86,7 +90,11 @@ func CheckoutEnv(dir, remote, branch string, env []string) (bool, error) {
 // Publish initializes the repository if needed, commits every change and
 // optionally pushes it.
 func Publish(o Options) (*Result, error) {
-	git := func(dir string, args ...string) (string, error) { return gitEnv(dir, o.Env, args...) }
+	ctx := o.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	git := func(dir string, args ...string) (string, error) { return gitEnv(ctx, dir, o.Env, args...) }
 	if o.Branch == "" {
 		o.Branch = "main"
 	}
@@ -101,7 +109,7 @@ func Publish(o Options) (*Result, error) {
 		current, err := git(o.Dir, "remote", "get-url", "origin")
 		switch {
 		case err != nil:
-			if _, err := git(o.Dir, "remote", "add", "origin", o.Remote); err != nil {
+			if _, err := git(o.Dir, "remote", "add", "--", "origin", o.Remote); err != nil {
 				return nil, err
 			}
 		case current != o.Remote:
@@ -135,7 +143,7 @@ func Publish(o Options) (*Result, error) {
 		if o.Remote == "" {
 			return nil, fmt.Errorf("cannot push %s: no repository URL configured", o.Dir)
 		}
-		if _, err := git(o.Dir, "push", "-u", "origin", "HEAD:"+o.Branch); err != nil {
+		if _, err := git(o.Dir, "push", "-u", "origin", "--", "HEAD:"+o.Branch); err != nil {
 			return nil, err
 		}
 		res.Pushed = true
@@ -143,8 +151,8 @@ func Publish(o Options) (*Result, error) {
 	return res, nil
 }
 
-func gitEnv(dir string, env []string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+func gitEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	// Fail instead of waiting for a password nobody will type.
 	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)

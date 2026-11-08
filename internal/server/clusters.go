@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -72,8 +73,18 @@ func (s *Server) access(c *config.ServerCluster, u *User) (config.Access, error)
 		a.Token = t
 	}
 	if c.Impersonate && u != nil && u.Via != "local" {
-		a.Impersonate = u.Username
-		a.ImpersonateGroups = append([]string{"system:authenticated"}, u.Groups...)
+		// Never a Kubernetes-reserved identity: an identity provider group
+		// called system:masters must not become cluster-admin.
+		if strings.HasPrefix(u.Username, "system:") {
+			return a, fmt.Errorf("cluster %s: %q can't be impersonated", c.Name, u.Username)
+		}
+		a.Impersonate = c.ImpersonateUserPrefix + u.Username
+		a.ImpersonateGroups = []string{"system:authenticated"}
+		for _, g := range u.Groups {
+			if !strings.HasPrefix(g, "system:") {
+				a.ImpersonateGroups = append(a.ImpersonateGroups, c.ImpersonateGroupPrefix+g)
+			}
+		}
 	}
 	return a, nil
 }

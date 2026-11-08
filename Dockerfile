@@ -1,5 +1,5 @@
 # gitopsify with the tools it calls: git and ssh (generate --push), helm (diff
-# of Helm apps, the plain apply script) and kubectl, and the web UI.
+# of Helm apps, the plain apply script), kubectl and sops, and the web UI.
 #   docker run --rm -v ~/.kube:/home/gitopsify/.kube:ro -v "$PWD:/work" hayone/gitopsify scan
 #   docker run -p 8080:8080 -v ./server.yaml:/etc/gitopsify/server.yaml:ro hayone/gitopsify server
 # The web UI, built once for every platform (it's static files).
@@ -25,18 +25,25 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -o /out/gitopsify ./cmd/gitopsify
 
 FROM --platform=$BUILDPLATFORM alpine:3.20 AS tools
-ARG TARGETARCH HELM_VERSION=v3.19.0 KUBECTL_VERSION=v1.34.1
+ARG TARGETARCH HELM_VERSION=v3.19.0 KUBECTL_VERSION=v1.34.1 SOPS_VERSION=v3.13.3
+# Every download is checked against its project's published checksum.
 RUN apk add --no-cache curl \
- && curl -fsSL "https://get.helm.sh/helm-$HELM_VERSION-linux-$TARGETARCH.tar.gz" | tar -xz -C /tmp \
- && mv "/tmp/linux-$TARGETARCH/helm" /usr/local/bin/helm \
+ && cd /tmp \
+ && curl -fsSLO "https://get.helm.sh/helm-$HELM_VERSION-linux-$TARGETARCH.tar.gz" \
+ && curl -fsSL "https://get.helm.sh/helm-$HELM_VERSION-linux-$TARGETARCH.tar.gz.sha256sum" | sha256sum -c - \
+ && tar -xzf "helm-$HELM_VERSION-linux-$TARGETARCH.tar.gz" && mv "linux-$TARGETARCH/helm" /usr/local/bin/helm \
  && curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/$TARGETARCH/kubectl" \
- && chmod +x /usr/local/bin/kubectl
+ && echo "$(curl -fsSL "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/$TARGETARCH/kubectl.sha256")  /usr/local/bin/kubectl" | sha256sum -c - \
+ && curl -fsSLO "https://github.com/getsops/sops/releases/download/$SOPS_VERSION/sops-$SOPS_VERSION.linux.$TARGETARCH" \
+ && curl -fsSL "https://github.com/getsops/sops/releases/download/$SOPS_VERSION/sops-$SOPS_VERSION.checksums.txt" | grep " sops-$SOPS_VERSION.linux.$TARGETARCH\$" | sha256sum -c - \
+ && mv "sops-$SOPS_VERSION.linux.$TARGETARCH" /usr/local/bin/sops \
+ && chmod +x /usr/local/bin/kubectl /usr/local/bin/sops
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates git openssh-client \
  && adduser -D -u 10001 gitopsify \
  && mkdir -p /var/lib/gitopsify /etc/gitopsify && chown gitopsify /var/lib/gitopsify
-COPY --from=tools /usr/local/bin/helm /usr/local/bin/kubectl /usr/local/bin/
+COPY --from=tools /usr/local/bin/helm /usr/local/bin/kubectl /usr/local/bin/sops /usr/local/bin/
 COPY --from=build /out/gitopsify /usr/local/bin/gitopsify
 USER gitopsify
 WORKDIR /work

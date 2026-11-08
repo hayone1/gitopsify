@@ -142,7 +142,7 @@ charts/gitopsify deploys it in a cluster.`,
 
 func newServerToken() *cobra.Command {
 	var name, role string
-	var clusters []string
+	var clusters, tools []string
 	cmd := &cobra.Command{
 		Use:   "token",
 		Short: "Make an API token for automation",
@@ -160,12 +160,16 @@ send it as "Authorization: Bearer <token>".`,
 			if len(clusters) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "        clusters: [%s]\n", joinQuoted(clusters))
 			}
+			if len(tools) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "        tools: [%s]\n", joinQuoted(tools))
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "automation", "the token's name, as the audit log shows it")
 	cmd.Flags().StringVar(&role, "role", config.RoleOperator, "viewer, operator or admin")
 	cmd.Flags().StringSliceVar(&clusters, "cluster", nil, "limit the token to these clusters (globs)")
+	cmd.Flags().StringSliceVar(&tools, "tool", nil, "limit the token to these tools (globs)")
 	return cmd
 }
 

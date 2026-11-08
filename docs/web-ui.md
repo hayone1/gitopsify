@@ -8,14 +8,16 @@ through providers. It runs in two ways:
 | | `gitopsify ui` | `gitopsify server` (or the Helm chart) |
 |---|---|---|
 | For | you, on your machine | a team |
-| Sign-in | a one-time link in your terminal | OpenID Connect: Keycloak, Dex, Okta, Entra ID, Google... |
+| Sign-in | a single-use link in your terminal | OpenID Connect: Keycloak, Dex, Okta, Entra ID, Google... |
 | Clusters | your kubeconfig's contexts | the ones the server is configured with; optionally read as the signed-in person |
 | Who may do what | you, everything | roles per cluster and tool, from groups |
 | Audit log | yes | yes |
 
 Every run produces the same configuration file the CLI uses, so what someone
-clicked together runs unchanged in CI (`gitopsify generate --config ...`,
-`gitopsify export --config ... --no-input`).
+clicked together runs in CI too (`gitopsify generate --config ...`,
+`gitopsify export --config ... --no-input`). Clusters in it are named as the
+server knows them: in CI, point `--context` (or the file's `context`) at your
+kubeconfig's names.
 
 ## On your machine
 
@@ -23,7 +25,8 @@ clicked together runs unchanged in CI (`gitopsify generate --config ...`,
 gitopsify ui
 ```
 
-It opens the browser, signed in. Runs are kept in your cache directory
+It opens the browser, signed in. The sign-in link works once; start
+`gitopsify ui` again for a new one. Runs are kept in your cache directory
 (`--data-dir` to change it). It only listens on localhost.
 
 ## For a team
@@ -96,7 +99,12 @@ spec:
   listen: ":8080"
   externalURL: https://gitopsify.example.com
   dataDir: /var/lib/gitopsify
-  trustForwardedFor: true            # behind an ingress that sets X-Forwarded-For
+  storage:
+    type: file                       # or postgres, for several replicas
+    # postgres: {url: {env: DATABASE_URL}, maxConnections: 10}
+  trustedProxies: [10.0.0.0/8]       # the ingress controller: client addresses come from X-Forwarded-For
+  metrics:
+    token: {env: METRICS_TOKEN}      # /metrics needs "Authorization: Bearer <token>"
   auth:
     mode: oidc                       # or local (gitopsify ui)
     oidc:
@@ -106,7 +114,8 @@ spec:
       scopes: [profile, email]       # Dex: [profile, email, groups]
       groupsClaim: groups
       usernameClaim: email           # default: email, then preferred_username, then sub
-      allowedDomains: [acme.io]      # optional
+      allowedDomains: [acme.io]      # optional; verified emails only
+      trustUnverifiedEmail: false    # emails count only with email_verified: true
     sessionKey: {env: SESSION_KEY}   # 32+ random bytes; keep it stable
     sessionTTL: 12h
     tokens:                          # API tokens for CI (see below)
@@ -121,6 +130,8 @@ spec:
     - name: prod-eu
       description: Production, Frankfurt
       impersonate: true              # read as the signed-in person
+      impersonateUserPrefix: "oidc:" # optional, like --oidc-username-prefix
+      impersonateGroupPrefix: "oidc:"
       access:
         apiServer: https://prod-eu.example.com:6443
         certificateAuthority: /etc/gitopsify/prod-eu/ca.crt
@@ -135,6 +146,9 @@ spec:
     dir: /var/lib/gitopsify/providers
     disableInstall: false            # admins install providers from the UI
   git:
+    repositories:                    # what runs may check out and push to
+      - {url: "https://github.com/acme/shop-*", clusters: [shop-*]}
+      - {url: "https://github.com/acme/grafana-iac", tools: [grafana-*]}
     credentials:
       - host: github.com
         token: {env: GITHUB_TOKEN}   # sent as an Authorization header, never in URLs
@@ -146,6 +160,8 @@ spec:
     timeout: 30m
     retention: 720h
     allowSecretValues: false         # refuse the local and plain Secret strategies
+    sopsRecipients: [age1...]        # recipients SOPS may encrypt to (see Security)
+    maxQueuedPerUser: 10
   notifications:
     - name: platform-slack
       url: {env: SLACK_WEBHOOK}
@@ -163,7 +179,7 @@ spec:
 | Keycloak | `https://<host>/realms/<realm>` | add a "Group Membership" mapper (claim `groups`, full path off) to the client |
 | Dex | Dex's issuer | add `groups` to `scopes` |
 | Okta | `https://<org>.okta.com/oauth2/default` | add a `groups` claim to the authorization server |
-| Microsoft Entra ID | `https://login.microsoftonline.com/<tenant>/v2.0` | `groupMembershipClaims` in the app manifest; `usernameClaim: preferred_username` |
+| Microsoft Entra ID | `https://login.microsoftonline.com/<tenant>/v2.0` | `groupMembershipClaims` in the app manifest (groups arrive as object IDs: bind those); `usernameClaim: oid` (Entra sends no `email_verified`, and users can change `email`) |
 | Google | `https://accounts.google.com` | none (bind users by email) |
 
 The client is confidential (it has a secret) and uses the authorization code
@@ -179,16 +195,26 @@ flow with PKCE.
 
 A binding without `clusters` and `tools` applies everywhere. One with
 `clusters` gives nothing on tools, and the other way round. The highest
-matching role wins. People and groups are matched case-insensitively; globs
-work (`team-*`).
+matching role wins. `users` match the username (the verified email, unless
+`usernameClaim` names another claim); names match case-insensitively, globs
+(`team-*`) case-sensitively.
 
 ### Clusters and impersonation
 
 With `impersonate: true` the server reads a cluster as the signed-in person
 and their groups (Kubernetes impersonation), so what someone can migrate is
-what Kubernetes lets them read. The server's own identity then needs the
-`impersonate` verb (the chart's `rbac.impersonate`). Without it, the server
-reads with its own credentials and gitopsify's roles decide alone.
+what Kubernetes lets them read. Usernames and groups starting with `system:`
+are never impersonated (an identity provider group named `system:masters`
+must not become cluster-admin); `impersonateUserPrefix` and
+`impersonateGroupPrefix` add prefixes as the API server's OIDC flags do. The
+server's own identity needs the `impersonate` verb (the chart's
+`rbac.impersonate`), which makes it highly privileged: protect it. API
+tokens are impersonated as `token:<name>`, so bind that user in Kubernetes
+for CI scans of such clusters.
+
+Without impersonation, the server reads with its own credentials and
+gitopsify's roles decide alone: an operator can migrate everything the
+server can read.
 
 A migration submitted to the server can't name kubeconfigs, token files or
 other paths: clusters are picked by name, and the server fills in how to reach
@@ -224,6 +250,28 @@ Everything the UI does goes through `/api/v1`, with the session cookie (and an
 
 ## Security
 
+### Who can do what to whom
+
+- **Operators** start runs with the server's access to clusters and tools,
+  and its Git credentials. So:
+  - `git.repositories` lists the repositories runs may check out and push to,
+    per cluster and tool. Without it, an operator of one cluster could push
+    to another team's GitOps repository with the server's token (and Argo CD
+    or Flux would apply it). Leave it empty only on a server for one team.
+  - Secret values never reach runs unless an admin allows it: `local` and
+    `plain` need `runs.allowSecretValues`; SOPS needs recipients an admin
+    listed in `runs.sopsRecipients` (an operator's own key would let them
+    decrypt every Secret), except on impersonating clusters, where people
+    only read what Kubernetes lets them.
+  - Repository URLs must be https or ssh (http with `git.allowHTTP`), with
+    no options, local paths or passwords; git runs with only those
+    protocols, without hooks or symbolic links, and stalls are aborted.
+- **Viewers** see runs, logs and files of their clusters and tools.
+- **Admins** without limits read the audit log and install providers
+  (unless `providers.disableInstall`).
+
+### Protections
+
 - **Sessions** are AES-GCM encrypted, HttpOnly, SameSite=Lax cookies (Secure
   behind HTTPS); changes need a CSRF header only the UI knows. Sign-ins use
   PKCE, state and nonce checks; unverified emails don't identify anyone.
@@ -235,22 +283,49 @@ Everything the UI does goes through `/api/v1`, with the session cookie (and an
   server, inline ones by hash), `X-Frame-Options: DENY` and HSTS behind HTTPS.
   Run logs and file contents are shown as text, never as HTML.
 - **Requests** are rate limited per client (tighter for sign-ins), carry an
-  `X-Request-Id`, and are logged as JSON.
+  `X-Request-Id`, and are logged as JSON. Behind a proxy, list it in
+  `trustedProxies`: the client is then the last `X-Forwarded-For` entry that
+  isn't a trusted proxy (entries before it are whatever the client sent).
+- **Sessions** last `sessionTTL` and can't be revoked one by one: rotate
+  `sessionKey` to sign everyone out.
 - **The audit log** records sign-ins, runs, pushes, downloads, provider
   installs and refused requests, as JSON lines in `dataDir/audit` (and the
   server log with `audit.stdout`), for your SIEM.
 
+## Storage and high availability
+
+| `storage.type` | Keeps runs, logs, outputs, the audit log in | Replicas |
+|---|---|---|
+| `file` (default) | `dataDir` (the chart's PersistentVolumeClaim) | one |
+| `postgres` | a PostgreSQL database (tables `gitopsify_*`, created on start) | several |
+
+With PostgreSQL, any replica serves any run: a run works on the replica that
+started it, the others follow its log from the database, cancel it through a
+flag the working replica picks up, and unpack its output (archived in the
+database when it finishes) to serve files or push. If a replica dies while
+working, the others fail its runs within two minutes. Sessions work on every
+replica because they're sealed with the shared `sessionKey`.
+
+In the chart:
+
+```yaml
+storage:
+  type: postgres
+  postgres:
+    existingSecret: gitopsify-db     # a Secret with key "url": postgres://...?sslmode=require
+replicaCount: 3                      # adds a PodDisruptionBudget
+```
+
 ## Operating it
 
-- Back up `dataDir` (runs and the audit log); the configuration and its
-  Secrets come from Git and your secret store.
+- Back up `dataDir` with file storage, or the database with PostgreSQL; the
+  configuration and its Secrets come from Git and your secret store.
 - Metrics: `gitopsify_http_requests_total`,
   `gitopsify_http_request_duration_seconds`, `gitopsify_runs_total`,
   `gitopsify_runs_active`, `gitopsify_logins_total`.
 - Runs that were working when the server stopped are marked failed when it
   starts again.
-- The server runs as one replica (runs work in the pod that started them and
-  its volume holds their output).
+- With file storage the server runs as one replica (the chart refuses more).
 
 ## Developing the UI
 

@@ -62,7 +62,9 @@ func (p *policy) grants(u *User, tokens []config.ServerToken) []grant {
 		out = append(out, grant{Role: p.def})
 	}
 	for _, b := range p.bindings {
-		if matchesAny(b.Users, u.Username) || matchesAny(b.Users, u.Email) || slices.ContainsFunc(u.Groups, func(g string) bool { return matchesAny(b.Groups, g) }) {
+		// Users match the username only: it is the verified email unless
+		// usernameClaim names another claim, which then must be used.
+		if matchesAny(b.Users, u.Username) || slices.ContainsFunc(u.Groups, func(g string) bool { return matchesAny(b.Groups, g) }) {
 			out = append(out, grant{Role: b.Role, Clusters: b.Clusters, Tools: b.Tools})
 		}
 	}

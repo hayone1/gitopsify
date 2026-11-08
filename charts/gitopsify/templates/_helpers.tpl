@@ -59,6 +59,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $clusters = append $clusters . -}}
 {{- end -}}
 {{- $_ := set $spec "clusters" $clusters -}}
+{{- if eq .Values.storage.type "postgres" -}}
+{{- $pg := dict "url" (dict "env" "GITOPSIFY_POSTGRES_URL") -}}
+{{- if .Values.storage.postgres.maxConnections -}}
+{{- $_ := set $pg "maxConnections" .Values.storage.postgres.maxConnections -}}
+{{- end -}}
+{{- $_ := set $spec "storage" (dict "type" "postgres" "postgres" $pg) -}}
+{{- else if gt (int .Values.replicaCount) 1 -}}
+{{- fail "replicaCount > 1 needs storage.type: postgres (with file storage the data directory belongs to one pod)" -}}
+{{- end -}}
 apiVersion: gitopsify.io/v1alpha1
 kind: Server
 metadata:

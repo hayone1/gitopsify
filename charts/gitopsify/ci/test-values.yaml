@@ -3,6 +3,9 @@ server:
   auth:
     oidc:
       issuer: https://keycloak.example.com/realms/acme
+  git:
+    repositories:
+      - url: https://github.com/acme/*
   rbac:
     bindings:
       - role: admin

@@ -27,6 +27,10 @@ test('an operator scans, generates and pushes a migration', async ({ page }) => 
 
   await page.getByRole('button', { name: 'Next' }).click()
   await page.getByPlaceholder('https://github.com/acme/platform-gitops.git').fill('http://localhost:8099/gitops.git')
+  // Sealed Secrets (the default) needs a target cluster; the test has none.
+  await expect(page.getByText('Sealing needs the controller')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Review', disabled: false })).toHaveCount(0)
+  await page.getByText('Skip', { exact: true }).click()
   await shot(page, '03-target')
   await page.getByRole('button', { name: 'Review', disabled: false }).click()
   await expect(page.getByText('Valid.')).toBeVisible()
@@ -56,7 +60,7 @@ test('a viewer sees runs but can not start or push', async ({ page }) => {
   await page.goto('/migrations/new')
   await expect(page.getByText("You can't start migrations")).toBeVisible()
   await page.goto('/runs?type=migrate')
-  await page.getByRole('row').nth(1).getByRole('link').first().click()
+  await page.locator('tbody a[href^="/runs/"]').first().click()
   await expect(page.getByText('succeeded').first()).toBeVisible()
   await expect(page.getByRole('button', { name: 'Push to Git' })).toHaveCount(0)
   await expect(page.getByRole('link', { name: 'Download' })).toBeVisible()

@@ -40,6 +40,11 @@ func (m *metrics) request(method, route string, code int, d time.Duration) {
 	if m == nil {
 		return
 	}
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
+	default:
+		method = "other" // clients pick methods: keep the series bounded
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.requests[method+","+route+","+strconv.Itoa(code)]++
