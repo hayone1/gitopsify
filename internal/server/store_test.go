@@ -712,6 +712,21 @@ func TestLeaseLoss(t *testing.T) {
 		t.Error("an expired lease wasn't noticed")
 	}
 
+	// The caller's context ending doesn't end the lease: it's renewed
+	// until unlock.
+	_, _ = pg.pool.Exec(ctx, `UPDATE gitopsify_runs SET lock_until = NULL, lock_owner = '' WHERE id = $1`, r.ID)
+	parent, cancelParent := context.WithCancel(ctx)
+	_, unlock3, ok, err := pg.lockRun(parent, r.ID)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	cancelParent()
+	time.Sleep(lockLease + 500*time.Millisecond)
+	if _, _, ok, _ := pg.lockRun(ctx, r.ID); ok {
+		t.Error("the lease ran out after the caller's context ended")
+	}
+	unlock3()
+
 	// The database unreachable: lost half a lease after the last renewal.
 	pg2, err := newPGStore(ctx, url, 2)
 	if err != nil {

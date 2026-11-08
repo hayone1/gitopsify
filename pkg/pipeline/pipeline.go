@@ -427,7 +427,17 @@ func credentialName(k, parent string) bool {
 	return (credentialKey.MatchString(k) || redactKey.MatchString(k)) && !strings.Contains(l, "secretname") &&
 		!strings.HasSuffix(l, "ref") && !strings.Contains(l, "existing") && !strings.HasSuffix(l, "passwordkey") &&
 		!strings.Contains(l, "pullsecret") && !secretNameKey(l) && !keySetting.MatchString(k) &&
-		!strings.Contains(strings.ToLower(parent), "secretkeys") && !strings.Contains(strings.ToLower(parent), "expiry")
+		!strings.Contains(strings.ToLower(parent), "secretkeys") && !strings.EqualFold(parent, "keys") &&
+		!strings.Contains(strings.ToLower(parent), "expiry")
+}
+
+// leafSetting is keySetting under a credential container, where URLs and
+// files (SLACK_WEBHOOK_URL, keyfile) are values the user put there.
+var leafSetting = regexp.MustCompile(`(?i)(path|issuer|ttl|expiry|expiration|selector|algorithm|rotationpolicy|duration|size|length|timeout|interval|enabled|type|mode|format|policy|provider|backend|audience)s?$`)
+
+// privateKeyPEM reports PEM-encoded private keys, wherever they are.
+func privateKeyPEM(s string) bool {
+	return strings.Contains(s, "-----BEGIN") && strings.Contains(s, "PRIVATE KEY-----")
 }
 
 // keySetting matches keys about a credential rather than holding one
@@ -442,7 +452,8 @@ var redactKey = regexp.MustCompile(`(?i)(passphrase|fernet|bindpw|replicasetkey|
 // secretNameKey reports keys whose string is the name of a Secret.
 func secretNameKey(l string) bool {
 	for _, suffix := range []string{"fromsecret", "certificatessecret", "certificatesecret", "tlssecret", "certsecret", "secretnames",
-		"keysecret", "passwordsecretkey", "configsecretkey"} {
+		"privatekeysecret", "passwordsecretkey", "configsecretkey", "varssecret", "scriptssecret", "accountsecret",
+		"accountsecretkey", "admintokensecret"} {
 		if strings.HasSuffix(l, suffix) {
 			return true
 		}
@@ -514,14 +525,20 @@ func redactCredentials(v any, prefix string) []string {
 		}
 		sort.Strings(keys)
 		parent := prefix[strings.LastIndex(prefix, ".")+1:]
-		_, namesSecret := t["secretName"] // {envName, secretName, secretKey}
+		_, tlsPair := t["cert"]
+		for _, c := range []string{"crt", "certificate", "ca"} {
+			_, ok := t[c]
+			tlsPair = tlsPair || ok
+		}
 		for _, k := range keys {
-			if skipSubtree(k) || (namesSecret && (strings.EqualFold(k, "secretKey") || k == "key")) {
+			if skipSubtree(k) {
 				continue
 			}
 			switch x := t[k].(type) {
 			case string:
-				if credentialName(k, parent) && redactable(x) {
+				// An inline TLS private key: {cert, key} (not a file path).
+				inlineKey := k == "key" && tlsPair && !strings.HasPrefix(x, "/")
+				if (credentialName(k, parent) || inlineKey || privateKeyPEM(x)) && redactable(x) {
 					t[k] = RedactedValue
 					out = append(out, join(k))
 				} else if r, ok := redactURLs(x); ok {
@@ -548,7 +565,10 @@ func redactCredentials(v any, prefix string) []string {
 	case []any:
 		for i, c := range t {
 			if s, ok := c.(string); ok {
-				if r, ok := redactURLs(s); ok {
+				if privateKeyPEM(s) {
+					t[i] = RedactedValue
+					out = append(out, fmt.Sprintf("%s[%d]", prefix, i))
+				} else if r, ok := redactURLs(s); ok {
 					t[i] = r
 					out = append(out, fmt.Sprintf("%s[%d]", prefix, i))
 				}
@@ -576,7 +596,8 @@ func redactLeaves(v any, prefix string) []string {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if skipSubtree(k) || reference(k) || settingKeys[strings.ToLower(k)] || secretNameKey(strings.ToLower(k)) || keySetting.MatchString(k) {
+			if skipSubtree(k) || reference(k) || settingKeys[strings.ToLower(k)] || secretNameKey(strings.ToLower(k)) || leafSetting.MatchString(k) ||
+				strings.EqualFold(k, "keys") || strings.Contains(strings.ToLower(k), "secretkeys") { // key names in a Secret
 				continue
 			}
 			if s, ok := t[k].(string); ok {
@@ -605,7 +626,17 @@ func referenceShape(m map[string]any) bool {
 		return false
 	}
 	if _, ok := m["secretName"]; ok {
-		return true // a Secret volume or a TLS block: it names one
+		// A Secret volume, a TLS block or an env entry names one; a map
+		// with other keys (external-dns' {apiToken, secretName: ""}) holds
+		// values next to it.
+		for k := range m {
+			switch k {
+			case "secretName", "secretKey", "key", "envName", "items", "defaultMode", "optional", "hosts", "name", "mountPath", "subPath", "readOnly":
+			default:
+				return false
+			}
+		}
+		return true
 	}
 	if _, key := m["key"]; key {
 		if _, path := m["path"]; path { // a volume's items: {key, path, mode}
@@ -690,33 +721,72 @@ func numberCredential(k string) bool {
 	return false
 }
 
-// redactURLs redacts the passwords of the URLs in s (in arguments, lines).
+// redactURLs redacts the passwords of the URLs in s (in arguments, lines,
+// lists such as http://u:p@es1,http://u:p@es2), in one pass.
 func redactURLs(s string) (string, bool) {
+	if !strings.Contains(s, "://") {
+		return s, false
+	}
+	sep := func(c byte) bool { return strings.IndexByte(" \t\r\n\"'", c) >= 0 }
+	var b strings.Builder
 	changed := false
+	for i := 0; i < len(s); {
+		j := i
+		for j < len(s) && !sep(s[j]) {
+			j++
+		}
+		piece := s[i:j]
+		if r, ok := redactPiece(piece); ok {
+			piece, changed = r, true
+		}
+		b.WriteString(piece)
+		k := j
+		for k < len(s) && sep(s[k]) {
+			k++
+		}
+		b.WriteString(s[j:k])
+		i = k
+	}
+	return b.String(), changed
+}
+
+// redactPiece redacts the URLs in a piece of text without whitespace: each
+// runs from its scheme to the next URL's scheme.
+func redactPiece(p string) (string, bool) {
+	var starts []int
 	for from := 0; ; {
-		i := strings.Index(s[from:], "://")
+		i := strings.Index(p[from:], "://")
 		if i < 0 {
-			return s, changed
+			break
 		}
 		i += from
-		start := i
-		for start > 0 && (isAlnum(s[start-1]) || strings.ContainsRune("+.-", rune(s[start-1]))) {
-			start--
+		st := i
+		for st > from && (isAlnum(p[st-1]) || strings.IndexByte("+.-", p[st-1]) >= 0) {
+			st--
 		}
-		end := i + 3
-		for end < len(s) && !strings.ContainsRune(" \t\r\n\"'<>", rune(s[end])) {
-			end++
-		}
-		if r, ok := redactURL(s[start:end]); ok {
-			s = s[:start] + r + s[end:]
-			changed = true
-			// Go on after the password: more URLs may follow in the same
-			// piece (http://u:p@es1,http://u:p2@es2).
-			from = start + strings.Index(r, "<redacted>") + len("<redacted>")
-			continue
+		if st < i {
+			starts = append(starts, st)
 		}
 		from = i + 3
 	}
+	if len(starts) == 0 {
+		return p, false
+	}
+	var b strings.Builder
+	b.WriteString(p[:starts[0]])
+	changed := false
+	for n, st := range starts {
+		end := len(p)
+		if n+1 < len(starts) {
+			end = starts[n+1]
+		}
+		seg := p[st:end]
+		if r, ok := redactURL(seg); ok {
+			seg, changed = r, true
+		}
+		b.WriteString(seg)
+	}
+	return b.String(), changed
 }
 
 func isAlnum(c byte) bool {

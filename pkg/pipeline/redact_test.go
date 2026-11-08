@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/discovery"
@@ -88,6 +89,14 @@ func TestRedactCredentials(t *testing.T) {
 		"basicAuth":             map[string]any{"htpasswd": "{{ htpasswd .Values.user .Values.pass }}"},
 		"moreSecrets":           []any{map[string]any{"name": "github", "value": "ghp_y"}},
 		"es":                    map[string]any{"hosts": "http://u:p@es1:9200,http://u:p2@es2:9200"},
+		"es2":                   map[string]any{"hosts": "http://es1:9200,http://u:p3@es2:9200"},
+		"cloudflare":            map[string]any{"apiToken": "cf", "secretName": ""},
+		"alibabacloud":          map[string]any{"accessKeySecret": "ali"},
+		"certificateSecret":     map[string]any{"crt": "-----BEGIN CERTIFICATE-----", "key": "inline-key"},
+		"traefikTLS":            map[string]any{"cert": "/certs/tls.crt", "key": "/certs/tls.key"},
+		"pem":                   []any{"-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"},
+		"primary":               map[string]any{"extraEnvVarsSecret": "pg-env", "initdb": map[string]any{"scriptsSecret": "pg-init"}},
+		"ambientCredentials":    map[string]any{"keys": map[string]any{"clientSecret": "client-secret"}},
 		"passwordMinLength":     8,
 		"tokenTTL":              3600,
 		"maxToken":              4096,
@@ -97,7 +106,7 @@ func TestRedactCredentials(t *testing.T) {
 		"apiKey":                987,
 	}
 	got := redactCredentials(values, "")
-	want := []string{"DBPassword", "adminPin", "apiKey", "args[0]", "es.hosts", "moreSecrets[0].value", "grafana.ini.auth.generic_oauth.client_secret", "auth.fernetKey", "auth.pin.password", "auth.postgresPassword", "auth.replicaSetKey",
+	want := []string{"DBPassword", "adminPin", "apiKey", "args[0]", "es.hosts", "es2.hosts", "cloudflare.apiToken", "alibabacloud.accessKeySecret", "certificateSecret.key", "pem[0]", "moreSecrets[0].value", "grafana.ini.auth.generic_oauth.client_secret", "auth.fernetKey", "auth.pin.password", "auth.postgresPassword", "auth.replicaSetKey",
 		"configs.secret.extra.ldap.bindPW", "credentials.accessKey", "credentials.key", "credentials.secretContents.cloud",
 		"data.metadataConnection.pass", "datasources[0].secureJsonData.httpHeaderValue1", "datasources[0].secureJsonData.tlsClientKey",
 		"env[0].value", "env[3].value", "env[5].value", "env[6].value", "env[8].value",
@@ -124,6 +133,12 @@ func TestRedactCredentials(t *testing.T) {
 	}
 	if h := values["es"].(map[string]any)["hosts"]; h != "http://u:<redacted>@es1:9200,http://u:<redacted>@es2:9200" {
 		t.Errorf("hosts: %v", h)
+	}
+	if h := values["es2"].(map[string]any)["hosts"]; h != "http://es1:9200,http://u:<redacted>@es2:9200" {
+		t.Errorf("hosts: %v", h)
+	}
+	if k := values["traefikTLS"].(map[string]any)["key"]; k != "/certs/tls.key" {
+		t.Errorf("a key file path was redacted: %v", k)
 	}
 	if again := redactCredentials(values, ""); len(again) != 0 {
 		t.Errorf("redacted twice: %v", again)
@@ -215,4 +230,32 @@ func TestProtectSecretsMarks(t *testing.T) {
 			t.Errorf("%s protected %v, want %v", o.Ref, o.Protected, want)
 		}
 	}
+}
+
+// Many URLs in one piece are scanned once each.
+func TestRedactURLsLinear(t *testing.T) {
+	s := strings.Repeat("http://h/x,", 16000) + "http://u:pw@h/x"
+	start := time.Now()
+	got, ok := redactURLs(s)
+	if !ok || !strings.HasSuffix(got, "http://u:<redacted>@h/x") {
+		t.Fatalf("not redacted: %v", ok)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("took %s", d)
+	}
+	if _, ok := redactURLs(strings.Repeat("a://", 16000)); ok {
+		t.Error("redacted schemes only")
+	}
+}
+
+func FuzzRedactURLs(f *testing.F) {
+	for _, s := range []string{"postgres://u:p@h/db", "http://u:p@es1,http://u:p2@es2", "--db=a://x:y@z w://:p@q", "a://", "http://[::1]:8080?a=b@c"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		once, _ := redactURLs(s)
+		if twice, changed := redactURLs(once); changed || twice != once {
+			t.Errorf("not idempotent: %q -> %q -> %q", s, once, twice)
+		}
+	})
 }

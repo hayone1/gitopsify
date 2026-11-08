@@ -227,6 +227,9 @@ func (p *pgStore) lockRun(ctx context.Context, id string) (context.Context, func
 			case <-stop:
 				return
 			case <-t.C:
+				// After the caller's context ends (not the lease), renewals go
+				// on until unlock: the UPDATE still needs our token and an
+				// unexpired lease, so it never takes a lock back.
 				if isLost() {
 					return
 				}

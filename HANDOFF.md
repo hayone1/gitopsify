@@ -365,8 +365,13 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   Round 7 (narrow, with fuzzing and 37 charts' default values) found a
   bare `key` taken for a credential (tolerations) and later URLs in a
   string missed, plus wrong redactions of settings: fixed (commit
-  "seventh review"); round 8 checked that commit (see the end of this
-  section).
+  "seventh review"). Round 8 (106 charts' values, defaults and every ""
+  filled in) found the lock changes correct and three more redaction
+  gaps (secretName siblings disabling a map, accessKeySecret, inline TLS
+  keys) plus a quadratic URL scan: fixed (commit "eighth review", with a
+  fuzz test). The review loop stopped there: rounds 5-8 only found
+  chart-specific redaction shapes; the heuristic is documented as such,
+  and the real fix is in TODO.md (encrypted values files).
 - GitHub release downloads returned 504 for every project on 2026-11-08
   (from Hetzner, WSL and GitHub Actions); the Dockerfile now falls back to
   the API asset endpoint (pinned asset IDs, same checksums), and the

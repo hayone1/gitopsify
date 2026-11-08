@@ -319,8 +319,12 @@ Everything the UI does goes through `/api/v1`, with the session cookie (and an
       `apiKey`; not `passwordMinLength`, `tokenTTL` or `maxToken`);
     - the value of env pairs such as `{name: DB_PASSWORD, value: ...}`
       (not settings such as `TOKEN_TTL` or `TOKEN_URL`);
+    - inline TLS private keys (`key` next to `cert`, `crt` or
+      `certificate`, unless it's a file path) and PEM private keys
+      anywhere;
     - the password of URLs in any string (`postgres://app:<redacted>@db/app`,
-      `--db=...` arguments too; not `$(VAR)` references or templates).
+      `--db=...` arguments, lists of hosts; not `$(VAR)` references or
+      templates).
     Vendored charts' own `values.yaml` too. Set them from a Secret (Flux
     `valuesFrom`, an encrypted values file) before syncing. This goes by
     names and shapes: secrets under other names, in query parameters
