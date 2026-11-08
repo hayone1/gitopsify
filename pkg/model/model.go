@@ -402,3 +402,23 @@ var dockercfgSuffix = regexp.MustCompile(`-dockercfg-[a-z0-9]{5}$`)
 func GeneratedPullSecret(serviceAccount, secret string) bool {
 	return strings.HasPrefix(secret, serviceAccount+"-dockercfg-") && dockercfgSuffix.MatchString(secret)
 }
+
+// AllWarnings returns the inventory's warnings with those of its Helm
+// releases and included objects, as the migration report lists them.
+func (inv *Inventory) AllWarnings() []string {
+	out := append([]string(nil), inv.Warnings...)
+	for _, rel := range inv.Releases {
+		if rel.Skip {
+			continue
+		}
+		for _, w := range rel.Warnings {
+			out = append(out, "Helm release "+rel.Key()+": "+w)
+		}
+	}
+	for _, o := range inv.Included() {
+		for _, w := range o.Warnings {
+			out = append(out, o.Ref.String()+": "+w)
+		}
+	}
+	return out
+}

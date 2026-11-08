@@ -522,9 +522,9 @@ const toolItems = [
           <UCard>
             <template #header><h2 class="font-semibold">Generate</h2></template>
             <ul class="text-sm space-y-2 mb-4">
-              <li class="flex gap-2"><UIcon name="i-lucide-server" class="mt-0.5 shrink-0" />From <b>{{ cluster }}</b>, {{ included.length || 'all' }} apps</li>
-              <li class="flex gap-2"><UIcon name="i-lucide-git-branch" class="mt-0.5 shrink-0" />{{ toolLabel }}, {{ envs.map(e => e.name).filter(Boolean).join(', ') }}</li>
-              <li class="flex gap-2"><UIcon name="i-lucide-key-round" class="mt-0.5 shrink-0" />Secrets: {{ strategyLabel }}</li>
+              <li class="flex gap-2"><UIcon name="i-lucide-server" class="mt-0.5 shrink-0" /><span>From <b>{{ cluster }}</b>, {{ included.length || 'all' }} apps</span></li>
+              <li class="flex gap-2"><UIcon name="i-lucide-git-branch" class="mt-0.5 shrink-0" /><span>{{ toolLabel }}, {{ envs.map(e => e.name).filter(Boolean).join(', ') }}</span></li>
+              <li class="flex gap-2"><UIcon name="i-lucide-key-round" class="mt-0.5 shrink-0" /><span>Secrets: {{ strategyLabel }}</span></li>
             </ul>
             <USwitch v-model="pushAfter" :disabled="!pushTarget" label="Push when it's done" :description="pushTarget || 'Set a repository URL to push'" />
             <UFormField v-if="pushAfter" label="Commit message" class="mt-3">

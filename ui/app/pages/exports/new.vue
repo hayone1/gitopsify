@@ -200,8 +200,8 @@ const canNext = computed(() => step.value === 0 ? !!info.value?.check : kinds.va
           <UCard>
             <template #header><h2 class="font-semibold">Export</h2></template>
             <ul class="text-sm space-y-2 mb-4">
-              <li class="flex gap-2"><UIcon name="i-lucide-blocks" class="mt-0.5 shrink-0" />{{ tool }}: {{ partitions.length || 'all' }} {{ desc?.partition.plural }}</li>
-              <li class="flex gap-2"><UIcon name="i-lucide-shapes" class="mt-0.5 shrink-0" />{{ kinds.length }} kinds → {{ formats.join(' and ') }}</li>
+              <li class="flex gap-2"><UIcon name="i-lucide-blocks" class="mt-0.5 shrink-0" /><span>{{ tool }}: {{ partitions.length || 'all' }} {{ desc?.partition.plural }}</span></li>
+              <li class="flex gap-2"><UIcon name="i-lucide-shapes" class="mt-0.5 shrink-0" /><span>{{ kinds.length }} kinds → {{ formats.join(' and ') }}</span></li>
             </ul>
             <USwitch v-model="pushAfter" :disabled="!repoURL" label="Push when it's done" :description="repoURL || 'Set a repository URL to push'" />
             <UFormField v-if="pushAfter" label="Commit message" class="mt-3">

@@ -12,6 +12,7 @@ async function signIn(page: Page, user: string) {
   await expect(page.getByRole('heading', { name: 'Recent runs' })).toBeVisible()
 }
 
+const gitURL = process.env.GIT_URL || 'http://localhost:8099/gitops.git'
 const shot = (page: Page, name: string) => page.screenshot({ path: `screenshots/${name}.png`, fullPage: true })
 
 test('an operator scans, generates and pushes a migration', async ({ page }) => {
@@ -26,7 +27,7 @@ test('an operator scans, generates and pushes a migration', async ({ page }) => 
   await shot(page, '02-apps')
 
   await page.getByRole('button', { name: 'Next' }).click()
-  await page.getByPlaceholder('https://github.com/acme/platform-gitops.git').fill('http://localhost:8099/gitops.git')
+  await page.getByPlaceholder('https://github.com/acme/platform-gitops.git').fill(gitURL)
   // Sealed Secrets (the default) needs a target cluster; the test has none.
   await expect(page.getByText('Sealing needs the controller')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Review', disabled: false })).toHaveCount(0)
@@ -46,7 +47,7 @@ test('an operator scans, generates and pushes a migration', async ({ page }) => 
   await expect(page.getByText('MIGRATION_REPORT.md').first()).toBeVisible()
   await shot(page, '06-files')
   await page.getByRole('tab', { name: /Pushes/ }).click()
-  await expect(page.getByText('http://localhost:8099/gitops.git')).toBeVisible()
+  await expect(page.getByText(gitURL)).toBeVisible()
   await shot(page, '07-pushes')
 
   // The commit is on the Git server.
@@ -77,6 +78,6 @@ test('an admin reads the audit log', async ({ page }) => {
   await expect(page.getByText('auth.login').first()).toBeVisible()
   await shot(page, '09-audit')
   await page.getByRole('link', { name: 'Clusters' }).first().click()
-  await expect(page.getByText(/Reachable, Kubernetes/)).toBeVisible()
+  await expect(page.getByText(/Reachable, Kubernetes/).first()).toBeVisible()
   await shot(page, '10-clusters')
 })

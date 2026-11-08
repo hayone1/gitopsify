@@ -6,7 +6,7 @@ export default defineConfig({
   expect: { timeout: 30_000 },
   workers: 1,
   use: {
-    baseURL: 'http://localhost:8080',
+    baseURL: process.env.BASE_URL || 'http://localhost:8080',
     viewport: { width: 1440, height: 900 },
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure'

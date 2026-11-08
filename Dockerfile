@@ -25,19 +25,26 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -o /out/gitopsify ./cmd/gitopsify
 
 FROM --platform=$BUILDPLATFORM alpine:3.20 AS tools
-ARG TARGETARCH HELM_VERSION=v3.19.0 KUBECTL_VERSION=v1.34.1 SOPS_VERSION=v3.13.3
+ARG TARGETARCH HELM_VERSION=v3.19.0 KUBECTL_VERSION=v1.34.1
+# sops, pinned by checksum (from the release's checksums); SOPS_VERSION=""
+# builds without it.
+ARG SOPS_VERSION=v3.13.3 \
+    SOPS_SHA256_amd64=e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b \
+    SOPS_SHA256_arm64=53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77
 # Every download is checked against its project's published checksum.
 RUN apk add --no-cache curl \
- && cd /tmp \
- && curl -fsSLO "https://get.helm.sh/helm-$HELM_VERSION-linux-$TARGETARCH.tar.gz" \
- && curl -fsSL "https://get.helm.sh/helm-$HELM_VERSION-linux-$TARGETARCH.tar.gz.sha256sum" | sha256sum -c - \
+ && cd /tmp && get() { curl -fsSL --retry 5 --retry-all-errors "$@"; } \
+ && get -O "https://get.helm.sh/helm-$HELM_VERSION-linux-$TARGETARCH.tar.gz" \
+ && get "https://get.helm.sh/helm-$HELM_VERSION-linux-$TARGETARCH.tar.gz.sha256sum" | sha256sum -c - \
  && tar -xzf "helm-$HELM_VERSION-linux-$TARGETARCH.tar.gz" && mv "linux-$TARGETARCH/helm" /usr/local/bin/helm \
- && curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/$TARGETARCH/kubectl" \
- && echo "$(curl -fsSL "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/$TARGETARCH/kubectl.sha256")  /usr/local/bin/kubectl" | sha256sum -c - \
- && curl -fsSLO "https://github.com/getsops/sops/releases/download/$SOPS_VERSION/sops-$SOPS_VERSION.linux.$TARGETARCH" \
- && curl -fsSL "https://github.com/getsops/sops/releases/download/$SOPS_VERSION/sops-$SOPS_VERSION.checksums.txt" | grep " sops-$SOPS_VERSION.linux.$TARGETARCH\$" | sha256sum -c - \
- && mv "sops-$SOPS_VERSION.linux.$TARGETARCH" /usr/local/bin/sops \
- && chmod +x /usr/local/bin/kubectl /usr/local/bin/sops
+ && get -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/$TARGETARCH/kubectl" \
+ && echo "$(get "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/$TARGETARCH/kubectl.sha256")  /usr/local/bin/kubectl" | sha256sum -c - \
+ && chmod +x /usr/local/bin/kubectl \
+ && if [ -n "$SOPS_VERSION" ]; then \
+      sum=$(eval echo "\$SOPS_SHA256_$TARGETARCH") \
+      && get -o /usr/local/bin/sops "https://github.com/getsops/sops/releases/download/$SOPS_VERSION/sops-$SOPS_VERSION.linux.$TARGETARCH" \
+      && echo "$sum  /usr/local/bin/sops" | sha256sum -c - && chmod +x /usr/local/bin/sops; \
+    else printf '#!/bin/sh\necho "this image was built without sops" >&2; exit 1\n' > /usr/local/bin/sops && chmod +x /usr/local/bin/sops; fi
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates git openssh-client \

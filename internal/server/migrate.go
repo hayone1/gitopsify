@@ -446,7 +446,7 @@ func layoutDirs(cfg *config.Config) map[string]string {
 
 func summarize(res *pipeline.Result) scanResult {
 	inv := res.Inventory
-	out := scanResult{Source: inv.Source.String(), Warnings: append([]string{}, inv.Warnings...), SecretActions: append([]string{}, inv.SecretActions...)}
+	out := scanResult{Source: inv.Source.String(), Warnings: append([]string{}, inv.AllWarnings()...), SecretActions: append([]string{}, inv.SecretActions...)}
 	for _, a := range inv.Apps {
 		kinds := map[string]bool{}
 		for _, o := range a.Objects {
@@ -478,7 +478,7 @@ func summarize(res *pipeline.Result) scanResult {
 
 func summaryOf(res *pipeline.Result, files int) *RunSummary {
 	inv := res.Inventory
-	s := &RunSummary{Apps: len(inv.Apps), Files: files, Warnings: len(inv.Warnings), SecretActions: len(inv.SecretActions)}
+	s := &RunSummary{Apps: len(inv.Apps), Files: files, Warnings: len(inv.AllWarnings()), SecretActions: len(inv.SecretActions)}
 	for _, o := range inv.Objects {
 		if o.Excluded {
 			s.Excluded++

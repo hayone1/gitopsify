@@ -13,11 +13,15 @@ work and its next steps; move items there when work on them starts.
   `providers/index.yaml` and the providers' releases. Static (generated in CI,
   hosted on GitHub Pages) unless something needs a server. Needs a domain
   (ask the user for a DNS zone: the existing one is taken).
-- [ ] **Web UI** ([design proposal](docs/DESIGN-webui.md), waiting for the user's answers). A browser front end for what the CLI does: connect to a
-  cluster or a tool, pick what to migrate or export, review the generated
-  repository and the first-sync diff, push. Likely `gitopsify ui` serving a
-  local UI on localhost (credentials stay on the machine), reusing the
-  wizard's steps; decide the stack and whether it can run in-cluster later.
+- [x] **Web UI** (branch `webui`, PR to review): [docs/web-ui.md](docs/web-ui.md),
+  [design](docs/DESIGN-webui.md). Next for it:
+  - [ ] Diff against the target and bootstrap/status from the UI (they
+    change clusters; runs never do yet).
+  - [ ] Revocable sessions (server-side, in PostgreSQL).
+  - [ ] Editing clusters, tools and bindings in the UI (today: the Server
+    resource, from Git).
+  - [ ] A JSON Schema for the Server resource (editor validation).
+  - [ ] Scheduled scans (drift reports).
 
 ## Providers
 

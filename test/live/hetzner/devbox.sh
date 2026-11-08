@@ -61,7 +61,7 @@ up() {
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 cloud-init status --wait >/dev/null || true
-apt-get update -qq && apt-get install -qq -y docker.io git jq curl make rsync unzip xz-utils libatomic1 >/dev/null
+apt-get update -qq && apt-get install -qq -y docker.io docker-buildx git jq curl make rsync unzip xz-utils libatomic1 >/dev/null
 curl -fsSL https://go.dev/dl/go$go_version.linux-amd64.tar.gz | tar -C /usr/local -xz
 ln -sf /usr/local/go/bin/go /usr/local/bin/go
 curl -fsSL https://nodejs.org/dist/$node_version/node-$node_version-linux-x64.tar.xz | tar -C /usr/local -xJ --strip-components=1

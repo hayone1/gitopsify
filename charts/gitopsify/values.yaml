@@ -137,6 +137,8 @@ persistence:
 service:
   type: ClusterIP
   port: 80
+  # With type NodePort.
+  nodePort: null
 
 ingress:
   enabled: false

@@ -13,6 +13,39 @@ holds the first provider; `../gitopsify-provider-template`
 is the starting point for new providers. Both require sdk v0.1.0.
 Longer-term list: [TODO.md](TODO.md).
 
+**Branch `webui`** (pushed, not merged; written 2026-11-08 while the user
+was away, as asked: "fully implement and make production ready the webui
+with cluster, multi-user mode even oidc etc"): the web UI and team server.
+See the section below; the user reviews it before merging.
+
+## Web UI (branch `webui`)
+`gitopsify ui` (one person, localhost, single-use link) and `gitopsify
+server` (teams; the Helm chart `charts/gitopsify`). Guide docs/web-ui.md,
+design docs/DESIGN-webui.md (W1-W10).
+- `internal/server`: api.go (routes), auth.go (OIDC PKCE/state/nonce, AES-GCM
+  cookies, CSRF header, API tokens, local token), rbac.go (viewer/operator/
+  admin per cluster and tool), runs.go (background runs, SSE with event IDs,
+  cancel, multi-replica), store.go (file store, tar.gz pack/unpack),
+  storepg.go (PostgreSQL), migrate.go (Migration runs; the request is made
+  safe: clusters by name, no paths, Git checks), export.go (provider exports
+  of admin-registered tools), git.go (remote/branch checks, repository
+  allowlist, git env: protocol allowlist, no symlinks/hooks, timeouts),
+  clusters.go (impersonation without system: identities), audit.go,
+  notify.go (Slack/Teams/JSON webhooks), metrics.go, static.go (embedded UI,
+  CSP with hashes of index.html's inline scripts).
+- `pkg/config/server.go`: the `Server` resource.
+- `ui/`: Nuxt 4 + Nuxt UI 4 SPA (`make ui` builds into web/dist, embedded by
+  `web/embed.go`; `make ui-dev` proxies a local server). Pages: overview,
+  migration wizard, export wizard, runs, run (log/apps/files/config/pushes),
+  clusters, tools (+provider catalog), audit, profile, login.
+- Tests: internal/server (fake OIDC provider, roles, tokens, runs, exports
+  with a fake provider, store conformance on files and PostgreSQL
+  (GITOPSIFY_TEST_POSTGRES), two replicas, review attack cases);
+  test/e2e/webui/run.sh (kind + Keycloak + Git server + Playwright, binary)
+  and chart.sh (image + chart, 2 replicas on PostgreSQL, impersonation).
+- Dev VM: `test/live/hetzner/devbox.sh up|sync|run|fetch|down` keeps a
+  Hetzner cx33 for the session (Node, Go, kind, Docker); `down` destroys it.
+
 ## What it is
 Go CLI (cobra + Charm huh/lipgloss) that turns a running cluster (or a
 `kubectl get -A -o yaml` dump via `--from-file`) into a GitOps repo for plain
@@ -256,6 +289,21 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
 - kustomize `--enable-helm` breaks with Helm 4 (`helm version -c`); CI pins
   Helm 3 for golden builds; the apply script uses `helm upgrade --install`.
 - New Docker Hub repos are public on free accounts.
+
+## Verified (web UI, 2026-11-08)
+- Server tests pass (also 3x in a row, and with PostgreSQL 18); the whole
+  `go test ./...` passes; `make lint`; UI typecheck + generate.
+- e2e (binary): Keycloak sign-in as operator/viewer/admin, scan, apps,
+  target, review, generate, push to a Git server (commit authored as the
+  person), viewer restrictions, audit log: 3/3 PASS.
+- Review rounds by a fresh-context subagent: round 1 found 3 critical (git
+  remote as a command, symlinked checkouts writing outside the run,
+  cross-team pushes with shared credentials) and 14 required items, all
+  fixed with tests; see the commit "PostgreSQL storage for replicas, and
+  fixes from review".
+- GitHub release downloads (sops) returned 504 from the Hetzner VM on
+  2026-11-08 while working from WSL: the Dockerfile pins checksums, retries,
+  and builds without sops when SOPS_VERSION is empty.
 
 ## Open / next (providers), in order
 1. GitGuardian incident 39798306 (PR #1) is a false positive (a SHA-256 file
