@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path"
@@ -70,8 +71,9 @@ type store interface {
 	addPublishes(ctx context.Context, id string, ps []Publish, bump bool) (*Run, error)
 	// lockRun takes a run's lock (held while pushing or deleting it),
 	// across replicas; ok is false when someone else holds it, and the
-	// error errNotFound when the run doesn't exist.
-	lockRun(ctx context.Context, id string) (unlock func(), ok bool, err error)
+	// error errNotFound when the run doesn't exist. The returned context,
+	// derived from ctx, ends if the lock is lost before unlock.
+	lockRun(ctx context.Context, id string) (lctx context.Context, unlock func(), ok bool, err error)
 	// pruneRuns deletes the runs finished before before, but locked ones,
 	// and returns them.
 	pruneRuns(ctx context.Context, before time.Time) ([]string, error)
@@ -172,24 +174,27 @@ func (f *fileStore) addPublishes(_ context.Context, id string, ps []Publish, bum
 	if !ok {
 		return nil, errNotFound
 	}
-	r.Publishes = append(r.Publishes, ps...)
+	if !addNewPublishes(&r, ps) {
+		return &r, nil
+	}
 	if bump {
 		r.OutputVersion++
 	}
 	return &r, f.write(&r)
 }
 
-func (f *fileStore) lockRun(_ context.Context, id string) (func(), bool, error) {
+func (f *fileStore) lockRun(ctx context.Context, id string) (context.Context, func(), bool, error) {
 	f.mu.Lock()
 	_, ok := f.runs[id]
 	f.mu.Unlock()
 	if !ok {
-		return nil, false, errNotFound
+		return nil, nil, false, errNotFound
 	}
 	if !f.locks.TryLock(id) {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
-	return func() { f.locks.Unlock(id) }, true, nil
+	var once sync.Once
+	return ctx, func() { once.Do(func() { f.locks.Unlock(id) }) }, true, nil
 }
 
 func (f *fileStore) pruneRuns(ctx context.Context, before time.Time) ([]string, error) {
@@ -487,14 +492,34 @@ func readAudit(path string) ([]AuditEvent, error) {
 
 // --- output archives (for stores shared between replicas) --------------------
 
+// addNewPublishes appends the pushes a run doesn't have yet (a retried
+// write may have been stored already), and reports whether there were any.
+func addNewPublishes(r *Run, ps []Publish) bool {
+	added := false
+	for _, p := range ps {
+		dup := false
+		for _, q := range r.Publishes {
+			if q.At.Equal(p.At) && q.Remote == p.Remote && q.Dir == p.Dir && q.By == p.By {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			r.Publishes = append(r.Publishes, p)
+			added = true
+		}
+	}
+	return added
+}
+
 // trackedFiles adds the files the repository in dir tracks, prefixed with
 // prefix (dir's path in the archive).
-func trackedFiles(dir, prefix string, into map[string]bool) {
+func trackedFiles(dir, prefix string, into map[string]bool) error {
 	cmd := exec.Command("git", "-c", "core.fsmonitor=false", "-C", dir, "ls-files", "-z")
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
 	out, err := cmd.Output()
 	if err != nil {
-		return // not a usable repository: nothing to keep
+		return fmt.Errorf("git ls-files: %w", err)
 	}
 	for _, f := range strings.Split(string(out), "\x00") {
 		if f == "" {
@@ -505,6 +530,7 @@ func trackedFiles(dir, prefix string, into map[string]bool) {
 		}
 		into[f] = true
 	}
+	return nil
 }
 
 func hasTracked(tracked map[string]bool, dirPrefix string) bool {
@@ -533,14 +559,20 @@ func packDir(dir string) ([]byte, error) {
 		rel, _ := filepath.Rel(dir, p)
 		if d.IsDir() {
 			if fi, err := os.Lstat(filepath.Join(p, ".git")); err == nil && fi.IsDir() {
-				trackedFiles(p, filepath.ToSlash(rel), tracked)
+				if err := trackedFiles(p, filepath.ToSlash(rel), tracked); err != nil {
+					slog.Warn("archiving a run's output: secret-named files the repository may track are left out", "dir", rel, "error", err)
+				}
 			}
 		}
 		if rel == "." || !(d.IsDir() || d.Type().IsRegular()) {
 			return nil
 		}
-		if slash := filepath.ToSlash(rel); secretFile(slash) && !tracked[slash] && !(d.IsDir() && hasTracked(tracked, slash+"/")) {
-			// Kept out of the database (and its backups).
+		slash := filepath.ToSlash(rel)
+		inGit := slash == ".git" || strings.HasPrefix(slash, ".git/") || strings.Contains(slash, "/.git/") || strings.HasSuffix(slash, "/.git")
+		// Kept out of the database (and its backups): what gitopsify writes
+		// in clear always; other secret-named files unless a repository
+		// tracks them (a SOPS-encrypted values.secrets.yaml).
+		if !inGit && (ownSecretFile(slash) || (secretFile(slash) && !tracked[slash] && !(d.IsDir() && hasTracked(tracked, slash+"/")))) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

@@ -167,7 +167,8 @@ func newRuns(st store, dir string, concurrency int, timeout, retention time.Dura
 	rs.reap()
 	go rs.loop()
 	if st.shared() {
-		go rs.evictLoop()
+		rs.wg.Add(1)
+		go func() { defer rs.wg.Done(); rs.evictLoop() }()
 	}
 	return rs, nil
 }
@@ -348,7 +349,7 @@ func (rs *runs) evict(maxAge time.Duration) {
 			continue
 		}
 		ctx, cancel := bg()
-		unlock, ok, err := rs.store.lockRun(ctx, id)
+		_, unlock, ok, err := rs.store.lockRun(ctx, id)
 		cancel()
 		switch {
 		case errors.Is(err, errNotFound): // deleted: its copy goes
@@ -419,6 +420,45 @@ func (rc *runContext) Warn(format string, args ...any) { rc.logf("warn", format,
 func (rc *runContext) update(fn func(*Run)) { rc.rs.update(rc.st, fn) }
 
 func (rs *runs) update(st *runState, fn func(*Run)) { _ = rs.save(st, fn) }
+
+// saveFinal stores a run's last state, retried (or the run would stay
+// "running" until another replica fails it as abandoned). A retry refused
+// because the run has finished means an earlier attempt was stored after
+// all, when its answer was lost.
+func (rs *runs) saveFinal(st *runState, fn func(*Run)) {
+	st.mu.Lock()
+	fn(&st.run)
+	r := st.run
+	for ch := range st.subs {
+		rr := r
+		select {
+		case ch <- runEvent{Run: &rr}:
+		default:
+		}
+	}
+	st.mu.Unlock()
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := rs.store.updateRun(ctx, &r, rs.owner)
+		if errors.Is(err, errFenced) && attempt > 1 {
+			if got, gerr := rs.store.getRun(ctx, r.ID); gerr == nil && got.Status == r.Status && got.FinishedAt != nil {
+				err = nil
+			}
+		}
+		cancel()
+		switch {
+		case err == nil:
+			return
+		case errors.Is(err, errFenced):
+			rs.lose(st)
+			return
+		case attempt == 4:
+			rs.log.Error("saving a finished run", "run", r.ID, "error", err)
+			return
+		}
+		time.Sleep(time.Duration(attempt) * 2 * time.Second)
+	}
+}
 
 // save changes a run and stores it; a run this replica lost is stopped.
 func (rs *runs) save(st *runState, fn func(*Run)) error {
@@ -536,15 +576,7 @@ func (rs *runs) finish(rc *runContext, err error) {
 		}
 	}
 	if !lost {
-		// The last word: retried, or the run would stay "running" until
-		// another replica fails it as abandoned.
-		for attempt := 1; ; attempt++ {
-			err := rs.save(rc.st, func(r *Run) { r.Status, r.Error, r.FinishedAt = status, msg, &now })
-			if err == nil || errors.Is(err, errFenced) || attempt == 4 {
-				break
-			}
-			time.Sleep(time.Duration(attempt) * 2 * time.Second)
-		}
+		rs.saveFinal(st, func(r *Run) { r.Status, r.Error, r.FinishedAt = status, msg, &now })
 	}
 	st.mu.Lock()
 	for ch := range st.subs {
@@ -733,7 +765,7 @@ func (rs *runs) remove(id string) error {
 	}
 	ctx, cancel := bg()
 	defer cancel()
-	unlock, ok, err := rs.store.lockRun(ctx, id)
+	_, unlock, ok, err := rs.store.lockRun(ctx, id)
 	if errors.Is(err, errNotFound) {
 		return os.ErrNotExist
 	}

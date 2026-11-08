@@ -27,7 +27,9 @@ gitopsify ui
 
 It opens the browser, signed in. The sign-in link works once; start
 `gitopsify ui` again for a new one. Runs are kept in your cache directory
-(`--data-dir` to change it). It only listens on localhost.
+(`--data-dir` to change it). It only listens on localhost. Like the CLI,
+it doesn't keep Secret values from you (the server's protections below
+are for teams).
 
 ## For a team
 
@@ -282,26 +284,36 @@ Everything the UI does goes through `/api/v1`, with the session cookie (and an
     neither sealing nor SOPS encrypts); transforms that turn a Secret into
     another kind, or move a Secret whose values are written encrypted to
     another namespace or name (sealing binds to them: the operator could
-    pick a namespace they control in the target cluster); `replace` on
-    such a Secret's data (it's skipped: the ciphertext's length would tell
-    about the value); a custom `sops.encryptedRegex`; and sealing scopes
-    wider than `strict`. Sealed Secrets are sealed with the controller the server
+    pick a namespace they control in the target cluster); a custom
+    `sops.encryptedRegex`; and sealing scopes wider than `strict`.
+    Transforms leave such a Secret's values as they are, whatever they set,
+    replace or remove (a result that depends on a value would tell whether
+    a guess was right). Repositories that track `.secrets/` or
+    `*.secrets.auto.tfvars` (where gitopsify writes values in clear) are
+    refused before checking out results into them and before pushing. Sealed Secrets are sealed with the controller the server
     configures for the target cluster (`clusters[].sealedSecrets`), never one
     a migration names (it could be the operator's own service). SOPS needs
     recipients listed in `runs.sopsRecipients` (an operator's own key would
     let them decrypt every Secret), except on impersonating clusters, where
     people only read what Kubernetes lets them.
-  - Who can create SealedSecrets in a namespace of the target cluster can
-    unseal what a migration seals for that namespace: that's how Sealed
-    Secrets work, and the target cluster's RBAC decides it.
+  - These protections keep values out of what runs produce and people
+    download. They don't protect the target: whoever can push to a target
+    cluster's GitOps repository (operators, through runs) can deploy
+    something there that reads the Secrets migrated to it, and whoever can
+    create SealedSecrets in a namespace there can unseal what was sealed
+    for it. Protect target repositories with branch protection or reviews,
+    and keep `git.repositories` narrow.
   - Helm values come from release Secrets and often hold passwords. Without
     `runs.allowSecretValues`, values that look like credentials are
     replaced with `<redacted by gitopsify: set from a Secret>` and the run
-    warns about each: strings and numbers under keys such as `password`,
-    `token`, `secret` or `apiKey` (and the strings in maps and lists under
-    them, but names and references such as `existingSecret`), and the
-    value of `{name: DB_PASSWORD, value: ...}` pairs. Vendored charts'
-    own `values.yaml` too. Set them from a Secret (Flux `valuesFrom`, an
+    warns about each: strings under keys such as `password`, `token`,
+    `secret` or `apiKey` (and value-like strings in maps and lists under
+    them, such as `DB_URL` or `accessKey`, but not names, references such
+    as `existingSecret` or settings such as `mountPath`), numbers under
+    keys that end like a credential (`pin`, not `passwordMinLength`), the
+    value of `{name: DB_PASSWORD, value: ...}` pairs, and the password of
+    any URL (`postgres://app:<redacted>@db/app`). Vendored charts' own
+    `values.yaml` too. Set them from a Secret (Flux `valuesFrom`, an
     encrypted values file) before syncing. This goes by names: secrets
     under other names are written as they are. Releases in `helm.mode:
     manifests` write no values.
@@ -321,11 +333,14 @@ Everything the UI does goes through `/api/v1`, with the session cookie (and an
   (`.secrets/`, `*.secrets.*`) are never listed, served, stored in the
   database or pushed, and exports never write the tool's credentials (their
   export file names environment variables). Providers run with a minimal
-  environment (`PATH`, `HOME`, proxies, certificates, the in-cluster API
-  address) plus the variables `providers.env` lists (such as `AWS_*`, for
-  the pod's cloud identity), never the server's own secrets (the session
-  key, client secret, database URL, Git and metrics tokens, webhook URLs,
-  or any `GITOPSIFY_*` variable). Tool settings reach them in the request.
+  environment (`PATH`, `HOME`, proxies, certificates) plus the variables
+  `providers.env` lists (such as `AWS_*` for the pod's cloud identity, or
+  `KUBERNETES_SERVICE_*`, which would let a provider use the server's
+  ServiceAccount), never the server's own secrets (the session key,
+  client secret, database URL, Git and metrics tokens, webhook URLs, any
+  `GITOPSIFY_*` variable) or another tool's settings. Tool settings reach
+  them in the request. This is hygiene, not isolation: providers run as
+  the server's user, so install only providers you trust.
 - **The browser** gets a strict Content-Security-Policy (scripts only from the
   server, inline ones by hash), `X-Frame-Options: DENY` and HSTS behind HTTPS.
   Run logs and file contents are shown as text, never as HTML.

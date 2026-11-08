@@ -150,6 +150,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	}
 	if cfg.Metrics.Token != (config.SettingValue{}) {
 		if s.metricsKey, err = cfg.Metrics.Token.Resolve(); err != nil {
+			s.close(context.Background())
 			return nil, fmt.Errorf("spec.metrics.token: %w", err)
 		}
 	}

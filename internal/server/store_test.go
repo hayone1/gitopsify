@@ -145,11 +145,11 @@ func TestStores(t *testing.T) {
 			if _, err := st.addPublishes(ctx, "gone", []Publish{{Remote: "a"}}, false); err != errNotFound {
 				t.Errorf("publishes of a missing run: %v", err)
 			}
-			unlock, ok, err := st.lockRun(ctx, done.ID)
+			_, unlock, ok, err := st.lockRun(ctx, done.ID)
 			if err != nil || !ok {
 				t.Fatalf("lock: %v %v", ok, err)
 			}
-			if _, ok2, _ := st.lockRun(ctx, done.ID); ok2 {
+			if _, _, ok2, _ := st.lockRun(ctx, done.ID); ok2 {
 				t.Error("a held lock was taken again")
 			}
 			// Pruning leaves a locked run alone.
@@ -158,12 +158,12 @@ func TestStores(t *testing.T) {
 			}
 			unlock()
 			unlock() // twice is fine
-			if unlock2, ok2, _ := st.lockRun(ctx, done.ID); !ok2 {
+			if _, unlock2, ok2, _ := st.lockRun(ctx, done.ID); !ok2 {
 				t.Error("a released lock couldn't be taken")
 			} else {
 				unlock2()
 			}
-			if _, _, err := st.lockRun(ctx, "gone"); err != errNotFound {
+			if _, _, _, err := st.lockRun(ctx, "gone"); err != errNotFound {
 				t.Errorf("lock of a missing run: %v", err)
 			}
 			for i, m := range []string{"one", "two", "three"} {
@@ -313,10 +313,18 @@ func TestPackDir(t *testing.T) {
 	if err := unpackDir(data, dst); err != nil {
 		t.Fatal(err)
 	}
-	for p, want := range map[string]bool{"apps/shop/values.secrets.yaml": true, ".secrets/kept/x.yaml": true, ".secrets/local/db.yaml": false, "x.secrets.auto.tfvars": false} {
+	// gitopsify's own plaintext files never are, tracked or not.
+	for p, want := range map[string]bool{"apps/shop/values.secrets.yaml": true, ".secrets/kept/x.yaml": false, ".secrets/local/db.yaml": false, "x.secrets.auto.tfvars": false} {
 		if _, err := os.Stat(filepath.Join(dst, p)); (err == nil) != want {
 			t.Errorf("%s archived: %v, want %v", p, err == nil, want)
 		}
+	}
+	// And a repository tracking them is refused before pushing.
+	if err := refuseTrackedSecrets(repo, "the repository"); err == nil || !strings.Contains(err.Error(), ".secrets/kept/x.yaml") {
+		t.Errorf("tracked .secrets: %v", err)
+	}
+	if err := refuseTrackedSecrets(t.TempDir(), "x"); err != nil {
+		t.Errorf("no repository: %v", err)
 	}
 	// An archive that escapes the directory is refused.
 	var buf bytes.Buffer
@@ -467,7 +475,7 @@ func TestReplicaPushes(t *testing.T) {
 		t.Errorf("remote history: %s", out)
 	}
 	// Deleting waits for a push, on any replica.
-	unlock, ok, err := b.s.store.lockRun(context.Background(), r.ID)
+	_, unlock, ok, err := b.s.store.lockRun(context.Background(), r.ID)
 	if err != nil || !ok {
 		t.Fatal(ok, err)
 	}
@@ -541,7 +549,7 @@ func TestReplicaCopies(t *testing.T) {
 	}
 
 	// Eviction: not while the run is locked; then idle copies go.
-	unlock, _, _ := st.lockRun(ctx, r.ID)
+	_, unlock, _, _ := st.lockRun(ctx, r.ID)
 	rs.evict(0)
 	if _, err := os.Stat(rs.runDir(r.ID)); err != nil {
 		t.Error("evicted while locked")
@@ -599,7 +607,7 @@ func TestProviderEnv(t *testing.T) {
 	env := []string{"PATH=/bin", "HOME=/tmp", "GITOPSIFY_SESSION_KEY=k", "DATABASE_URL=postgres://u:p@h", "AWS_ROLE_ARN=arn",
 		"AWS_WEB_IDENTITY_TOKEN_FILE=/t", "GITHUB_TOKEN=x", "LC_ALL=C", "KUBERNETES_SERVICE_HOST=10.0.0.1"}
 	got := providerEnv(env, []string{"AWS_*", "GITHUB_*"}, []string{"DATABASE_URL", "GITHUB_TOKEN"})
-	want := []string{"PATH=/bin", "HOME=/tmp", "AWS_ROLE_ARN=arn", "AWS_WEB_IDENTITY_TOKEN_FILE=/t", "LC_ALL=C", "KUBERNETES_SERVICE_HOST=10.0.0.1"}
+	want := []string{"PATH=/bin", "HOME=/tmp", "AWS_ROLE_ARN=arn", "AWS_WEB_IDENTITY_TOKEN_FILE=/t", "LC_ALL=C"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("env %v, want %v", got, want)
 	}

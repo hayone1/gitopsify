@@ -584,16 +584,53 @@ func hidden(rel string) bool {
 	return secretFile(rel)
 }
 
-// secretFile reports whether a path of an output holds Secret values
-// (written for the person running the CLI, git-ignored): never served,
-// archived or pushed.
+// secretFile reports whether a path of an output may hold Secret values:
+// never served. ownSecretFile ones are never archived or pushed either.
 func secretFile(rel string) bool {
+	return ownSecretFile(rel) || strings.Contains(path.Base(rel), ".secrets.")
+}
+
+// ownSecretFile reports whether a path is where gitopsify writes Secret
+// values in clear for the person running it, git-ignored: .secrets/ and
+// *.secrets.auto.tfvars.
+func ownSecretFile(rel string) bool {
 	for _, part := range strings.Split(rel, "/") {
 		if part == ".secrets" {
 			return true
 		}
 	}
-	return strings.Contains(path.Base(rel), ".secrets.")
+	return strings.HasSuffix(rel, ".secrets.auto.tfvars")
+}
+
+// trackedSecretFiles lists the files of gitopsify's plaintext kind that the
+// repository in dir tracks: git-ignored or not, a push would publish them.
+func trackedSecretFiles(dir string) ([]string, error) {
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		return nil, nil
+	}
+	tracked := map[string]bool{}
+	if err := trackedFiles(dir, "", tracked); err != nil {
+		return nil, err
+	}
+	var out []string
+	for f := range tracked {
+		if ownSecretFile(f) {
+			out = append(out, f)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func refuseTrackedSecrets(dir, remote string) error {
+	files, err := trackedSecretFiles(dir)
+	if err != nil {
+		return err
+	}
+	if len(files) > 0 {
+		return fmt.Errorf("%s tracks %s, where gitopsify writes Secret values in clear: remove them from the repository (git rm --cached) and keep them ignored", remote, strings.Join(files, ", "))
+	}
+	return nil
 }
 
 type fileEntry struct {

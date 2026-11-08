@@ -46,12 +46,19 @@ func TestRedactCredentials(t *testing.T) {
 			"secretKeys":       map[string]any{"adminPasswordKey": "admin-password"},
 			"pin":              map[string]any{"password": 1234},
 		},
-		"secrets": map[string]any{"DB_URL": "postgres://u:p@h/db", "create": true, "name": "app"},
-		"env":     []any{map[string]any{"name": "API_TOKEN", "value": "t0k"}, map[string]any{"name": "LOG_LEVEL", "value": "debug"}},
-		"image":   map[string]any{"tag": "1.2"},
+		"secrets": map[string]any{"DB_URL": "postgres://u:p@h/db", "ENCRYPTION_KEY": "k", "create": true, "name": "app",
+			"mountPath": "/etc/secrets", "type": "Opaque", "refreshInterval": "1h"},
+		"credentials": map[string]any{"accessKey": "AKIA", "key": "k2"},
+		"env": []any{map[string]any{"name": "API_TOKEN", "value": "t0k"}, map[string]any{"name": "LOG_LEVEL", "value": "debug"},
+			map[string]any{"name": "TOKEN_TTL", "value": 3600}},
+		"image":             map[string]any{"tag": "1.2"},
+		"externalDatabase":  map[string]any{"url": "postgres://app:s3cret@db:5432/app", "hosts": []any{"redis://:pw@cache:6379"}},
+		"passwordMinLength": 8,
+		"tokenTTL":          3600,
 	}
 	got := redactCredentials(values, "")
-	want := []string{"auth.pin.password", "auth.postgresPassword", "env[0].value", "secrets.DB_URL"}
+	want := []string{"auth.pin.password", "auth.postgresPassword", "credentials.accessKey", "credentials.key", "env[0].value",
+		"externalDatabase.hosts[0]", "externalDatabase.url", "secrets.DB_URL", "secrets.ENCRYPTION_KEY"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("redacted %v, want %v", got, want)
 	}
@@ -59,8 +66,14 @@ func TestRedactCredentials(t *testing.T) {
 	if auth["existingSecret"] != "db-credentials" || auth["secretKeys"].(map[string]any)["adminPasswordKey"] != "admin-password" {
 		t.Errorf("references were redacted: %v", auth)
 	}
-	if s := values["secrets"].(map[string]any); s["name"] != "app" || s["create"] != true {
+	if s := values["secrets"].(map[string]any); s["name"] != "app" || s["create"] != true || s["mountPath"] != "/etc/secrets" || s["type"] != "Opaque" {
 		t.Errorf("secrets: %v", s)
+	}
+	if u := values["externalDatabase"].(map[string]any)["url"]; u != "postgres://app:<redacted>@db:5432/app" {
+		t.Errorf("url: %v", u)
+	}
+	if values["passwordMinLength"] != 8 || values["tokenTTL"] != 3600 {
+		t.Errorf("settings redacted: %v %v", values["passwordMinLength"], values["tokenTTL"])
 	}
 	if e := values["env"].([]any)[1].(map[string]any); e["value"] != "debug" {
 		t.Errorf("env: %v", e)

@@ -33,6 +33,7 @@ var pgSchema = []string{
 		heartbeat timestamptz NOT NULL DEFAULT now(),
 		cancel_requested boolean NOT NULL DEFAULT false)`,
 	`CREATE INDEX IF NOT EXISTS gitopsify_runs_created ON gitopsify_runs (created_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS gitopsify_runs_page ON gitopsify_runs (created_at DESC, id DESC)`,
 	`CREATE TABLE IF NOT EXISTS gitopsify_run_logs (
 		run_id text NOT NULL REFERENCES gitopsify_runs (id) ON DELETE CASCADE,
 		seq integer NOT NULL,
@@ -163,7 +164,10 @@ func (p *pgStore) addPublishes(ctx context.Context, id string, ps []Publish, bum
 		if err := json.Unmarshal(b, &r); err != nil {
 			return err
 		}
-		r.Publishes = append(r.Publishes, ps...)
+		if !addNewPublishes(&r, ps) {
+			out = &r
+			return nil
+		}
 		if bump {
 			r.OutputVersion++
 		}
@@ -180,8 +184,9 @@ func (p *pgStore) addPublishes(ctx context.Context, id string, ps []Publish, bum
 }
 
 // lockRun takes a lease on the run, renewed until unlock: no connection is
-// held meanwhile (a pool of n connections would stall with n pushes).
-func (p *pgStore) lockRun(ctx context.Context, id string) (func(), bool, error) {
+// held meanwhile (a pool of n connections would stall with n pushes). The
+// context it returns ends if the lease is lost.
+func (p *pgStore) lockRun(ctx context.Context, id string) (context.Context, func(), bool, error) {
 	token := randomString(12)
 	var exists, locked int
 	err := p.pool.QueryRow(ctx, `
@@ -192,12 +197,13 @@ func (p *pgStore) lockRun(ctx context.Context, id string) (func(), bool, error) 
 		id, token, lockLease.Seconds()).Scan(&exists, &locked)
 	switch {
 	case err != nil:
-		return nil, false, err
+		return nil, nil, false, err
 	case exists == 0:
-		return nil, false, errNotFound
+		return nil, nil, false, errNotFound
 	case locked == 0:
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
+	lctx, lost := context.WithCancel(ctx)
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -210,17 +216,22 @@ func (p *pgStore) lockRun(ctx context.Context, id string) (func(), bool, error) 
 				return
 			case <-t.C:
 				rctx, cancel := bg()
-				_, _ = p.pool.Exec(rctx, `UPDATE gitopsify_runs SET lock_until = now() + make_interval(secs => $3)
-					WHERE id = $1 AND lock_owner = $2`, id, token, lockLease.Seconds())
+				tag, err := p.pool.Exec(rctx, `UPDATE gitopsify_runs SET lock_until = now() + make_interval(secs => $3)
+					WHERE id = $1 AND lock_owner = $2 AND lock_until > now()`, id, token, lockLease.Seconds())
 				cancel()
+				if err == nil && tag.RowsAffected() == 0 {
+					lost() // expired (the database was unreachable) or the run is gone
+					return
+				}
 			}
 		}
 	}()
 	var once sync.Once
-	return func() {
+	return lctx, func() {
 		once.Do(func() {
 			close(stop)
 			<-done
+			lost()
 			uctx, cancel := bg()
 			defer cancel()
 			_, _ = p.pool.Exec(uctx, `UPDATE gitopsify_runs SET lock_until = NULL, lock_owner = '' WHERE id = $1 AND lock_owner = $2`, id, token)

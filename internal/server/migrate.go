@@ -408,6 +408,9 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 				if err := noSymlinks(d); err != nil {
 					return err
 				}
+				if err := refuseTrackedSecrets(d, remote); err != nil {
+					return err
+				}
 				rc.Info("checked out %s (%s)", remote, firstNonEmpty(cfg.Output.Repo.Revision, "main"))
 			}
 		}
@@ -440,7 +443,7 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 // publish commits and pushes a migration's or an export's output.
 func (s *Server) publish(ctx context.Context, id string, u *User, message string, rc *runContext) error {
 	// One push of a run at a time, across replicas; deleting waits too.
-	unlock, locked, err := s.store.lockRun(ctx, id)
+	lctx, unlock, locked, err := s.store.lockRun(ctx, id)
 	if errors.Is(err, errNotFound) {
 		return os.ErrNotExist
 	}
@@ -451,6 +454,7 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 		return errPushing
 	}
 	defer unlock()
+	ctx = lctx // ends if the lock is lost: someone else may push then
 	r, ok := s.runs.get(id)
 	if !ok {
 		return os.ErrNotExist
@@ -500,6 +504,9 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 			err = noSymlinks(d)
 		}
 		if err == nil {
+			err = refuseTrackedSecrets(d, remote)
+		}
+		if err == nil {
 			var res *gitrepo.Result
 			res, err = gitrepo.Publish(gitrepo.Options{Dir: d, Remote: remote, Branch: p.Branch, Message: message, Push: true,
 				AuthorName: name, AuthorEmail: email, Env: env, Context: ctx})
@@ -537,13 +544,15 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 		s.log.Warn("storing the output after a push", "run", id, "error", err)
 		bump = false
 	}
-	sctx, cancel := bg()
-	defer cancel()
 	var nr *Run
 	for attempt := 1; ; attempt++ {
-		// Retried: with the archive stored but the version not moved on,
-		// other replicas would push from older copies.
-		if nr, err = s.store.addPublishes(sctx, id, pubs, bump && s.store.shared()); err == nil || errors.Is(err, errNotFound) || attempt == 3 {
+		// Retried (the store skips pushes it already has): with the archive
+		// stored but the version not moved on, other replicas would push
+		// from older copies.
+		sctx, cancel := bg()
+		nr, err = s.store.addPublishes(sctx, id, pubs, bump && s.store.shared())
+		cancel()
+		if err == nil || errors.Is(err, errNotFound) || attempt == 3 {
 			break
 		}
 		time.Sleep(time.Duration(attempt) * time.Second)

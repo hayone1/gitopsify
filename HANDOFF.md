@@ -39,11 +39,20 @@ design docs/DESIGN-webui.md (W1-W10).
 - Secret values (W8): `checkSecretLeaks`/`pinSealedSecrets` in migrate.go,
   the Secret-kind guard in pkg/transform, `pipeline.Options.RedactValues`
   (Helm values by key name); all lifted by `runs.allowSecretValues`.
+- Secret files in archives: packDir leaves out `.secrets/` and
+  `*.secrets.*` unless a repository in the output tracks them.
 - Replicas (W9): runs are owned (createRun, owner-fenced updateRun,
-  heartbeat returns lost runs), reaped in SQL time, pushes take
-  `store.tryLock("run:<id>")` (pg advisory lock on its own connection),
-  outputs carry `OutputVersion` and replicas re-unpack older copies
-  (`output.version` marker), listing/pruning in SQL, idle copies evicted.
+  heartbeat returns lost runs), reaped in SQL time (any stale run not in
+  the reaper's local set), pushes and deletes take `store.lockRun(id)` (a
+  lease in `lock_owner`/`lock_until`, renewed while held; no connection
+  held), outputs carry `OutputVersion` and replicas re-unpack older copies
+  (`output.version` marker, per-run `dirLocks`), listing (keyset paging)
+  and pruning in SQL, idle copies evicted (evictLoop, under the run lock).
+- Protected Secrets: `pipeline.Options.ProtectSecrets` (server) marks
+  sealed/SOPS Secrets `model.Object.Protected`; transforms can't rename
+  them and `replace` skips their data. Providers get `providerEnv`
+  (allowlist `spec.providers.env`, never the server's own secret
+  variables, found by reflection over the config: `settingEnvs`).
 - `ui/`: Nuxt 4 + Nuxt UI 4 SPA (`make ui` builds into web/dist, embedded by
   `web/embed.go`; `make ui-dev` proxies a local server). Pages: overview,
   migration wizard, export wizard, runs, run (log/apps/files/config/pushes),
@@ -321,13 +330,22 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   output copies and unserialized pushes across replicas; reaping by pod
   clock without fencing; listing/pruning capped at 5000; chart RBAC `get`
   on `*` covering nodes/proxy; trustedProxies default; kubeadm: groups),
-  all fixed with tests, plus most optional items (see the commit "Fixes
-  from the second review").
+  all fixed with tests, plus most optional items (commit "fixes from the
+  second review"). Round 3 confirmed those and found 5 more (tracked
+  `*.secrets.*` files dropped from archives so a push deleted them;
+  renaming sealed Secrets into an operator's namespace and `replace` as a
+  length oracle; advisory locks exhausting the pool; eviction/pruning
+  racing pushes; vendored chart values unredacted): fixed with tests
+  (commit "fixes from the third review"), re-verified on the devbox (PG
+  tests, run.sh 3/3, chart.sh 3/3 with each replica serving every run,
+  typecheck). Chart RBAC checked on kind: a list/watch-only
+  ServiceAccount scans fine; can-i denies nodes/proxy, pods/log, exec and
+  other services' proxies; allows only the sealed-secrets service proxy.
 - GitHub release downloads returned 504 for every project on 2026-11-08
-  (from Hetzner, WSL and GitHub Actions): PR #2's `image` job failed on the
-  sops download; rerun it (`gh run rerun --failed <id>`). The Dockerfile
-  pins checksums, retries, and builds without sops when SOPS_VERSION is
-  empty.
+  (from Hetzner, WSL and GitHub Actions); the Dockerfile now falls back to
+  the API asset endpoint (pinned asset IDs, same checksums), and the
+  `image` job passes. Bumping sops means updating the checksums and the
+  asset IDs (command in the Dockerfile).
 - GitGuardian on PR #2 flags test fixtures in earlier commits (a base64
   Basic header in unit_test.go, the chart e2e's throwaway PostgreSQL
   password): not real secrets; both are now computed/generated. Mark the
@@ -344,6 +362,9 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   remotes (warned at startup when roles are scoped).
 - A replica re-unpacking an output can break a download in progress on the
   same replica (rare: only after another replica pushed that run).
+- A replica that dies while pushing blocks that run's pushes and deletion
+  for the lease (2 minutes).
+- Helm value redaction is by names (keys, name/value pairs); documented.
 
 ## Open / next (providers), in order
 1. GitGuardian incident 39798306 (PR #1) is a false positive (a SHA-256 file

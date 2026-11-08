@@ -124,6 +124,11 @@ func Scan(ctx context.Context, opts Options) (*Result, error) {
 	if opts.ProtectSecrets {
 		for _, o := range inv.Objects {
 			if o.IsSecret() {
+				if o.HelmRelease != "" {
+					if r := inv.Release(o.HelmRelease); r != nil && r.Mode != model.HelmModeManifests {
+						continue // the chart renders it: never written
+					}
+				}
 				switch secrets.StrategyFor(cfg, o.Ref.Namespace, o.Ref.Name) {
 				case config.SecretsSealedSecrets, config.SecretsSOPS, config.SecretsPlain, config.SecretsLocal:
 					o.Protected = true
@@ -435,10 +440,12 @@ func credentialName(k, parent string) bool {
 }
 
 // redactCredentials replaces values that look like credentials with
-// RedactedValue and returns their paths: strings and numbers under
-// credential keys (and the string leaves of maps and lists under them,
-// but references such as names and keys), and the value of name/value
-// pairs whose name is a credential (env lists).
+// RedactedValue and returns their paths: strings under credential keys
+// (and the value-like strings of maps and lists under them, such as
+// DB_URL or accessKey, but not names, references or settings such as
+// mountPath), numbers under keys that end like a credential (password,
+// not passwordMinLength), the value of name/value pairs (env lists) whose
+// name ends like one, and the password of URLs anywhere.
 func redactCredentials(v any, prefix string) []string {
 	var out []string
 	join := func(k string) string {
@@ -449,7 +456,7 @@ func redactCredentials(v any, prefix string) []string {
 	}
 	switch t := v.(type) {
 	case map[string]any:
-		if n, ok := t["name"].(string); ok && credentialName(n, "") && redactable(t["value"]) {
+		if n, ok := t["name"].(string); ok && credentialEnd.MatchString(n) && redactable(t["value"]) {
 			t["value"] = RedactedValue
 			out = append(out, join("value"))
 		}
@@ -460,26 +467,65 @@ func redactCredentials(v any, prefix string) []string {
 		sort.Strings(keys)
 		parent := prefix[strings.LastIndex(prefix, ".")+1:]
 		for _, k := range keys {
-			if credentialName(k, parent) {
-				if redactable(t[k]) {
+			switch x := t[k].(type) {
+			case string:
+				if credentialName(k, parent) && redactable(x) {
 					t[k] = RedactedValue
 					out = append(out, join(k))
-					continue
+				} else if r, ok := redactURL(x); ok {
+					t[k] = r
+					out = append(out, join(k))
 				}
-				out = append(out, redactLeaves(t[k], join(k))...)
+				continue
+			case map[string]any, []any:
+				if credentialName(k, parent) {
+					out = append(out, redactLeaves(x, join(k))...)
+				}
+			default:
+				if credentialEnd.MatchString(k) && redactable(x) {
+					t[k] = RedactedValue
+					out = append(out, join(k))
+				}
+				continue
 			}
 			out = append(out, redactCredentials(t[k], join(k))...)
 		}
 	case []any:
 		for i, c := range t {
+			if s, ok := c.(string); ok {
+				if r, ok := redactURL(s); ok {
+					t[i] = r
+					out = append(out, fmt.Sprintf("%s[%d]", prefix, i))
+				}
+				continue
+			}
 			out = append(out, redactCredentials(c, fmt.Sprintf("%s[%d]", prefix, i))...)
 		}
 	}
 	return out
 }
 
-// redactLeaves redacts the string values in a map or list under a
-// credential key, but those that name or point at something.
+// credentialEnd matches names that end like a credential (DB_PASSWORD,
+// apiToken; not TOKEN_TTL or passwordMinLength).
+var credentialEnd = regexp.MustCompile(`(?i)(password|passwd|passphrase|secret|token|api_?key|private_?key|access_?key|secret_?key|_key|credentials?|dsn|pin)$`)
+
+// valueLike matches keys, in a map under a credential key, whose strings
+// are values: env-style names and names of keys, URLs and the like.
+var valueLike = regexp.MustCompile(`(?i)(key|url|uri|dsn|pass|secret|token|credential|auth|cert)`)
+
+// redactURL replaces the password of a URL with credentials in it.
+func redactURL(s string) (string, bool) {
+	m := urlCredentials.FindStringSubmatchIndex(s)
+	if m == nil || s[m[2]:m[3]] == "<redacted>" {
+		return s, false
+	}
+	return s[:m[2]] + "<redacted>" + s[m[3]:], true
+}
+
+var urlCredentials = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://[^/@:\s]*:([^/@\s]+)@`)
+
+// redactLeaves redacts the value-like strings in a map or list under a
+// credential key.
 func redactLeaves(v any, prefix string) []string {
 	var out []string
 	switch t := v.(type) {
@@ -491,20 +537,21 @@ func redactLeaves(v any, prefix string) []string {
 		sort.Strings(keys)
 		for _, k := range keys {
 			l := strings.ToLower(k)
-			if l == "create" || l == "enabled" || strings.HasSuffix(l, "name") || strings.HasSuffix(l, "ref") || strings.HasSuffix(l, "key") ||
-				strings.HasPrefix(l, "existing") || l == "annotations" || l == "labels" {
-				continue
-			}
-			if s, ok := t[k].(string); ok && s != "" && s != RedactedValue {
-				t[k] = RedactedValue
-				out = append(out, prefix+"."+k)
+			envStyle := strings.ToUpper(k) == k && strings.ContainsAny(k, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+			reference := strings.HasSuffix(l, "name") || strings.HasSuffix(l, "ref") || strings.HasPrefix(l, "existing") ||
+				strings.HasSuffix(l, "passwordkey") || strings.HasSuffix(l, "tokenkey")
+			if s, ok := t[k].(string); ok {
+				if !reference && (envStyle || valueLike.MatchString(k)) && redactable(s) {
+					t[k] = RedactedValue
+					out = append(out, prefix+"."+k)
+				}
 				continue
 			}
 			out = append(out, redactLeaves(t[k], prefix+"."+k)...)
 		}
 	case []any:
 		for i, c := range t {
-			if s, ok := c.(string); ok && s != "" && s != RedactedValue {
+			if s, ok := c.(string); ok && redactable(s) {
 				t[i] = RedactedValue
 				out = append(out, fmt.Sprintf("%s[%d]", prefix, i))
 				continue

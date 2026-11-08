@@ -53,8 +53,10 @@ run gitopsify server (or the Helm chart) instead.`,
 			if err != nil {
 				return err
 			}
+			// One person, like the CLI: Secret values aren't kept from them.
 			cfg := &config.Server{Spec: config.ServerSpec{Listen: ln.Addr().String(), DataDir: dataDir,
-				ExternalURL: "http://" + ln.Addr().String(), Auth: config.ServerAuth{Mode: config.AuthLocal}}}
+				ExternalURL: "http://" + ln.Addr().String(), Auth: config.ServerAuth{Mode: config.AuthLocal},
+				Runs: config.ServerRuns{AllowSecretValues: true}}}
 			cfg.Default()
 			token := server.NewToken()
 			log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))

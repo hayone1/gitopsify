@@ -231,8 +231,32 @@ func TestProtectedSecret(t *testing.T) {
 		u, o := object(t, secret)
 		o.Protected = true
 		if _, err := Object(u, o, []config.Transform{tr}); err == nil {
-			t.Errorf("%s moved a protected Secret", tr.Type)
+			t.Errorf("%s %s moved a protected Secret", tr.Type, tr.Path)
 		}
+	}
+	// Values come out unchanged whatever is set (a right guess and a wrong
+	// one look the same).
+	for _, tr := range []config.Transform{
+		{Type: "set", Path: "data.password", Value: "aHVudGVyMg=="},
+		{Type: "set", Path: "data.password", Value: "d3Jvbmc="},
+		{Type: "jsonPatch", Patch: []map[string]any{{"op": "replace", "path": "/stringData/url", "value": "x"}}},
+		{Type: "remove", Path: "data.password"},
+		{Type: "set", Path: "data.extra", Value: "eA=="},
+	} {
+		u, o := object(t, secret)
+		o.Protected = true
+		changed, err := Object(u, o, []config.Transform{tr})
+		d, _, _ := unstructured.NestedStringMap(u.Object, "data")
+		sd, _, _ := unstructured.NestedStringMap(u.Object, "stringData")
+		if err != nil || changed || len(d) != 1 || d["password"] != "aHVudGVyMg==" || sd["url"] != "https://a.example.com" {
+			t.Errorf("%s %s: changed %v, %v, data %v %v", tr.Type, tr.Path, changed, err, d, sd)
+		}
+	}
+	// A protected Secret's SealedSecret keeps its identity too.
+	u, o = object(t, "apiVersion: bitnami.com/v1alpha1\nkind: SealedSecret\nmetadata: {name: db, namespace: shop}\n")
+	o.Ref.Kind, o.Ref.Group, o.Protected = "Secret", "", true
+	if _, err := Object(u, o, []config.Transform{{Type: "namespace", Map: map[string]string{"shop": "mine"}}}); err == nil {
+		t.Error("a protected SealedSecret moved")
 	}
 	// Unprotected (the CLI): namespaces move and data is replaced.
 	u, o = object(t, secret)

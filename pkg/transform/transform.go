@@ -25,6 +25,19 @@ import (
 func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform) (bool, error) {
 	before, _ := json.Marshal(u.Object)
 	secret := u.GetAPIVersion() == "v1" && u.GetKind() == "Secret"
+	// A protected Secret's values come out as they went in, whatever the
+	// transforms do: a change that depends on the value (an overlay of
+	// patches or of full copies, an error or none) would tell whether a
+	// guess was right.
+	var values map[string]any
+	if secret && o.Protected {
+		values = map[string]any{}
+		for _, f := range []string{"data", "stringData"} {
+			if v, ok := u.Object[f]; ok {
+				values[f] = deepCopy(v)
+			}
+		}
+	}
 	for i, t := range ts {
 		ok, err := match.SelectorOrAll(t.Target, o, o.App)
 		if err != nil {
@@ -42,8 +55,19 @@ func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform
 	if secret && (u.GetAPIVersion() != "v1" || u.GetKind() != "Secret") {
 		return false, fmt.Errorf("transforms change Secret %s into %s %s: a Secret must stay a Secret", o.Ref, u.GetAPIVersion(), u.GetKind())
 	}
-	if secret && o.Protected && (u.GetNamespace() != o.Ref.Namespace || u.GetName() != o.Ref.Name) {
+	// Protected Secrets (and their SealedSecrets) keep their identity,
+	// which sealing binds to.
+	if o.Protected && (u.GetNamespace() != o.Ref.Namespace || u.GetName() != o.Ref.Name) {
 		return false, fmt.Errorf("transforms move Secret %s to %s/%s: its values are protected, so it keeps its namespace and name (an admin can allow Secret values)", o.Ref, u.GetNamespace(), u.GetName())
+	}
+	if values != nil {
+		for _, f := range []string{"data", "stringData"} {
+			if v, ok := values[f]; ok {
+				u.Object[f] = v
+			} else {
+				delete(u.Object, f)
+			}
+		}
 	}
 	after, _ := json.Marshal(u.Object)
 	return string(before) != string(after), nil

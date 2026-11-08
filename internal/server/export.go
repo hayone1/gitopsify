@@ -85,7 +85,7 @@ func (s *Server) describe(ctx context.Context, name string) (*provider.Installed
 
 // toolSettings resolves a tool's connection settings: configured ones, then
 // the provider's environment variables, as gitopsify export does.
-func toolSettings(t *config.ServerTool, d *sdk.Description, own []string) (map[string]string, error) {
+func toolSettings(t *config.ServerTool, d *sdk.Description, deny []string) (map[string]string, error) {
 	out := map[string]string{}
 	for name, v := range t.Settings {
 		val, err := v.Resolve()
@@ -99,9 +99,9 @@ func toolSettings(t *config.ServerTool, d *sdk.Description, own []string) (map[s
 		if _, ok := out[st.Name]; ok {
 			continue
 		}
-		// From the provider's variable, unless it's one of the server's
-		// own secrets (a provider could name any).
-		if st.Env != "" && !contains(own, st.Env) && !strings.HasPrefix(st.Env, "GITOPSIFY_") {
+		// From the provider's variable, unless another tool's or the
+		// server's secrets come from it (a provider could name any).
+		if st.Env != "" && !contains(deny, st.Env) && !strings.HasPrefix(st.Env, "GITOPSIFY_") {
 			if v := os.Getenv(st.Env); v != "" {
 				out[st.Name] = v
 				continue
@@ -162,7 +162,7 @@ func (s *Server) checkTool(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		return
 	}
 	res := toolCheck{Description: d}
-	settings, err := toolSettings(t, d, s.ownSecretEnvs())
+	settings, err := toolSettings(t, d, s.secretEnvsBut(t))
 	if err == nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
@@ -319,7 +319,7 @@ func (s *Server) startExport(req runRequest, u *User) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	settings, err := toolSettings(t, d, s.ownSecretEnvs())
+	settings, err := toolSettings(t, d, s.secretEnvsBut(t))
 	if err != nil {
 		return nil, err
 	}
@@ -458,7 +458,7 @@ func providerEnv(environ, allow, deny []string) []string {
 		}
 		switch strings.ToUpper(name) {
 		case "PATH", "HOME", "TMPDIR", "TZ", "LANG", "USER", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-			"SSL_CERT_FILE", "SSL_CERT_DIR", "GODEBUG", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT":
+			"SSL_CERT_FILE", "SSL_CERT_DIR", "GODEBUG":
 			out = append(out, kv)
 		default:
 			if strings.HasPrefix(name, "LC_") || match.Glob(allow, name) {
@@ -469,12 +469,18 @@ func providerEnv(environ, allow, deny []string) []string {
 	return out
 }
 
-// ownSecretEnvs are the variables the server's own secrets come from (not
-// the tools': their providers get those).
-func (s *Server) ownSecretEnvs() []string {
-	c := *s.cfg
-	c.Tools = nil
-	return settingEnvs(reflect.ValueOf(&c))
+// secretEnvsBut are the variables the configuration's secrets come from,
+// but those of tool t's own settings: t's provider may read no other
+// (another tool's credentials, the server's).
+func (s *Server) secretEnvsBut(t *config.ServerTool) []string {
+	own := settingEnvs(reflect.ValueOf(t))
+	var out []string
+	for _, e := range settingEnvs(reflect.ValueOf(s.cfg)) {
+		if !contains(own, e) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // settingEnvs lists the environment variables the configuration reads
