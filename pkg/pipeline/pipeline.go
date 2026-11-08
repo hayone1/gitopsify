@@ -424,19 +424,67 @@ func resolveCharts(ctx context.Context, inv *model.Inventory, cfg *config.Config
 // secrets).
 func credentialName(k, parent string) bool {
 	l := strings.ToLower(k)
-	return credentialKey.MatchString(k) && !strings.Contains(l, "secretname") && !strings.HasSuffix(l, "ref") &&
-		!strings.HasPrefix(l, "existing") && !strings.HasSuffix(l, "passwordkey") && !strings.Contains(l, "pullsecret") &&
-		!strings.Contains(strings.ToLower(parent), "secretkeys")
+	return (credentialKey.MatchString(k) || redactKey.MatchString(k)) && !strings.Contains(l, "secretname") &&
+		!strings.HasSuffix(l, "ref") && !strings.HasPrefix(l, "existing") && !strings.HasSuffix(l, "passwordkey") &&
+		!strings.Contains(l, "pullsecret") && !secretNameKey(l) && !strings.Contains(strings.ToLower(parent), "secretkeys")
+}
+
+// redactKey adds credentials known by other names (Airflow's fernetKey and
+// connection pass, MongoDB's replicaSetKey, LDAP bind passwords, Grafana's
+// secureJsonData, Argo CD's repository keys, alerting integration keys).
+var redactKey = regexp.MustCompile(`(?i)(passphrase|fernet|bindpw|replicasetkey|securejsondata|tlsclientcertkey|tlsclientkey|serviceaccountkey|routing_key|service_key|user_key|integrationkey|(^|[_.-])pass$|dsn$|(^|[_.-])key$)`)
+
+// secretNameKey reports keys whose string is the name of a Secret.
+func secretNameKey(l string) bool {
+	for _, suffix := range []string{"fromsecret", "certificatessecret", "certificatesecret", "tlssecret", "certsecret", "secretnames"} {
+		if strings.HasSuffix(l, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// container reports keys whose maps and lists hold credentials: their last
+// word is one (secrets, extraSecrets, credentials; not passwordUpdateJob).
+func container(k string) bool {
+	l := strings.ToLower(k)
+	if l == "securejsondata" || strings.HasSuffix(l, "securejsondata") {
+		return true
+	}
+	switch strings.TrimSuffix(lastWord(k), "s") {
+	case "secret", "credential", "password", "token", "key", "apikey":
+		return !strings.Contains(l, "pullsecret")
+	}
+	return false
+}
+
+// lastWord returns the last word of a key, lowercased: camelCase,
+// snake_case, kebab-case and dotted.
+func lastWord(k string) string {
+	i := len(k)
+	for i > 0 {
+		c := k[i-1]
+		if c == '_' || c == '-' || c == '.' {
+			break
+		}
+		if c >= 'A' && c <= 'Z' && i < len(k) && k[i] >= 'a' && k[i] <= 'z' {
+			i--
+			break
+		}
+		i--
+	}
+	return strings.ToLower(strings.TrimLeft(k[i:], "_-."))
 }
 
 // redactCredentials replaces values that look like credentials with
 // RedactedValue and returns their paths: strings under credential keys,
-// and the strings of maps and lists under them but names, references and
-// settings (velero's credentials.secretContents, Airflow's
-// extraSecrets.*.data, Argo CD's configs.secret.extra); numbers under keys
-// whose last word is a password or PIN; the value of name/value pairs
-// (env lists) whose name holds a credential word but isn't a setting
-// (DB_PASSWORD, not TOKEN_TTL); and the password of URLs anywhere.
+// and the strings of maps under keys whose last word is a credential
+// (secrets, credentials, secureJsonData) but names, references and
+// settings; numbers under keys ending like a credential (adminPin,
+// apiKey; not passwordMinLength or tokenTTL); the value of name/value
+// pairs (env lists) whose name holds a credential but isn't a setting
+// (DB_PASSWORD, FERNET_KEY; not TOKEN_TTL or TOKEN_URL); and the passwords
+// of URLs anywhere in strings.
 func redactCredentials(v any, prefix string) []string {
 	var out []string
 	join := func(k string) string {
@@ -447,6 +495,9 @@ func redactCredentials(v any, prefix string) []string {
 	}
 	switch t := v.(type) {
 	case map[string]any:
+		if referenceShape(t) {
+			return nil
+		}
 		if n, ok := t["name"].(string); ok && envCredential(n) && redactable(t["value"]) {
 			t["value"] = RedactedValue
 			out = append(out, join("value"))
@@ -457,8 +508,9 @@ func redactCredentials(v any, prefix string) []string {
 		}
 		sort.Strings(keys)
 		parent := prefix[strings.LastIndex(prefix, ".")+1:]
+		_, namesSecret := t["secretName"] // {envName, secretName, secretKey}
 		for _, k := range keys {
-			if skipSubtree(k) {
+			if skipSubtree(k) || (namesSecret && (strings.EqualFold(k, "secretKey") || k == "key")) {
 				continue
 			}
 			switch x := t[k].(type) {
@@ -466,14 +518,16 @@ func redactCredentials(v any, prefix string) []string {
 				if credentialName(k, parent) && redactable(x) {
 					t[k] = RedactedValue
 					out = append(out, join(k))
-				} else if r, ok := redactURL(x); ok {
+				} else if r, ok := redactURLs(x); ok {
 					t[k] = r
 					out = append(out, join(k))
 				}
-			case map[string]any, []any:
-				if credentialName(k, parent) {
+			case map[string]any:
+				if container(k) && credentialName(k, parent) {
 					out = append(out, redactLeaves(x, join(k))...)
 				}
+				out = append(out, redactCredentials(x, join(k))...)
+			case []any:
 				out = append(out, redactCredentials(x, join(k))...)
 			default:
 				if numberCredential(k) && redactable(x) {
@@ -485,7 +539,7 @@ func redactCredentials(v any, prefix string) []string {
 	case []any:
 		for i, c := range t {
 			if s, ok := c.(string); ok {
-				if r, ok := redactURL(s); ok {
+				if r, ok := redactURLs(s); ok {
 					t[i] = r
 					out = append(out, fmt.Sprintf("%s[%d]", prefix, i))
 				}
@@ -497,19 +551,23 @@ func redactCredentials(v any, prefix string) []string {
 	return out
 }
 
-// redactLeaves redacts the strings in a map or list under a credential
-// key, but names, references and settings.
+// redactLeaves redacts the strings in a map under a credential container,
+// but names, references and settings. Lists of strings are left alone:
+// under such keys they are names (Secrets to mount).
 func redactLeaves(v any, prefix string) []string {
 	var out []string
 	switch t := v.(type) {
 	case map[string]any:
+		if referenceShape(t) {
+			return nil
+		}
 		keys := make([]string, 0, len(t))
 		for k := range t {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if skipSubtree(k) || reference(k) || settingKeys[strings.ToLower(k)] {
+			if skipSubtree(k) || reference(k) || settingKeys[strings.ToLower(k)] || secretNameKey(strings.ToLower(k)) {
 				continue
 			}
 			if s, ok := t[k].(string); ok {
@@ -523,22 +581,43 @@ func redactLeaves(v any, prefix string) []string {
 		}
 	case []any:
 		for i, c := range t {
-			if s, ok := c.(string); ok && redactable(s) {
-				t[i] = RedactedValue
-				out = append(out, fmt.Sprintf("%s[%d]", prefix, i))
-				continue
+			if _, ok := c.(string); !ok {
+				out = append(out, redactLeaves(c, fmt.Sprintf("%s[%d]", prefix, i))...)
 			}
-			out = append(out, redactLeaves(c, fmt.Sprintf("%s[%d]", prefix, i))...)
 		}
 	}
 	return out
+}
+
+// referenceShape reports maps that point at a Secret ({name, key},
+// GitLab's {secret, key}) rather than hold a value.
+func referenceShape(m map[string]any) bool {
+	if len(m) == 0 {
+		return false
+	}
+	for k, v := range m {
+		switch k {
+		case "name", "secret", "key", "optional", "secretName", "enabled":
+		default:
+			return false
+		}
+		if _, ok := v.(map[string]any); ok {
+			return false
+		}
+	}
+	_, named := m["name"]
+	_, secret := m["secret"]
+	_, key := m["key"]
+	_, secretName := m["secretName"]
+	return (named || secret || secretName) && (key || len(m) == 1 || secret || secretName)
 }
 
 // skipSubtree reports keys whose values are never credentials: metadata,
 // references to Secrets, image pull secrets.
 func skipSubtree(k string) bool {
 	l := strings.ToLower(k)
-	return l == "annotations" || l == "labels" || l == "valuefrom" || strings.HasSuffix(l, "ref") || strings.Contains(l, "pullsecret")
+	return strings.HasSuffix(l, "annotations") || strings.HasSuffix(l, "labels") || l == "valuefrom" ||
+		strings.HasSuffix(l, "ref") || strings.Contains(l, "pullsecret") || l == "envfrom"
 }
 
 // reference reports keys whose strings name or point at something.
@@ -551,65 +630,119 @@ func reference(k string) bool {
 // settingKeys are settings of a Secret, not values, under credential keys.
 var settingKeys = map[string]bool{"create": true, "enabled": true, "mountpath": true, "subpath": true, "path": true, "type": true,
 	"mode": true, "defaultmode": true, "driver": true, "prefix": true, "provider": true, "format": true, "encoding": true,
-	"refreshinterval": true, "namespace": true, "kind": true, "apiversion": true, "scope": true, "immutable": true}
+	"refreshinterval": true, "namespace": true, "kind": true, "apiversion": true, "scope": true, "immutable": true,
+	"resourcespreset": true, "image": true, "resources": true}
 
 // envCredential reports env variable names that hold a credential:
-// DB_PASSWORD, SECRET_KEY_BASE, GCP_CREDENTIALS_JSON; not settings about
-// one (TOKEN_TTL, PASSWORD_FILE, API_KEY_ID).
+// DB_PASSWORD, SECRET_KEY_BASE, FERNET_KEY, SENTRY_DSN; not settings about
+// one (TOKEN_TTL, PASSWORD_FILE, API_KEY_ID, TOKEN_URL).
 func envCredential(n string) bool {
-	return credentialKey.MatchString(n) && !envSetting.MatchString(n)
+	return (credentialKey.MatchString(n) || envCredentialEnd.MatchString(n)) && !envSetting.MatchString(n)
 }
 
-var envSetting = regexp.MustCompile(`(?i)(_ttl|_file|_path|_length|_timeout|_enabled|_name|_key_id|_expiry|_expiration|_seconds|_minutes|_hours|_days|_size|_count|_header|_type|_mode)$`)
+var envCredentialEnd = regexp.MustCompile(`(?i)(_key|passphrase|dsn|_pin|_pass)$`)
 
-// numberCredential reports keys whose numbers are credentials: their last
-// word is a password or a PIN (adminPin, PASSWORD; not spin or
-// passwordMinLength).
+var envSetting = regexp.MustCompile(`(?i)(_ttl|_file|_path|_length|_timeout|_enabled|_name|_key_id|_expiry|_expiration|_seconds|_minutes|_hours|_days|_size|_count|_header|_type|_mode|_url|_uri|_endpoint|_issuer|_audience|_provider|_backend)$`)
+
+// numberCredential reports keys whose numbers are credentials: they end
+// in a credential word (adminPin, DBPassword, apiKey, TOKEN; not spin,
+// passwordMinLength, tokenTTL or maxToken).
 func numberCredential(k string) bool {
 	l := strings.ToLower(k)
-	for _, w := range []string{"password", "passwd", "passphrase", "passcode", "pin"} {
+	if strings.HasPrefix(l, "max") || strings.HasPrefix(l, "min") {
+		return false
+	}
+	for _, w := range []string{"password", "passwd", "passphrase", "passcode", "pin", "token", "secret", "apikey", "api_key", "secretkey", "secret_key", "accesskey", "access_key"} {
 		if !strings.HasSuffix(l, w) {
 			continue
 		}
 		i := len(k) - len(w)
-		if i == 0 || strings.ContainsRune("_.-", rune(k[i-1])) || (k[i] >= 'A' && k[i] <= 'Z' && k[i-1] >= 'a' && k[i-1] <= 'z') {
+		if i == 0 || strings.ContainsRune("_.-", rune(k[i-1])) {
+			return true
+		}
+		upper := func(c byte) bool { return c >= 'A' && c <= 'Z' }
+		if upper(k[i]) && (!upper(k[i-1]) || (i+1 < len(k) && !upper(k[i+1]))) {
 			return true
 		}
 	}
 	return false
 }
 
-// redactURL replaces the password of a URL with <redacted>: the userinfo
-// is what comes before the last @ of the authority (passwords may hold @
-// and :), the password what follows its first colon. References to
-// variables ($(DB_PASSWORD), ${DB_PASSWORD}) are left alone.
+// redactURLs redacts the passwords of the URLs in s (in arguments, lines).
+func redactURLs(s string) (string, bool) {
+	changed := false
+	for from := 0; ; {
+		i := strings.Index(s[from:], "://")
+		if i < 0 {
+			return s, changed
+		}
+		i += from
+		start := i
+		for start > 0 && (isAlnum(s[start-1]) || strings.ContainsRune("+.-", rune(s[start-1]))) {
+			start--
+		}
+		end := i + 3
+		for end < len(s) && !strings.ContainsRune(" \t\r\n\"'<>", rune(s[end])) {
+			end++
+		}
+		if r, ok := redactURL(s[start:end]); ok {
+			s = s[:start] + r + s[end:]
+			changed = true
+			end = start + len(r)
+		}
+		from = end
+	}
+}
+
+func isAlnum(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
+// redactURL replaces the password of a URL with <redacted>, failing
+// closed: the password runs from the first colon of the authority (not a
+// port) to the last @ before the first / that follows an @ (a password may
+// hold @, /, ? or #). References ($(DB_PASSWORD), ${DB_PASSWORD}, Helm
+// templates) are left alone.
 func redactURL(s string) (string, bool) {
 	i := strings.Index(s, "://")
 	if i <= 0 || !urlScheme.MatchString(s[:i]) {
 		return s, false
 	}
 	rest := s[i+3:]
-	end := strings.IndexAny(rest, "/?#")
-	if end < 0 {
-		end = len(rest)
-	}
-	at := strings.LastIndex(rest[:end], "@")
-	if at < 0 {
+	c := strings.Index(rest, ":")
+	if c < 0 || strings.ContainsAny(rest[:c], "/?#[") {
 		return s, false
 	}
-	userinfo := rest[:at]
-	c := strings.Index(userinfo, ":")
-	if c < 0 {
+	if port := rest[c+1:]; len(port) > 0 {
+		j := 0
+		for j < len(port) && port[j] >= '0' && port[j] <= '9' {
+			j++
+		}
+		if j > 0 && (j == len(port) || strings.ContainsRune("/?#", rune(port[j]))) {
+			return s, false // host:port
+		}
+	}
+	first := strings.Index(rest[c+1:], "@")
+	if first < 0 {
 		return s, false
 	}
-	pw := userinfo[c+1:]
-	if pw == "" || pw == "<redacted>" || ((strings.HasPrefix(pw, "$(") && strings.HasSuffix(pw, ")")) || (strings.HasPrefix(pw, "${") && strings.HasSuffix(pw, "}"))) {
+	first += c + 1
+	limit := len(rest)
+	if slash := strings.Index(rest[first:], "/"); slash >= 0 {
+		limit = first + slash
+	}
+	at := strings.LastIndex(rest[:limit], "@")
+	pw := rest[c+1 : at]
+	if pw == "" || pw == "<redacted>" || varRef.MatchString(pw) || strings.Contains(pw, "{{") {
 		return s, false
 	}
-	return s[:i+3] + userinfo[:c+1] + "<redacted>" + rest[at:], true
+	return s[:i+3] + rest[:c+1] + "<redacted>" + rest[at:], true
 }
 
-var urlScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*$`)
+var (
+	urlScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*$`)
+	varRef    = regexp.MustCompile(`^(\$\([A-Za-z_][A-Za-z0-9_]*\)|\$\{[A-Za-z_][A-Za-z0-9_]*\})$`)
+)
 
 // redactable reports whether a value is a credential's value: a non-empty
 // string or a number.

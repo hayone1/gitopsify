@@ -306,17 +306,25 @@ Everything the UI does goes through `/api/v1`, with the session cookie (and an
   - Helm values come from release Secrets and often hold passwords. Without
     `runs.allowSecretValues`, values that look like credentials are
     replaced with `<redacted by gitopsify: set from a Secret>` and the run
-    warns about each: strings under keys such as `password`, `token`,
-    `secret` or `apiKey` (and value-like strings in maps and lists under
-    them, such as `DB_URL` or `accessKey`, but not names, references such
-    as `existingSecret` or settings such as `mountPath`), numbers under
-    keys that end like a credential (`pin`, not `passwordMinLength`), the
-    value of `{name: DB_PASSWORD, value: ...}` pairs, and the password of
-    any URL (`postgres://app:<redacted>@db/app`). Vendored charts' own
-    `values.yaml` too. Set them from a Secret (Flux `valuesFrom`, an
-    encrypted values file) before syncing. This goes by names: secrets
-    under other names are written as they are. Releases in `helm.mode:
-    manifests` write no values.
+    warns about each:
+    - strings under keys such as `password`, `token`, `secret`, `apiKey`,
+      `fernetKey`, `bindpw` or `pass`, and the strings of maps under keys
+      whose last word is one (`secrets`, `extraSecrets`, `credentials`,
+      `secureJsonData`), but names, references (`existingSecret`,
+      `{name, key}`, GitLab's `{secret, key}`, `valueFrom`, pull secrets)
+      and settings (`mountPath`, `type`, `annotations`);
+    - numbers under keys ending in a credential word (`adminPin`,
+      `apiKey`; not `passwordMinLength`, `tokenTTL` or `maxToken`);
+    - the value of env pairs such as `{name: DB_PASSWORD, value: ...}`
+      (not settings such as `TOKEN_TTL` or `TOKEN_URL`);
+    - the password of URLs in any string (`postgres://app:<redacted>@db/app`,
+      `--db=...` arguments too; not `$(VAR)` references or templates).
+    Vendored charts' own `values.yaml` too. Set them from a Secret (Flux
+    `valuesFrom`, an encrypted values file) before syncing. This goes by
+    names and shapes: secrets under other names, in query parameters
+    (`?password=`) or in connection strings (`Password=...;`) are written
+    as they are, and a value redacted by mistake shows in the warning.
+    Releases in `helm.mode: manifests` write no values.
   - Repository URLs must be https or ssh (http with `git.allowHTTP`), with
     no options, local paths or passwords; git runs with only those
     protocols, without hooks or symbolic links, and stalls are aborted.
@@ -372,12 +380,14 @@ With PostgreSQL, any replica serves any run: a run works on the replica that
 started it, the others follow its log from the database, cancel it through a
 flag the working replica picks up, and unpack its output (archived in the
 database when it finishes) to serve files or push. Pushes of a run take a
-lock in the database (a lease renewed while pushing, which holds no
-connection), so two replicas never push it at once, deleting and pruning
-wait for it, and each push starts from the last one's commit (copies
-older than the stored output are unpacked again; unused copies are
-removed after an hour). Secret files gitopsify wrote (git-ignored) stay
-out of the database; files a repository tracks stay in. If a replica dies while working, another fails its runs
+lock in the database (a two-minute lease renewed while pushing, which
+holds no connection; a replica that can't renew it for a minute stops its
+push and doesn't store the output), so two replicas never push it at
+once, deleting and pruning wait for it, and each push starts from the
+last one's commit (copies older than the stored output are unpacked
+again; unused copies are removed after an hour). The files gitopsify
+writes values to in clear stay out of the database. If a replica dies
+while working, another fails its runs
 within two minutes (by the database's clock) and notifies about them; a
 replica that comes back stops working on runs it no longer owns, and a
 run whose final update failed is failed by the next check. Sessions

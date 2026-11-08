@@ -209,18 +209,25 @@ func (p *pgStore) lockRun(ctx context.Context, id string) (context.Context, func
 	lctx, cancelLock := context.WithCancelCause(ctx)
 	lost := func() { cancelLock(errLockLost) }
 	lease := lockLease
+	// The lock counts as lost half a lease after the last renewal that was
+	// sent and acknowledged: well before it can expire in the database,
+	// however long the database takes to answer.
+	deadline := time.AfterFunc(lease/2, lost)
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		t := time.NewTicker(lease / 4)
+		defer deadline.Stop()
+		t := time.NewTicker(lease / 8)
 		defer t.Stop()
-		renewed := time.Now()
 		for {
 			select {
 			case <-stop:
 				return
+			case <-lctx.Done():
+				return
 			case <-t.C:
+				sent := time.Now()
 				rctx, cancel := context.WithTimeout(context.Background(), lease/4)
 				tag, err := p.pool.Exec(rctx, `UPDATE gitopsify_runs SET lock_until = now() + make_interval(secs => $3)
 					WHERE id = $1 AND lock_owner = $2 AND lock_until > now()`, id, token, lease.Seconds())
@@ -229,13 +236,10 @@ func (p *pgStore) lockRun(ctx context.Context, id string) (context.Context, func
 				case err == nil && tag.RowsAffected() == 0:
 					lost() // expired, or the run is gone
 					return
-				case err == nil:
-					renewed = time.Now()
-				case time.Since(renewed) > lease-lease/4:
-					// Unreachable: by the time it answers again, the lease
-					// may have run out and another replica hold it.
-					lost()
-					return
+				case err == nil && lctx.Err() == nil:
+					// Valid until sent+lease in the database's time: lost
+					// half a lease from sending.
+					deadline.Reset(lease/2 - time.Since(sent))
 				}
 			}
 		}

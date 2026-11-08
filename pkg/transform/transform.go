@@ -103,7 +103,13 @@ func touchesValues(t config.Transform) bool {
 	}
 	switch t.Type {
 	case "set", "remove":
-		return under("."+t.Path, ".")
+		p := strings.TrimPrefix(t.Path, ".")
+		for _, f := range []string{"data", "stringData"} {
+			if strings.HasPrefix(p, `["`+f+`"]`) || strings.HasPrefix(p, `['`+f+`']`) {
+				return true
+			}
+		}
+		return under("."+p, ".")
 	case "jsonPatch":
 		for _, op := range t.Patch {
 			for _, k := range []string{"path", "from"} {

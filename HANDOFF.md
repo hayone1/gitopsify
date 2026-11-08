@@ -356,7 +356,12 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   chart-owned Secrets blocking namespace renames, and a docs overclaim
   (the protections cover runs' output, not targets: pushing to a target
   repository is deploying to it): fixed (commit "fixes from the fourth
-  review"). Round 5 reviewed that commit (see below).
+  review"). Round 5 found the redaction rewrite regressed and redactURL
+  mishandled @ in passwords; round 6 found more chart shapes (env pairs,
+  fernetKey, replicaSetKey, secureJsonData, references such as GitLab's
+  {secret, key}), lease loss detected late and a dropped client skipping
+  the output: all fixed with tests (commits "fifth review" and "sixth
+  review"); round 6 found the server, store and transform code sound.
 - GitHub release downloads returned 504 for every project on 2026-11-08
   (from Hetzner, WSL and GitHub Actions); the Dockerfile now falls back to
   the API asset endpoint (pinned asset IDs, same checksums), and the
@@ -380,7 +385,11 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   same replica (rare: only after another replica pushed that run).
 - A replica that dies while pushing blocks that run's pushes and deletion
   for the lease (2 minutes).
-- Helm value redaction is by names (keys, name/value pairs); documented.
+- Helm value redaction is by names and shapes (keys, containers, env
+  pairs, URL passwords): reviewed against bitnami, grafana, argo-cd,
+  kube-prometheus-stack, velero, airflow and gitlab values over rounds
+  5-6; query-parameter and connection-string passwords aren't caught
+  (documented). A false positive shows in the run's warnings.
 
 ## Open / next (providers), in order
 1. GitGuardian incident 39798306 (PR #1) is a false positive (a SHA-256 file

@@ -543,7 +543,7 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 	// Keep the commits for later pushes from any replica: replicas with an
 	// older copy unpack this one. Not after losing the lock: the new
 	// holder's archive would be overwritten with older history.
-	bump := ctx.Err() == nil
+	bump := !errors.Is(context.Cause(ctx), errLockLost)
 	if !bump {
 		s.log.Warn("not storing the output after a push: the run's lock was lost", "run", id)
 	} else if err := s.runs.saveOutput(id); err != nil {

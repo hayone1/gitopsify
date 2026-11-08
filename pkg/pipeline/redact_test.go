@@ -47,31 +47,57 @@ func TestRedactCredentials(t *testing.T) {
 			"existingSecret":   "db-credentials",
 			"secretKeys":       map[string]any{"adminPasswordKey": "admin-password"},
 			"pin":              map[string]any{"password": 1234},
+			"replicaSetKey":    "rs",
+			"fernetKey":        "fk",
 		},
 		"secrets": map[string]any{"DB_URL": "postgres://u:p@h/db", "ENCRYPTION_KEY": "k", "create": true, "name": "app",
-			"mountPath": "/etc/secrets", "type": "Opaque", "refreshInterval": "1h", "github": "ghp_x", "annotations": map[string]any{"a/b": "c"}},
+			"mountPath": "/etc/secrets", "type": "Opaque", "refreshInterval": "1h", "github": "ghp_x", "annotations": map[string]any{"a/b": "c"},
+			"API_TOKEN": 12345678},
 		"credentials":  map[string]any{"accessKey": "AKIA", "key": "k2", "secretContents": map[string]any{"cloud": "[default]\naws_access_key_id=x"}},
 		"extraSecrets": map[string]any{"conn": map[string]any{"data": "Y29ubg==", "stringData": "x"}},
 		"configs":      map[string]any{"secret": map[string]any{"extra": map[string]any{"ldap.bindPW": "pw"}}},
+		"data":         map[string]any{"metadataConnection": map[string]any{"user": "airflow", "pass": "conn-pw", "host": "db"}},
+		"ldap":         map[string]any{"bindpw": "ldap-pw", "binddn": "cn=admin"},
+		"datasources":  []any{map[string]any{"name": "loki", "secureJsonData": map[string]any{"httpHeaderValue1": "Bearer x", "tlsClientKey": "k"}}},
 		"env": []any{map[string]any{"name": "API_TOKEN", "value": "t0k"}, map[string]any{"name": "LOG_LEVEL", "value": "debug"},
 			map[string]any{"name": "TOKEN_TTL", "value": 3600}, map[string]any{"name": "SECRET_KEY_BASE", "value": "base"},
-			map[string]any{"name": "DB_PASS", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "db", "key": "password"}}}},
-		"image":             map[string]any{"tag": "1.2"},
-		"imagePullSecrets":  []any{"regcred"},
-		"externalDatabase":  map[string]any{"url": "postgres://app:s3cret@db:5432/app", "hosts": []any{"redis://:pw@cache:6379"}},
-		"passwordMinLength": 8,
-		"tokenTTL":          3600,
-		"spin":              3,
-		"adminPin":          1234,
+			map[string]any{"name": "DB_PASS", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "db", "key": "password"}}},
+			map[string]any{"name": "AIRFLOW__CORE__FERNET_KEY", "value": "f"}, map[string]any{"name": "SENTRY_DSN", "value": "https://k@sentry.io/1"},
+			map[string]any{"name": "TOKEN_URL", "value": "https://idp/token"}, map[string]any{"name": "ADMIN_PIN", "value": "0000"}},
+		"image":            map[string]any{"tag": "1.2"},
+		"imagePullSecrets": []any{"regcred"},
+		"externalDatabase": map[string]any{"url": "postgres://app:s3cret@db:5432/app", "hosts": []any{"redis://:pw@cache:6379"}},
+		"args":             []any{"--db=postgres://u:p@h/db --log=info"},
+		// References and settings stay.
+		"global": map[string]any{"psql": map[string]any{"password": map[string]any{"secret": "gitlab-pg", "key": "password"}},
+			"redis": map[string]any{"auth": map[string]any{"enabled": true, "secret": "gitlab-redis", "key": "secret"}}},
+		"backupStorageLocation": []any{map[string]any{"credential": map[string]any{"name": "cloud-creds", "key": "cloud"}}},
+		"remoteWrite":           []any{map[string]any{"basicAuth": map[string]any{"password": map[string]any{"name": "rw", "key": "pw"}}}},
+		"secret":                []any{map[string]any{"envName": "X", "secretName": "airflow-x", "secretKey": "x"}},
+		"envFromSecret":         "grafana-env",
+		"tls":                   map[string]any{"certificatesSecret": "redis-tls"},
+		"alertmanagerSpec":      map[string]any{"secrets": []any{"am-config"}},
+		"externalRedis":         map[string]any{"secretAnnotations": map[string]any{"helm.sh/resource-policy": "keep"}},
+		"passwordUpdateJob":     map[string]any{"resourcesPreset": "micro"},
+		"passwordMinLength":     8,
+		"tokenTTL":              3600,
+		"maxToken":              4096,
+		"spin":                  3,
+		"adminPin":              1234,
+		"DBPassword":            1234,
+		"apiKey":                987,
 	}
 	got := redactCredentials(values, "")
-	want := []string{"adminPin", "auth.pin.password", "auth.postgresPassword", "configs.secret.extra.ldap.bindPW",
-		"credentials.accessKey", "credentials.key", "credentials.secretContents.cloud", "env[0].value", "env[3].value",
-		"externalDatabase.hosts[0]", "externalDatabase.url", "extraSecrets.conn.data", "extraSecrets.conn.stringData",
-		"secrets.DB_URL", "secrets.ENCRYPTION_KEY", "secrets.github"}
+	want := []string{"DBPassword", "adminPin", "apiKey", "args[0]", "auth.fernetKey", "auth.pin.password", "auth.postgresPassword", "auth.replicaSetKey",
+		"configs.secret.extra.ldap.bindPW", "credentials.accessKey", "credentials.key", "credentials.secretContents.cloud",
+		"data.metadataConnection.pass", "datasources[0].secureJsonData.httpHeaderValue1", "datasources[0].secureJsonData.tlsClientKey",
+		"env[0].value", "env[3].value", "env[5].value", "env[6].value", "env[8].value",
+		"externalDatabase.hosts[0]", "externalDatabase.url", "extraSecrets.conn.data", "extraSecrets.conn.stringData", "ldap.bindpw",
+		"secrets.API_TOKEN", "secrets.DB_URL", "secrets.ENCRYPTION_KEY", "secrets.github"}
 	sort.Strings(got)
+	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("redacted %v\nwant %v", got, want)
+		t.Fatalf("redacted %v\nwant     %v", got, want)
 	}
 	auth := values["auth"].(map[string]any)
 	if auth["existingSecret"] != "db-credentials" || auth["secretKeys"].(map[string]any)["adminPasswordKey"] != "admin-password" {
@@ -81,15 +107,11 @@ func TestRedactCredentials(t *testing.T) {
 		s["type"] != "Opaque" || s["refreshInterval"] != "1h" || s["annotations"].(map[string]any)["a/b"] != "c" {
 		t.Errorf("secrets: %v", s)
 	}
-	if e := values["env"].([]any); e[1].(map[string]any)["value"] != "debug" || e[2].(map[string]any)["value"] != 3600 ||
-		e[4].(map[string]any)["valueFrom"].(map[string]any)["secretKeyRef"].(map[string]any)["key"] != "password" {
-		t.Errorf("env: %v", e)
-	}
 	if u := values["externalDatabase"].(map[string]any)["url"]; u != "postgres://app:<redacted>@db:5432/app" {
 		t.Errorf("url: %v", u)
 	}
-	if values["passwordMinLength"] != 8 || values["tokenTTL"] != 3600 || values["spin"] != 3 || values["imagePullSecrets"].([]any)[0] != "regcred" {
-		t.Errorf("settings redacted: %v", values)
+	if a := values["args"].([]any)[0]; a != "--db=postgres://u:<redacted>@h/db --log=info" {
+		t.Errorf("args: %v", a)
 	}
 	if again := redactCredentials(values, ""); len(again) != 0 {
 		t.Errorf("redacted twice: %v", again)
@@ -101,11 +123,18 @@ func TestRedactURL(t *testing.T) {
 		"postgres://app:s3cret@db/app":                        "postgres://app:<redacted>@db/app",
 		"smtp://alerts@example.com:pw@smtp.example.com:587":   "smtp://alerts@example.com:<redacted>@smtp.example.com:587",
 		"postgres://u:p@ss@h/db":                              "postgres://u:<redacted>@h/db",
+		"postgresql://u:pw?q@h/db":                            "postgresql://u:<redacted>@h/db",
+		"postgresql://u:pw#x@h/db":                            "postgresql://u:<redacted>@h/db",
+		"postgresql://u:a/b+c=@h/db":                          "postgresql://u:<redacted>@h/db",
 		"redis://:pw@cache:6379":                              "redis://:<redacted>@cache:6379",
 		"http://[::1]:8080?a=b@c":                             "http://[::1]:8080?a=b@c",
+		"http://h:8080/a@b":                                   "http://h:8080/a@b",
 		"https://user@example.com/x":                          "https://user@example.com/x",
+		"https://user:pw@registry/v2/@scope/pkg":              "https://user:<redacted>@registry/v2/@scope/pkg",
 		"postgres://app:$(DB_PASSWORD)@db/app":                "postgres://app:$(DB_PASSWORD)@db/app",
 		"postgres://app:${DB_PASSWORD}@db/app":                "postgres://app:${DB_PASSWORD}@db/app",
+		"postgres://app:${A}hunter2${B}@db/app":               "postgres://app:<redacted>@db/app",
+		"postgres://app:{{ .Values.pass }}@db/app":            "postgres://app:{{ .Values.pass }}@db/app",
 		"registry.example.com/app@sha256:abc":                 "registry.example.com/app@sha256:abc",
 		"postgres://app:<redacted>@db/app":                    "postgres://app:<redacted>@db/app",
 		"amqp://guest:gu%40st@[2001:db8::1]:5672/vhost?x=y@z": "amqp://guest:<redacted>@[2001:db8::1]:5672/vhost?x=y@z",
