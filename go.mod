@@ -7,7 +7,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/hashicorp/hcl/v2 v2.25.0
-	github.com/hayone1/gitopsify/sdk v0.0.0-00010101000000-000000000000
+	github.com/hayone1/gitopsify/sdk v0.1.0
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -92,5 +92,3 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
-
-replace github.com/hayone1/gitopsify/sdk => ./sdk

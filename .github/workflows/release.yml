@@ -18,13 +18,18 @@ jobs:
         with:
           go-version-file: go.mod
       # "go install github.com/hayone1/gitopsify/cmd/gitopsify@<tag>" refuses
-      # modules with replace directives. During development go.mod points the
-      # SDK at ./sdk; a release must require a tagged sdk/vX.Y.Z instead (see
-      # docs/development.md).
-      - name: No replace directives
+      # modules with replace directives and ignores go.work: it builds with
+      # the tagged SDK go.mod requires. The release must be that build, so
+      # sdk/ must not have changed since that tag (docs/development.md).
+      - name: The release uses the SDK go install gets
         run: |
           if go mod edit -json | jq -e '.Replace // [] | length > 0' >/dev/null; then
-            echo "::error::go.mod has replace directives; tag sdk/vX.Y.Z and require it before releasing"
+            echo "::error::go.mod has replace directives; require a tagged sdk/vX.Y.Z instead"
+            exit 1
+          fi
+          v=$(GOWORK=off go list -m -f '{{.Version}}' github.com/hayone1/gitopsify/sdk)
+          if ! git diff --quiet "sdk/$v" HEAD -- sdk/; then
+            echo "::error::sdk/ changed since sdk/$v, which go.mod requires; tag a new SDK version and require it first"
             exit 1
           fi
       - uses: goreleaser/goreleaser-action@v6
@@ -32,6 +37,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOWORK: "off"
           # sdk/vX.Y.Z tags can point at the same commit; release this tag.
           GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 

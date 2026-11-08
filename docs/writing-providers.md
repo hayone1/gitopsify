@@ -222,9 +222,8 @@ gitopsify-provider-<name>`. The Grafana provider's `.goreleaser.yaml` is a
 starting point (the template has it). Build for linux, darwin and windows
 on amd64 and arm64.
 
-Until the SDK has tagged releases, build against a checkout
-(`replace github.com/hayone1/gitopsify/sdk => ../gitopsify/sdk`); require a
-tagged `sdk/vX.Y.Z` before you release.
+Require a tagged SDK (`go get github.com/hayone1/gitopsify/sdk@latest`);
+`go install` and the release workflow refuse `replace` directives.
 
 ## Listing it in the index
 

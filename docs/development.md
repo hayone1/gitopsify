@@ -88,19 +88,23 @@ Argo CD v3.5.6 and Flux v2.9.6 are the defaults `bootstrap` installs
 
 ## The SDK module
 
-`sdk/` is a separate Go module so providers don't inherit gitopsify's
-dependencies. During development the main `go.mod` points at it with
-`replace github.com/hayone1/gitopsify/sdk => ./sdk`, and `make test lint`
-cover both modules. A release can't keep the replace directive (`go install
-...@vX.Y.Z` refuses it; the release workflow checks), so before tagging the CLI:
+`sdk/` is a separate Go module (tags `sdk/vX.Y.Z`) so providers don't inherit
+gitopsify's dependencies. The main `go.mod` requires a tagged SDK, and the
+committed `go.work` (`use . ./sdk`) makes development, `make test lint` and CI
+use the SDK in `sdk/` instead, so a change to the protocol and to the CLI is
+one pull request. `go install ...@vX.Y.Z` ignores `go.work` and builds with
+the tagged SDK; releases (`GOWORK=off` in GoReleaser and the Dockerfile) build
+the same, and the release workflow refuses a release whose `sdk/` changed since
+the SDK tag `go.mod` requires. When `sdk/` changed, before tagging the CLI:
 
 ```sh
-git tag sdk/v0.1.0 && git push origin sdk/v0.1.0       # if sdk/ changed since its last tag
-go mod edit -dropreplace github.com/hayone1/gitopsify/sdk
-go get github.com/hayone1/gitopsify/sdk@v0.1.0 && go mod tidy
-git commit -am "Require sdk v0.1.0"                     # then tag vX.Y.Z as usual
-go mod edit -replace github.com/hayone1/gitopsify/sdk=./sdk   # back to development
+git tag -a sdk/v0.2.0 -m "SDK v0.2.0" && git push origin sdk/v0.2.0
+GOWORK=off go get github.com/hayone1/gitopsify/sdk@v0.2.0 && GOWORK=off go mod tidy
+git commit -am "Require sdk v0.2.0"                     # then tag vX.Y.Z as usual
 ```
+
+Never move or delete an `sdk/v*` tag once pushed: the Go checksum database
+remembers it, and a changed tag breaks every build that fetches it.
 
 Protocol changes are additive within `v1alpha1`; anything else needs a new
 protocol version that gitopsify and providers both list.

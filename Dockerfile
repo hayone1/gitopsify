@@ -5,10 +5,10 @@ FROM --platform=$BUILDPLATFORM golang:1.27 AS build
 ARG TARGETOS TARGETARCH VERSION=dev COMMIT="" DATE=""
 WORKDIR /src
 COPY go.mod go.sum ./
-# go.mod replaces the SDK with ./sdk during development.
-COPY sdk/go.mod sdk/
 RUN go mod download
 COPY . .
+# The tagged SDK go.mod requires, as go install gets it (not go.work's ./sdk).
+ENV GOWORK=off
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -ldflags "-s -w -X github.com/hayone1/gitopsify/internal/cli.Version=$VERSION -X github.com/hayone1/gitopsify/internal/cli.Commit=$COMMIT -X github.com/hayone1/gitopsify/internal/cli.Date=$DATE" \
       -o /out/gitopsify ./cmd/gitopsify

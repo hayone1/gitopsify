@@ -1,16 +1,16 @@
 # Handoff: gitopsify
 
-State as of 2026-11-07. Repo: https://github.com/hayone1/gitopsify (public
-since 2026-11-07; history scanned for credentials first: clean). Latest release: v0.1.1. `main` is committed,
-pushed and green. **Branch `providers`** (PR #1, CI green, waiting for the
-user to merge: auto mode refuses merges by the agent) holds the provider
-system described below. Sibling repositories:
-`../gitopsify-provider-grafana` (github.com/hayone1/gitopsify-provider-grafana,
-private) holds the first provider; `../gitopsify-provider-template`
-(github.com/hayone1/gitopsify-provider-template, private, marked as a GitHub
-template) is the starting point for new providers. Both have green CI; until
-sdk/v0.1.0 exists their go.mod replaces the SDK with ../gitopsify/sdk and CI
-checks out gitopsify at ff93001 (the providers head that has it).
+State as of 2026-11-08. Repo: https://github.com/hayone1/gitopsify (public
+since 2026-11-07; history scanned for credentials first: clean). Latest
+release: v0.1.1. The provider system (PR #1) is merged into `main`; the SDK is
+tagged `sdk/v0.1.0` (on the merge commit), `go.mod` requires it and the
+committed `go.work` points development and CI at `sdk/` (see
+docs/development.md, "The SDK module"). Sibling repositories, both public:
+`../gitopsify-provider-grafana` (github.com/hayone1/gitopsify-provider-grafana)
+holds the first provider; `../gitopsify-provider-template`
+(github.com/hayone1/gitopsify-provider-template, marked as a GitHub template)
+is the starting point for new providers. Both require sdk v0.1.0.
+Longer-term list: [TODO.md](TODO.md).
 
 ## What it is
 Go CLI (cobra + Charm huh/lipgloss) that turns a running cluster (or a
@@ -19,7 +19,7 @@ Kustomize, Argo CD (app-of-apps / applicationset / single) or Flux, and can
 check the target, diff the first sync, install Argo CD/Flux, wait for it to
 sync, and report status. Ships AI agent skills and a Docker image.
 
-## Providers (branch `providers`)
+## Providers
 `gitopsify export <provider>` turns a tool's live state into Terraform/OpenTofu
 and Crossplane (Kustomize) through providers: separate executables
 `gitopsify-provider-<name>` speaking JSON over stdio. Design and decisions:
@@ -257,33 +257,13 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
 - New Docker Hub repos are public on free accounts.
 
 ## Open / next (providers), in order
-1. The user squash-merges PR #1 (GitGuardian's failure there is a false
-   positive: a SHA-256 file hash in an old commit's golden export.json; mark
-   incident 39798306 as such in the GitGuardian dashboard. The squash keeps
-   it out of main).
-2. Then, on main (reviewed plan, round 2 of the review):
-   - `git tag sdk/v0.1.0 <merge commit> && git push origin sdk/v0.1.0`
-     (never move an sdk tag once pushed: sum.golang.org remembers it).
-   - Root go.mod: `go mod edit -dropreplace github.com/hayone1/gitopsify/sdk`,
-     `GOWORK=off go get github.com/hayone1/gitopsify/sdk@v0.1.0`, tidy.
-     Without this, `go install github.com/hayone1/gitopsify/cmd/gitopsify@latest`
-     (docs/install.md) breaks at the next release (replace directives).
-   - Commit a `go.work` (`use . ./sdk`, go 1.27.3) so development and CI keep
-     building against sdk/ (one pull request for protocol + CLI changes).
-   - Dockerfile: drop `COPY sdk/go.mod sdk/`, set `ENV GOWORK=off` before the
-     build. release.yml: `GOWORK: "off"` for GoReleaser and a check that
-     `git diff --quiet sdk/$(GOWORK=off go list -m -f '{{.Version}}'
-     github.com/hayone1/gitopsify/sdk) HEAD -- sdk/` (the release must be
-     what go install builds). docs/development.md "The SDK module": describe
-     go.work and tag-then-require instead of toggling replace.
-   - Provider and template repos: `go mod edit -dropreplace ...`,
-     `go get github.com/hayone1/gitopsify/sdk@v0.1.0`, remove the CI steps
-     that check gitopsify out, the template README's "clone gitopsify next
-     to it" note and the go.mod comment; `make lint test`; push.
-3. Release the Grafana provider v0.1.0 (make the repo public first, so
-   installs work), add its `repoId` to `providers/index.yaml`, release
-   gitopsify (v0.2.0: new commands and config form). Make the template repo
-   public too so third parties can use it.
+1. GitGuardian incident 39798306 (PR #1) is a false positive (a SHA-256 file
+   hash in a pre-squash commit); mark it so in the GitGuardian dashboard.
+2. Release the Grafana provider v0.1.0 (`git tag v0.1.0 && git push --tags`
+   in its repo), add its `repoId` (`gh api repos/hayone1/gitopsify-provider-grafana --jq .id`)
+   to `providers/index.yaml`, then release gitopsify v0.2.0 (the release
+   workflow checks that sdk/ is unchanged since the required SDK tag).
+3. TODO.md: registry website, web UI.
 4. Continuous use: three-way merge of re-exports with hand edits (the base
    is in export.json's file hashes), then a `gitopsify sync` loop or a
    controller reconciling `Export` resources (DESIGN-providers §11).
