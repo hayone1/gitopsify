@@ -9,6 +9,10 @@ cd "$(dirname "$0")"
 here=$PWD
 root=$(cd ../../.. && pwd)
 work=/tmp/webui-e2e
+pgpw=$(head -c 12 /dev/urandom | od -An -tx1 | tr -d " \n")
+# An API token (viewer) to ask each replica directly.
+tok=gtk_e2e_$(head -c 16 /dev/urandom | od -An -tx1 | tr -d " \n")
+toksha=$(printf %s "$tok" | sha256sum | cut -d" " -f1)
 ctx=kind-gitopsify-ui
 k() { kubectl --context "$ctx" "$@"; }
 log() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -38,7 +42,7 @@ spec:
         - name: postgres
           image: postgres:18-alpine
           env:
-            - {name: POSTGRES_PASSWORD, value: e2e}
+            - {name: POSTGRES_PASSWORD, value: "$pgpw"}
             - {name: POSTGRES_DB, value: gitopsify}
           ports: [{containerPort: 5432}]
 ---
@@ -50,7 +54,7 @@ spec: {selector: {app: postgres}, ports: [{port: 5432}]}
 apiVersion: v1
 kind: Secret
 metadata: {name: gitopsify-db}
-stringData: {url: "postgres://postgres:e2e@postgres.gitopsify:5432/gitopsify?sslmode=disable"}
+stringData: {url: "postgres://postgres:$pgpw@postgres.gitopsify:5432/gitopsify?sslmode=disable"}
 YAML
 k -n gitopsify rollout status deploy/postgres --timeout=180s >/dev/null
 
@@ -76,6 +80,7 @@ server:
     oidc:
       issuer: http://$host:8180/realms/acme
       clientID: gitopsify
+    tokens: [{name: e2e, sha256: "$toksha", role: viewer}]
   rbac:
     defaultRole: viewer
     bindings:
@@ -97,8 +102,23 @@ log "browser against the chart"
 cd "$here"
 rm -rf screenshots results
 BASE_URL=$base GIT_URL="http://$host:8099/gitops.git" GIT_DIR="$work/git/gitops.git" npx playwright test --reporter=list
-log "both replicas served"
+log "every replica serves every run"
+# The browser keeps one connection, so it may have used one pod only: ask
+# each pod for the runs and the migration's files (unpacked from the
+# database by the pod that didn't run it).
+mig=$(k -n gitopsify exec deploy/postgres -- psql -U postgres -d gitopsify -tAc \
+  "SELECT id FROM gitopsify_runs WHERE data->>'type' = 'migrate' ORDER BY created_at DESC LIMIT 1")
+count() { python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'; }
+port=18080
 for p in $(k -n gitopsify get pods -l app.kubernetes.io/name=gitopsify -o name); do
-  echo "$p: $(k -n gitopsify logs "$p" | grep -c '"msg":"request"') requests"
+  k -n gitopsify port-forward "$p" "$port:8080" >/dev/null 2>&1 &
+  pf=$!
+  for _ in $(seq 60); do curl -fsS "localhost:$port/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
+  runs=$(curl -fsS -H "Authorization: Bearer $tok" "localhost:$port/api/v1/runs" | count)
+  files=$(curl -fsS -H "Authorization: Bearer $tok" "localhost:$port/api/v1/runs/$mig/files" | count)
+  kill "$pf"; wait "$pf" 2>/dev/null || true
+  echo "$p: $(k -n gitopsify logs "$p" | grep -c '"msg":"request"') requests; $runs runs, $files files of $mig"
+  if (( runs < 2 || files == 0 )); then echo "FAIL: $p doesn't serve every run" >&2; exit 1; fi
+  port=$((port + 1))
 done
 k -n gitopsify exec deploy/postgres -- psql -U postgres -d gitopsify -tc "SELECT type, status FROM (SELECT data->>'type' AS type, status FROM gitopsify_runs) r"

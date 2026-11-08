@@ -23,15 +23,53 @@ import (
 // errNotFound is returned for runs and blobs that don't exist.
 var errNotFound = errors.New("not found")
 
+// errFenced is returned to the owner of a run when it may no longer write
+// it: the run was deleted, or another replica failed it as abandoned.
+var errFenced = errors.New("the run was taken over")
+
+// runQuery selects runs, newest first.
+type runQuery struct {
+	// Before pages: runs created before it (zero: the newest).
+	Before                           time.Time
+	Type, Cluster, Status, CreatedBy string
+	// Active keeps unfinished runs only.
+	Active bool
+	Limit  int
+}
+
+func (q runQuery) matches(r *Run) bool {
+	return (q.Before.IsZero() || r.CreatedAt.Before(q.Before)) &&
+		(q.Type == "" || r.Type == q.Type) && (q.Cluster == "" || r.Cluster == q.Cluster) &&
+		(q.Status == "" || r.Status == q.Status) && (q.CreatedBy == "" || r.CreatedBy == q.CreatedBy) &&
+		(!q.Active || !r.finished())
+}
+
 // store keeps what outlives a request: runs, their logs and outputs, and
 // the audit log. The file store keeps them in the data directory (one
 // replica); the Postgres store shares them between replicas.
+//
+// A run belongs to the replica that created it (its owner) until it
+// finishes: only the owner updates it, and only while it's unfinished and
+// still its own, so a replica that failed an abandoned run, or someone who
+// deleted one, can't be overwritten by a late owner.
 type store interface {
-	saveRun(ctx context.Context, r *Run, owner string) error
+	createRun(ctx context.Context, r *Run, owner string) error
+	// updateRun saves an unfinished run its owner works on (errFenced
+	// otherwise).
+	updateRun(ctx context.Context, r *Run, owner string) error
 	getRun(ctx context.Context, id string) (*Run, error)
-	// listRuns returns every run, newest first; Spec may be left out.
-	listRuns(ctx context.Context) ([]Run, error)
+	// listRuns returns the runs q selects, newest first, without Spec.
+	listRuns(ctx context.Context, q runQuery) ([]Run, error)
 	deleteRun(ctx context.Context, id string) error
+	// addPublishes records pushes of a finished run in one step; bump
+	// moves its output version on (the archive changed). It returns the
+	// run as saved.
+	addPublishes(ctx context.Context, id string, ps []Publish, bump bool) (*Run, error)
+	// tryLock takes a lock on key, across replicas; ok is false when
+	// someone else holds it.
+	tryLock(ctx context.Context, key string) (unlock func(), ok bool, err error)
+	// pruneRuns deletes the runs finished before before and returns them.
+	pruneRuns(ctx context.Context, before time.Time) ([]string, error)
 	appendLog(ctx context.Context, id string, seq int, l LogLine) error
 	// readLog returns the lines from seq from on.
 	readLog(ctx context.Context, id string, from int) ([]LogLine, error)
@@ -40,10 +78,12 @@ type store interface {
 	// requestCancel asks the replica working on a run to stop it.
 	requestCancel(ctx context.Context, id string) error
 	cancelRequested(ctx context.Context, ids []string) ([]string, error)
-	// heartbeat records that this replica still works on the runs.
-	heartbeat(ctx context.Context, ids []string) error
-	// staleRuns returns unfinished runs nobody has worked on since before.
-	staleRuns(ctx context.Context, before time.Time) ([]Run, error)
+	// heartbeat records that owner still works on the runs, and returns
+	// those it lost (deleted, or failed by another replica).
+	heartbeat(ctx context.Context, owner string, ids []string) (lost []string, err error)
+	// reapRuns fails the unfinished runs of other owners that had no
+	// heartbeat for staleAfter (by the store's clock), and returns them.
+	reapRuns(ctx context.Context, owner string, staleAfter time.Duration, fail func(*Run)) ([]Run, error)
 	appendAudit(ctx context.Context, e AuditEvent) error
 	queryAudit(ctx context.Context, q auditQuery) ([]AuditEvent, error)
 	pruneAudit(ctx context.Context, before time.Time) error
@@ -57,16 +97,20 @@ type store interface {
 type fileStore struct {
 	runsDir, auditDir string
 
+	// wmu serializes writes of run.json (read, change, write).
+	wmu      sync.Mutex
 	mu       sync.Mutex
 	runs     map[string]Run
+	owners   map[string]string
 	cancels  map[string]bool
 	auditDay string
 	audit    *os.File
+	locks    keyLocks
 }
 
 func newFileStore(dataDir string) (*fileStore, error) {
 	f := &fileStore{runsDir: filepath.Join(dataDir, "runs"), auditDir: filepath.Join(dataDir, "audit"),
-		runs: map[string]Run{}, cancels: map[string]bool{}}
+		runs: map[string]Run{}, owners: map[string]string{}, cancels: map[string]bool{}}
 	for _, d := range []string{f.runsDir, f.auditDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, err
@@ -91,7 +135,70 @@ func newFileStore(dataDir string) (*fileStore, error) {
 
 func (f *fileStore) shared() bool { return false }
 
-func (f *fileStore) saveRun(_ context.Context, r *Run, _ string) error {
+func (f *fileStore) createRun(_ context.Context, r *Run, owner string) error {
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	f.mu.Lock()
+	f.owners[r.ID] = owner
+	f.mu.Unlock()
+	return f.write(r)
+}
+
+func (f *fileStore) updateRun(_ context.Context, r *Run, owner string) error {
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	f.mu.Lock()
+	cur, ok := f.runs[r.ID]
+	mine := f.owners[r.ID] == owner
+	f.mu.Unlock()
+	if !ok || !mine || cur.finished() {
+		return errFenced
+	}
+	return f.write(r)
+}
+
+func (f *fileStore) addPublishes(_ context.Context, id string, ps []Publish, bump bool) (*Run, error) {
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	f.mu.Lock()
+	r, ok := f.runs[id]
+	f.mu.Unlock()
+	if !ok {
+		return nil, errNotFound
+	}
+	r.Publishes = append(r.Publishes, ps...)
+	if bump {
+		r.OutputVersion++
+	}
+	return &r, f.write(&r)
+}
+
+func (f *fileStore) tryLock(_ context.Context, key string) (func(), bool, error) {
+	if !f.locks.TryLock(key) {
+		return nil, false, nil
+	}
+	return func() { f.locks.Unlock(key) }, true, nil
+}
+
+func (f *fileStore) pruneRuns(ctx context.Context, before time.Time) ([]string, error) {
+	f.mu.Lock()
+	var ids []string
+	for id, r := range f.runs {
+		if r.finished() && r.FinishedAt != nil && r.FinishedAt.Before(before) {
+			ids = append(ids, id)
+		}
+	}
+	f.mu.Unlock()
+	for _, id := range ids {
+		if err := f.deleteRun(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
+}
+
+// write saves run.json (callers hold wmu).
+func (f *fileStore) write(r *Run) error {
 	b, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
@@ -131,26 +238,39 @@ func (f *fileStore) getRun(_ context.Context, id string) (*Run, error) {
 	return &r, nil
 }
 
-func (f *fileStore) listRuns(context.Context) ([]Run, error) {
+func (f *fileStore) listRuns(_ context.Context, q runQuery) ([]Run, error) {
 	f.mu.Lock()
 	out := make([]Run, 0, len(f.runs))
 	for _, r := range f.runs {
-		r.Spec = nil
-		out = append(out, r)
+		if q.matches(&r) {
+			r.Spec = nil
+			out = append(out, r)
+		}
 	}
 	f.mu.Unlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
 	return out, nil
 }
 
 func (f *fileStore) deleteRun(_ context.Context, id string) error {
-	f.mu.Lock()
-	delete(f.runs, id)
-	delete(f.cancels, id)
-	f.mu.Unlock()
 	if id == "" || strings.ContainsAny(id, `/\.`) {
 		return errNotFound
 	}
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	f.mu.Lock()
+	delete(f.runs, id)
+	delete(f.owners, id)
+	delete(f.cancels, id)
+	f.mu.Unlock()
 	return os.RemoveAll(filepath.Join(f.runsDir, id))
 }
 
@@ -223,17 +343,35 @@ func (f *fileStore) cancelRequested(_ context.Context, ids []string) ([]string, 
 	return out, nil
 }
 
-func (f *fileStore) heartbeat(context.Context, []string) error { return nil }
-
-// staleRuns: with one replica, every unfinished run the process doesn't
-// know (it started before a restart) is stale.
-func (f *fileStore) staleRuns(context.Context, time.Time) ([]Run, error) {
+func (f *fileStore) heartbeat(_ context.Context, _ string, ids []string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	var lost []string
+	for _, id := range ids {
+		if _, ok := f.runs[id]; !ok {
+			lost = append(lost, id)
+		}
+	}
+	return lost, nil
+}
+
+// reapRuns: with one replica, every unfinished run of another owner (the
+// process before a restart) is abandoned, however recent.
+func (f *fileStore) reapRuns(_ context.Context, owner string, _ time.Duration, fail func(*Run)) ([]Run, error) {
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	f.mu.Lock()
 	var out []Run
-	for _, r := range f.runs {
-		if !r.finished() {
+	for id, r := range f.runs {
+		if !r.finished() && f.owners[id] != owner {
+			fail(&r)
 			out = append(out, r)
+		}
+	}
+	f.mu.Unlock()
+	for i := range out {
+		if err := f.write(&out[i]); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
@@ -340,6 +478,13 @@ func packDir(dir string) ([]byte, error) {
 		}
 		rel, _ := filepath.Rel(dir, p)
 		if rel == "." || !(d.IsDir() || d.Type().IsRegular()) {
+			return nil
+		}
+		if secretFile(filepath.ToSlash(rel)) {
+			// Kept out of the database (and its backups).
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		fi, err := d.Info()

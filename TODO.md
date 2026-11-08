@@ -20,8 +20,11 @@ work and its next steps; move items there when work on them starts.
   - [ ] Revocable sessions (server-side, in PostgreSQL).
   - [ ] Editing clusters, tools and bindings in the UI (today: the Server
     resource, from Git).
-  - [ ] A JSON Schema for the Server resource (editor validation).
+  - [x] A JSON Schema for the Server resource (docs/gitopsify-server.schema.json).
   - [ ] Scheduled scans (drift reports).
+  - [ ] Helm values with secrets: write them as encrypted values files (or
+    a Secret for Flux valuesFrom) instead of redacting by key name.
+  - [ ] Batched run log writes; runs that survive a rolling update.
 
 ## Providers
 

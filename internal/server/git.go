@@ -15,7 +15,7 @@ import (
 )
 
 // scpLike is user@host:path, the SSH shorthand.
-var scpLike = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._~/-][A-Za-z0-9._~/@+-]*$`)
+var scpLike = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._~/][A-Za-z0-9._~/@+-]*$`)
 
 // checkRemote refuses Git remotes the server mustn't use: anything git
 // could read as an option or a local path, transports other than https and
@@ -58,6 +58,10 @@ var branchRE = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 func checkBranch(b string) error {
 	if b == "" {
 		return nil
+	}
+	// A branch name, not HEAD or a full ref (refs/tags/... would push a tag).
+	if b == "HEAD" || strings.HasPrefix(b, "refs/") {
+		return fmt.Errorf("%q isn't a branch name", b)
 	}
 	if !branchRE.MatchString(b) || strings.HasPrefix(b, "-") || strings.HasPrefix(b, "/") || strings.HasSuffix(b, "/") ||
 		strings.HasSuffix(b, ".") || strings.HasSuffix(b, ".lock") || strings.Contains(b, "..") || strings.Contains(b, "//") ||

@@ -13,10 +13,11 @@ holds the first provider; `../gitopsify-provider-template`
 is the starting point for new providers. Both require sdk v0.1.0.
 Longer-term list: [TODO.md](TODO.md).
 
-**Branch `webui`** (pushed, not merged; written 2026-11-08 while the user
-was away, as asked: "fully implement and make production ready the webui
-with cluster, multi-user mode even oidc etc"): the web UI and team server.
-See the section below; the user reviews it before merging.
+**Branch `webui`** (pushed, draft PR #2, not merged; written 2026-11-08
+while the user was away, as asked: "fully implement and make production
+ready the webui with cluster, multi-user mode even oidc etc"): the web UI
+and team server. See the section below; the user reviews it before merging
+(squash-merge keeps the GitGuardian false positives below out of main).
 
 ## Web UI (branch `webui`)
 `gitopsify ui` (one person, localhost, single-use link) and `gitopsify
@@ -33,7 +34,16 @@ design docs/DESIGN-webui.md (W1-W10).
   clusters.go (impersonation without system: identities), audit.go,
   notify.go (Slack/Teams/JSON webhooks), metrics.go, static.go (embedded UI,
   CSP with hashes of index.html's inline scripts).
-- `pkg/config/server.go`: the `Server` resource.
+- `pkg/config/server.go`: the `Server` resource; its JSON Schema
+  `docs/gitopsify-server.schema.json` (`make docs`, TestServerSchemaIsCurrent).
+- Secret values (W8): `checkSecretLeaks`/`pinSealedSecrets` in migrate.go,
+  the Secret-kind guard in pkg/transform, `pipeline.Options.RedactValues`
+  (Helm values by key name); all lifted by `runs.allowSecretValues`.
+- Replicas (W9): runs are owned (createRun, owner-fenced updateRun,
+  heartbeat returns lost runs), reaped in SQL time, pushes take
+  `store.tryLock("run:<id>")` (pg advisory lock on its own connection),
+  outputs carry `OutputVersion` and replicas re-unpack older copies
+  (`output.version` marker), listing/pruning in SQL, idle copies evicted.
 - `ui/`: Nuxt 4 + Nuxt UI 4 SPA (`make ui` builds into web/dist, embedded by
   `web/embed.go`; `make ui-dev` proxies a local server). Pages: overview,
   migration wizard, export wizard, runs, run (log/apps/files/config/pushes),
@@ -291,19 +301,49 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
 - New Docker Hub repos are public on free accounts.
 
 ## Verified (web UI, 2026-11-08)
-- Server tests pass (also 3x in a row, and with PostgreSQL 18); the whole
-  `go test ./...` passes; `make lint`; UI typecheck + generate.
-- e2e (binary): Keycloak sign-in as operator/viewer/admin, scan, apps,
-  target, review, generate, push to a Git server (commit authored as the
-  person), viewer restrictions, audit log: 3/3 PASS.
-- Review rounds by a fresh-context subagent: round 1 found 3 critical (git
+- Server tests pass (also with PostgreSQL 18 on the devbox:
+  `GITOPSIFY_TEST_POSTGRES=postgres://postgres:pw@127.0.0.1:5432/gitopsify?sslmode=disable`,
+  container `pg`), incl. TestReplicas and TestReplicaPushes (two replicas
+  push one run in turn through a git http-backend); `make lint`; UI
+  typecheck + generate.
+- e2e (binary, run.sh): Keycloak sign-in as operator/viewer/admin, scan,
+  apps, target, review, generate, push to a Git server (commit authored as
+  the person), viewer restrictions, audit log: 3/3 PASS. e2e (chart.sh):
+  the same against the image and chart, 2 replicas on PostgreSQL,
+  impersonation: 3/3 PASS.
+- Review rounds by fresh-context subagents: round 1 found 3 critical (git
   remote as a command, symlinked checkouts writing outside the run,
   cross-team pushes with shared credentials) and 14 required items, all
-  fixed with tests; see the commit "PostgreSQL storage for replicas, and
-  fixes from review".
-- GitHub release downloads (sops) returned 504 from the Hetzner VM on
-  2026-11-08 while working from WSL: the Dockerfile pins checksums, retries,
-  and builds without sops when SOPS_VERSION is empty.
+  fixed (commit "PostgreSQL storage for replicas, and fixes from review").
+  Round 2 found 8 more (Secret values through jsonPatch copy / an
+  operator-chosen sealed-secrets controller / encryptedRegex / Helm values;
+  the notifier crashing on a URL with a newline and logging it; stale
+  output copies and unserialized pushes across replicas; reaping by pod
+  clock without fencing; listing/pruning capped at 5000; chart RBAC `get`
+  on `*` covering nodes/proxy; trustedProxies default; kubeadm: groups),
+  all fixed with tests, plus most optional items (see the commit "Fixes
+  from the second review").
+- GitHub release downloads returned 504 for every project on 2026-11-08
+  (from Hetzner, WSL and GitHub Actions): PR #2's `image` job failed on the
+  sops download; rerun it (`gh run rerun --failed <id>`). The Dockerfile
+  pins checksums, retries, and builds without sops when SOPS_VERSION is
+  empty.
+- GitGuardian on PR #2 flags test fixtures in earlier commits (a base64
+  Basic header in unit_test.go, the chart e2e's throwaway PostgreSQL
+  password): not real secrets; both are now computed/generated. Mark the
+  incidents as test fixtures in the GitGuardian dashboard, or squash-merge.
+
+### Accepted / known limits (web UI)
+- Sessions can't be revoked one by one (rotate sessionKey).
+- Helm values are redacted by key name only (documented); release values
+  under other names reach the output.
+- Run logs are inserted a line at a time; maxQueuedPerUser can be passed by
+  a few simultaneous requests; audit paging by time can skip events sharing
+  the boundary timestamp.
+- With `git.repositories` empty, internal addresses are reachable as
+  remotes (warned at startup when roles are scoped).
+- A replica re-unpacking an output can break a download in progress on the
+  same replica (rare: only after another replica pushed that run).
 
 ## Open / next (providers), in order
 1. GitGuardian incident 39798306 (PR #1) is a false positive (a SHA-256 file
@@ -313,9 +353,9 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
    grafana` and `hayone1/grafana` verified in a clean home) and gitopsify
    v0.2.0 (installers verified on Linux/macOS/Windows by the workflow,
    Docker image published, `go install ...@v0.2.0` verified).
-3. TODO.md: registry website and web UI. Design proposals in
-   docs/DESIGN-registry.md and docs/DESIGN-webui.md wait for the user's answers
-   to their open questions (domain, stack, local-only, order).
+3. TODO.md: registry website (design proposal docs/DESIGN-registry.md waits
+   for the user's answers: domain, stack). The web UI is built on branch
+   `webui` (draft PR #2) for the user to review.
 4. Continuous use: three-way merge of re-exports with hand edits (the base
    is in export.json's file hashes), then a `gitopsify sync` loop or a
    controller reconciling `Export` resources (DESIGN-providers §11).

@@ -62,9 +62,12 @@ server:
   audit:
     stdout: true
     retention: 2160h
-  # The proxies in front (the ingress controller's pods): from them, the
-  # client address comes from X-Forwarded-For.
-  trustedProxies: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7]
+  # The proxies in front, as narrowly as you can (the ingress controller's
+  # pod CIDR, or its pods' addresses): from them, the client address comes
+  # from X-Forwarded-For. Empty: the address that connected (the ingress
+  # controller's, so rate limits and the audit log see the proxy). Don't
+  # list ranges clients connect from: they could then pick their address.
+  trustedProxies: []
   # /metrics needs this bearer token when set (the ingress exposes it):
   # metrics: {token: {env: METRICS_TOKEN}}
 
@@ -94,10 +97,16 @@ inCluster:
   # Without impersonation, operators can migrate everything the
   # ServiceAccount reads, Secrets included.
   impersonate: false
+  # Where this cluster's sealed-secrets controller runs: migrations sealing
+  # for it fetch its certificate there (the chart grants get on that
+  # service's proxy only).
+  sealedSecrets:
+    controllerNamespace: kube-system
+    controllerName: sealed-secrets-controller
 
 rbac:
   create: true
-  # get/list/watch on every resource, cluster-wide: what a scan reads.
+  # list/watch on every resource, cluster-wide: what a scan reads.
   clusterReader: true
   # impersonate users and groups, for inCluster.impersonate.
   impersonate: false
@@ -133,6 +142,12 @@ persistence:
   accessMode: ReadWriteOnce
   size: 10Gi
   existingClaim: ""
+  # Without a claim (storage.type: postgres, or persistence off) each
+  # replica works in an emptyDir: runs it works on and copies of outputs
+  # (unused ones are removed after an hour). Exceeding it evicts the pod.
+  workSizeLimit: 10Gi
+  # /tmp, also HOME: Helm's chart cache, Git's and the providers' files.
+  tmpSizeLimit: 4Gi
 
 service:
   type: ClusterIP

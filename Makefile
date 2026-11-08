@@ -37,7 +37,7 @@ golden:
 # command, a flag or the configuration.
 docs:
 	UPDATE_DOCS=1 go test ./internal/cli -run TestCommandReferenceIsCurrent
-	UPDATE_DOCS=1 go test ./pkg/config -run "TestSchemaIsCurrent|TestExportSchemaIsCurrent"
+	UPDATE_DOCS=1 go test ./pkg/config -run "TestSchemaIsCurrent|TestExportSchemaIsCurrent|TestServerSchemaIsCurrent"
 
 # Terminal recordings in docs/images, from docs/tapes, with VHS in Docker.
 gifs:

@@ -24,7 +24,15 @@ import (
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case <-s.stop: // stopping: send new requests to other replicas
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("stopping\n"))
+		default:
+			_, _ = w.Write([]byte("ok\n"))
+		}
+	})
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		if s.metricsKey != "" && !constantEq(r.Header.Get("Authorization"), "Bearer "+s.metricsKey) {
 			writeError(w, http.StatusUnauthorized, "send the metrics token")
@@ -319,16 +327,16 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	list := s.runs.list(func(run *Run) bool {
-		return roleForRun(ri.grants, run) != "" &&
-			(q.Get("type") == "" || run.Type == q.Get("type")) &&
-			(q.Get("cluster") == "" || run.Cluster == q.Get("cluster")) &&
-			(q.Get("status") == "" || run.Status == q.Get("status")) &&
-			(q.Get("createdBy") == "" || run.CreatedBy == q.Get("createdBy"))
-	})
-	if len(list) > limit {
-		list = list[:limit]
+	rq := runQuery{Type: q.Get("type"), Cluster: q.Get("cluster"), Status: q.Get("status"), CreatedBy: q.Get("createdBy"), Limit: limit}
+	if b := q.Get("before"); b != "" {
+		t, err := time.Parse(time.RFC3339Nano, b)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "before: an RFC 3339 time, such as a run's createdAt")
+			return
+		}
+		rq.Before = t
 	}
+	list := s.runs.list(rq, func(run *Run) bool { return roleForRun(ri.grants, run) != "" })
 	if list == nil {
 		list = []Run{}
 	}
@@ -341,7 +349,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	busy := s.runs.list(func(x *Run) bool { return x.CreatedBy == ri.user.Username && !x.finished() })
+	busy := s.runs.list(runQuery{CreatedBy: ri.user.Username, Active: true, Limit: s.cfg.Runs.MaxQueuedPerUser}, func(*Run) bool { return true })
 	if len(busy) >= s.cfg.Runs.MaxQueuedPerUser {
 		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("you have %d runs queued or working; wait for them or cancel some", len(busy)))
 		return
@@ -569,7 +577,19 @@ func (s *Server) runScan(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 // git-ignored files that may hold Secret values.
 func hidden(rel string) bool {
 	for _, part := range strings.Split(rel, "/") {
-		if part == ".git" || part == ".secrets" {
+		if part == ".git" {
+			return true
+		}
+	}
+	return secretFile(rel)
+}
+
+// secretFile reports whether a path of an output holds Secret values
+// (written for the person running the CLI, git-ignored): never served,
+// archived or pushed.
+func secretFile(rel string) bool {
+	for _, part := range strings.Split(rel, "/") {
+		if part == ".secrets" {
 			return true
 		}
 	}
@@ -587,7 +607,7 @@ func (s *Server) runFiles(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 		return
 	}
 	out := []fileEntry{}
-	root, err := s.runs.ensureOutput(r.Context(), run.ID)
+	root, err := s.runs.ensureOutput(r.Context(), run.ID, run.OutputVersion)
 	if err != nil {
 		writeJSONResponse(w, http.StatusOK, out)
 		return
@@ -626,7 +646,7 @@ func (s *Server) runFile(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 		writeError(w, http.StatusNotFound, "no such file")
 		return
 	}
-	dir, err := s.runs.ensureOutput(r.Context(), run.ID)
+	dir, err := s.runs.ensureOutput(r.Context(), run.ID, run.OutputVersion)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "no such file")
 		return
@@ -663,7 +683,7 @@ func (s *Server) runArchive(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 	if !ok {
 		return
 	}
-	root, err := s.runs.ensureOutput(r.Context(), run.ID)
+	root, err := s.runs.ensureOutput(r.Context(), run.ID, run.OutputVersion)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "this run wrote no files")
 		return

@@ -71,7 +71,7 @@ func (s *Server) describe(ctx context.Context, name string) (*provider.Installed
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	d, err = (&provider.Client{Name: in.Name, Path: in.Path}).Describe(ctx)
+	d, err = (&provider.Client{Name: in.Name, Path: in.Path, Env: s.providerEnv()}).Describe(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -162,7 +162,7 @@ func (s *Server) checkTool(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 	if err == nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
-		res.Check, err = (&provider.Client{Name: in.Name, Path: in.Path}).Check(ctx, sdk.Request{Instance: t.Name, Settings: settings})
+		res.Check, err = (&provider.Client{Name: in.Name, Path: in.Path, Env: s.providerEnv()}).Check(ctx, sdk.Request{Instance: t.Name, Settings: settings})
 	}
 	if err != nil {
 		res.Error = err.Error()
@@ -334,7 +334,7 @@ func (s *Server) startExport(req runRequest, u *User) (*Run, error) {
 
 func (s *Server) export(ctx context.Context, rc *runContext, x *config.Export, t *config.ServerTool, in *provider.Installed,
 	d *sdk.Description, settings map[string]string, allowPartial bool) error {
-	client := &provider.Client{Name: in.Name, Path: in.Path, Log: func(l provider.LogLine) {
+	client := &provider.Client{Name: in.Name, Path: in.Path, Env: s.providerEnv(), Log: func(l provider.LogLine) {
 		switch l.Level {
 		case "DEBUG":
 		case "WARN", "ERROR":
@@ -432,4 +432,28 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// providerEnv is what providers see of the server's environment: what
+// programs need to run and reach the network, never the server's own
+// secrets (session key, OIDC client secret, database URL, Git tokens).
+// Tool settings reach them in the request.
+func (s *Server) providerEnv() []string {
+	if s.local {
+		return nil // gitopsify ui: like the CLI
+	}
+	var out []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(name) {
+		case "PATH", "HOME", "TMPDIR", "TZ", "LANG", "USER", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+			"SSL_CERT_FILE", "SSL_CERT_DIR", "GODEBUG":
+			out = append(out, kv)
+		default:
+			if strings.HasPrefix(name, "LC_") {
+				out = append(out, kv)
+			}
+		}
+	}
+	return out
 }

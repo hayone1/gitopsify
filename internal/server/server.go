@@ -62,8 +62,6 @@ type Server struct {
 	proxies    []*net.IPNet
 	metricsKey string
 	store      store
-	pubMu      sync.Mutex
-	pushing    keyLocks
 	notify     *notifier
 	handler    http.Handler
 	stop       chan struct{}
@@ -115,7 +113,22 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		_ = s.store.close()
 		return nil, fmt.Errorf("data directory %s: %w", cfg.DataDir, err)
 	}
-	s.notify = &notifier{hooks: cfg.Notifications, external: external.String(), client: &http.Client{Timeout: 15 * time.Second}, s: s}
+	if len(cfg.Git.Repositories) == 0 && len(cfg.Git.Credentials) > 0 && scoped(cfg) {
+		o.Log.Warn("roles are limited to clusters or tools, but spec.git.repositories is empty: " +
+			"an operator of any cluster or tool can push to every repository the server's Git credentials reach")
+	}
+	for _, h := range cfg.Notifications {
+		if _, err := webhookURL(h); err != nil {
+			_ = s.store.close()
+			return nil, fmt.Errorf("spec.notifications %s: %w", h.Name, err)
+		}
+	}
+	s.notify = &notifier{hooks: cfg.Notifications, external: external.String(), s: s, client: &http.Client{
+		Timeout: 15 * time.Second,
+		// A webhook that redirects is misconfigured; following it would
+		// send the payload elsewhere.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 	s.runs.finished = s.notify.runFinished
 	s.ui = newUIHandler(o.UI)
 	s.descs = &describes{byID: map[string]*sdk.Description{}}
@@ -509,4 +522,20 @@ func (l *limiter) cleanup() {
 			}
 		}
 	}
+}
+
+// scoped reports whether some binding or token is limited to clusters or
+// tools.
+func scoped(cfg *config.ServerSpec) bool {
+	for _, b := range cfg.RBAC.Bindings {
+		if len(b.Clusters)+len(b.Tools) > 0 {
+			return true
+		}
+	}
+	for _, t := range cfg.Auth.Tokens {
+		if len(t.Clusters)+len(t.Tools) > 0 {
+			return true
+		}
+	}
+	return false
 }

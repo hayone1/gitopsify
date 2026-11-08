@@ -102,10 +102,15 @@ spec:
           persistentVolumeClaim:
             claimName: {{ default (include "gitopsify.fullname" .) .Values.persistence.existingClaim }}
           {{- else }}
-          emptyDir: {}
+          emptyDir:
+            {{- with .Values.persistence.workSizeLimit }}
+            sizeLimit: {{ . }}
+            {{- else }}
+            {}
+            {{- end }}
           {{- end }}
         - name: tmp
-          emptyDir: {}
+          emptyDir: {sizeLimit: {{ .Values.persistence.tmpSizeLimit | default "4Gi" }}}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

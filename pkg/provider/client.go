@@ -52,6 +52,8 @@ type Client struct {
 	Path string
 	// Log receives the provider's progress; nil drops it.
 	Log func(LogLine)
+	// Env is the provider's environment; nil passes this process's.
+	Env []string
 }
 
 // Error is a failure of a provider call.
@@ -147,6 +149,9 @@ func (c *Client) run(ctx context.Context, method string, req *sdk.Request, read 
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	}
 	cmd.WaitDelay = 5 * time.Second
+	if c.Env != nil {
+		cmd.Env = c.Env
+	}
 	if req != nil {
 		r := *req
 		if r.APIVersion == "" {

@@ -53,7 +53,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $_ := set $spec "auth" $auth -}}
 {{- $clusters := list -}}
 {{- if .Values.inCluster.enabled -}}
-{{- $clusters = append $clusters (dict "name" .Values.inCluster.name "description" .Values.inCluster.description "impersonate" .Values.inCluster.impersonate "access" (dict "inCluster" true)) -}}
+{{- $clusters = append $clusters (dict "name" .Values.inCluster.name "description" .Values.inCluster.description "impersonate" .Values.inCluster.impersonate "access" (dict "inCluster" true) "sealedSecrets" .Values.inCluster.sealedSecrets) -}}
 {{- end -}}
 {{- range .Values.server.clusters -}}
 {{- $clusters = append $clusters . -}}

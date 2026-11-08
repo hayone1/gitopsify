@@ -192,3 +192,16 @@ func normalize(v any) any {
 	_ = yaml.Unmarshal(b, &out)
 	return out
 }
+
+// A Secret turned into another kind would skip the secrets strategy.
+func TestSecretKeepsKind(t *testing.T) {
+	u, o := object(t, "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop}\ndata: {password: aHVudGVyMg==}\n")
+	_, err := Object(u, o, []config.Transform{{Type: "set", Path: "kind", Value: "ConfigMap"}})
+	if err == nil {
+		t.Fatal("a Secret became a ConfigMap")
+	}
+	u, o = object(t, "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop}\ndata: {password: aHVudGVyMg==}\n")
+	if _, err := Object(u, o, []config.Transform{{Type: "namespace", Map: map[string]string{"shop": "store"}}}); err != nil || u.GetNamespace() != "store" {
+		t.Fatalf("namespace: %v %s", err, u.GetNamespace())
+	}
+}

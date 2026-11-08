@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -138,7 +139,7 @@ func TestGitEnv(t *testing.T) {
 	}}
 	env, err := gitEnv(g, "https://github.com/acme/gitops.git")
 	all := strings.Join(env, "\n")
-	if err != nil || !strings.Contains(all, "Authorization: Basic eC1hY2Nlc3MtdG9rZW46czNjcmV0") {
+	if err != nil || !strings.Contains(all, "Authorization: Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+os.Getenv("GH_TOKEN_TEST")))) {
 		t.Fatalf("https: %v %v", env, err)
 	}
 	for _, want := range []string{"GIT_PROTOCOL_FROM_USER=0", "=protocol.allow\nGIT_CONFIG_VALUE_0=never", "core.symlinks", "http.lowSpeedTime"} {
@@ -177,6 +178,7 @@ func TestCheckRemote(t *testing.T) {
 		"https://-oProxyCommand=x/acme/x":         false,
 		"git@github.com:acme/x.git --x":           false,
 		"https://github.com/acme/x?y=1":           false,
+		"git@github.com:-oProxyCommand=x":         false,
 		"":                                        false,
 	} {
 		if err := checkRemote(remote, false); (err == nil) != ok {
@@ -186,7 +188,7 @@ func TestCheckRemote(t *testing.T) {
 	if err := checkRemote("http://localhost:8099/x.git", true); err != nil {
 		t.Errorf("http when allowed: %v", err)
 	}
-	for b, ok := range map[string]bool{"main": true, "release/1.0": true, "": true, "-f": false, "a..b": false, "x.lock": false, "a b": false, "/x": false} {
+	for b, ok := range map[string]bool{"main": true, "release/1.0": true, "": true, "-f": false, "a..b": false, "x.lock": false, "a b": false, "/x": false, "HEAD": false, "refs/tags/v1": false} {
 		if err := checkBranch(b); (err == nil) != ok {
 			t.Errorf("checkBranch(%q) = %v", b, err)
 		}
@@ -245,6 +247,15 @@ func TestImpersonation(t *testing.T) {
 	}
 	if _, err := s.access(c, &User{Username: "system:serviceaccount:kube-system:x", Via: "oidc"}); err == nil {
 		t.Error("a system: username was impersonated")
+	}
+
+	// Without a prefix, kubeadm's admin group is dropped too; an allowlist
+	// limits the rest.
+	c.ImpersonateGroupPrefix = ""
+	c.ImpersonateGroups = []string{"shop", "team-*"}
+	a, err = s.access(c, &User{Username: "ada", Groups: []string{"shop", "team-a", "kubeadm:cluster-admins", "admins"}, Via: "oidc"})
+	if err != nil || strings.Join(a.ImpersonateGroups, ",") != "system:authenticated,shop,team-a" {
+		t.Errorf("groups: %v %v", a.ImpersonateGroups, err)
 	}
 }
 
@@ -324,6 +335,13 @@ func TestPrepareMigration(t *testing.T) {
 		"plain secrets":     "spec:\n  secrets:\n    strategy: plain\n",
 		"override secrets":  "spec:\n  secrets:\n    overrides:\n      - names: [x]\n        strategy: local\n",
 		"sealed, no target": "spec:\n  secrets:\n    strategy: sealed-secrets\n",
+		// Ways to put Secret values in clear into the output (review N1).
+		"jsonPatch copy":     "spec:\n  transforms:\n    - type: jsonPatch\n      target: {kinds: [Secret]}\n      patch: [{op: copy, from: /data/password, path: /metadata/annotations/leak}]\n",
+		"env jsonPatch move": "spec:\n  environments:\n    - name: prod\n      transforms:\n        - type: jsonPatch\n          patch: [{op: move, from: /data/password, path: /metadata/labels/x}]\n",
+		"jsonPatch test":     "spec:\n  transforms:\n    - type: jsonPatch\n      patch: [{op: test, path: /data/password, value: aHVudGVyMg==}]\n",
+		"sops regex":         "spec:\n  secrets:\n    strategy: skip\n    sops: {encryptedRegex: ^$}\n",
+		"sealed scope":       "spec:\n  environments:\n    - name: prod\n      cluster: {context: prod}\n  secrets:\n    strategy: sealed-secrets\n    sealedSecrets: {scope: cluster-wide}\n",
+		"sealed controller":  "spec:\n  environments:\n    - name: prod\n      cluster: {context: prod}\n  secrets:\n    strategy: sealed-secrets\n    sealedSecrets: {controllerNamespace: mine, controllerName: fake}\n",
 	}
 	for name, spec := range cases {
 		if _, err := s.prepareMigration("apiVersion: gitopsify.io/v1alpha1\nkind: Migration\nmetadata: {name: m}\n"+spec, "dev", u); err == nil {
@@ -339,5 +357,22 @@ func TestPrepareMigration(t *testing.T) {
 	}
 	if cfg.Source.Access.Impersonate != "ada" || cfg.Environments[0].Cluster.Access.Impersonate != "" {
 		t.Errorf("impersonation: dev %q, prod %q", cfg.Source.Access.Impersonate, cfg.Environments[0].Cluster.Access.Impersonate)
+	}
+
+	// The sealed-secrets controller is the one configured for the target.
+	c, _ := s.cluster("prod")
+	c.SealedSecrets = &config.ServerSealedSecrets{ControllerNamespace: "sealed-secrets"}
+	sealed := "apiVersion: gitopsify.io/v1alpha1\nkind: Migration\nmetadata: {name: m}\nspec:\n  environments:\n    - name: prod\n      cluster: {context: prod}\n  secrets:\n    strategy: sealed-secrets\n    sealedSecrets: {scope: strict}\n  transforms:\n    - type: jsonPatch\n      patch: [{op: add, path: /metadata/labels/x, value: y}]\n"
+	cfg, err = s.prepareMigration(sealed, "dev", u)
+	if err != nil || cfg.Secrets.SealedSecrets.ControllerNamespace != "sealed-secrets" || cfg.Secrets.SealedSecrets.ControllerName != "sealed-secrets-controller" {
+		t.Errorf("pinned controller: %+v %v", cfg, err)
+	}
+
+	// An admin can allow all of it.
+	s.cfg.Runs.AllowSecretValues = true
+	for _, name := range []string{"jsonPatch copy", "sops regex", "sealed scope", "sealed controller", "plain secrets"} {
+		if _, err := s.prepareMigration("apiVersion: gitopsify.io/v1alpha1\nkind: Migration\nmetadata: {name: m}\n"+cases[name], "dev", u); err != nil {
+			t.Errorf("%s with allowSecretValues: %v", name, err)
+		}
 	}
 }

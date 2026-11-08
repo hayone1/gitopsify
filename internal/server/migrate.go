@@ -100,6 +100,7 @@ func (s *Server) prepareMigration(text, cluster string, u *User) (*config.Config
 	if cfg.Source.Access, err = s.access(c, u); err != nil {
 		return nil, err
 	}
+	var envClusters []string // registered names, in order
 	for i := range cfg.Environments {
 		e := &cfg.Environments[i]
 		name := e.Cluster.Access.Context
@@ -121,6 +122,7 @@ func (s *Server) prepareMigration(text, cluster string, u *User) (*config.Config
 		if e.Cluster.Access, err = s.access(ec, u); err != nil {
 			return nil, err
 		}
+		envClusters = append(envClusters, name)
 	}
 	if cfg.Output.Repo.Path != "" {
 		return nil, errors.New("spec.output.repo.path isn't supported on the server; it writes the repository root")
@@ -142,6 +144,9 @@ func (s *Server) prepareMigration(text, cluster string, u *User) (*config.Config
 	if err := s.checkSOPS(cfg, c); err != nil {
 		return nil, err
 	}
+	if err := s.checkSecretLeaks(cfg); err != nil {
+		return nil, err
+	}
 	// Repositories: the server checks them out and pushes to them with its
 	// own credentials.
 	if cfg.Output.Repo.URL != "" {
@@ -158,8 +163,13 @@ func (s *Server) prepareMigration(text, cluster string, u *User) (*config.Config
 			}
 		}
 	}
-	if usesSealedSecrets(cfg) && (len(cfg.Environments) == 0 || !cfg.Environments[0].Cluster.Access.Configured()) {
-		return nil, errors.New("Sealed Secrets are sealed with the controller's certificate, which the server fetches from the first environment's cluster: pick that cluster (spec.environments[0].cluster.context), or use sops, external-secrets or skip")
+	if usesSealedSecrets(cfg) {
+		if len(cfg.Environments) == 0 || !cfg.Environments[0].Cluster.Access.Configured() {
+			return nil, errors.New("Sealed Secrets are sealed with the controller's certificate, which the server fetches from the first environment's cluster: pick that cluster (spec.environments[0].cluster.context), or use sops, external-secrets or skip")
+		}
+		if err := s.pinSealedSecrets(cfg, envClusters); err != nil {
+			return nil, err
+		}
 	}
 	cfg.Output.Dir = "" // set per run
 	return cfg, nil
@@ -190,6 +200,88 @@ func (s *Server) checkSOPS(cfg *config.Config, c *config.ServerCluster) error {
 		}
 	}
 	return nil
+}
+
+// checkSecretLeaks refuses what would put Secret values in clear into a
+// run's output, which every viewer of the cluster can download: jsonPatch
+// copy and move (from data into an annotation, which neither sealing nor
+// SOPS encrypts), test (an oracle for guessing values), a custom SOPS
+// encryptedRegex and sealing scopes wider than strict.
+func (s *Server) checkSecretLeaks(cfg *config.Config) error {
+	if s.cfg.Runs.AllowSecretValues {
+		return nil
+	}
+	check := func(where string, ts []config.Transform) error {
+		for i, t := range ts {
+			if t.Type != "jsonPatch" {
+				continue
+			}
+			for _, op := range t.Patch {
+				switch o, _ := op["op"].(string); o {
+				case "add", "remove", "replace":
+				default:
+					return fmt.Errorf("%s[%d]: jsonPatch op %q isn't allowed on the server: it could copy Secret values where they aren't encrypted; use add, remove or replace (an admin can set spec.runs.allowSecretValues)", where, i, o)
+				}
+			}
+		}
+		return nil
+	}
+	if err := check("spec.transforms", cfg.Transforms); err != nil {
+		return err
+	}
+	for i, e := range cfg.Environments {
+		if err := check(fmt.Sprintf("spec.environments[%d].transforms", i), e.Transforms); err != nil {
+			return err
+		}
+	}
+	if r := cfg.Secrets.SOPS.EncryptedRegex; r != "" && r != "^(data|stringData)$" {
+		return errors.New("spec.secrets.sops.encryptedRegex isn't allowed on the server: it decides which values SOPS encrypts (an admin can set spec.runs.allowSecretValues)")
+	}
+	if sc := cfg.Secrets.SealedSecrets.Scope; usesSealedSecrets(cfg) && sc != "" && sc != "strict" {
+		return fmt.Errorf("spec.secrets.sealedSecrets.scope %q isn't allowed on the server: anyone who can create SealedSecrets elsewhere in the target cluster could unseal them; use strict (an admin can set spec.runs.allowSecretValues)", sc)
+	}
+	return nil
+}
+
+// pinSealedSecrets seals with the controller the server configures for the
+// environments' clusters: a controller the operator chose could be their
+// own service, holding the key to every Secret of the source cluster.
+func (s *Server) pinSealedSecrets(cfg *config.Config, clusters []string) error {
+	if s.cfg.Runs.AllowSecretValues {
+		return nil
+	}
+	var pin *config.ServerSealedSecrets
+	var from string
+	for _, name := range clusters {
+		ec, err := s.cluster(name)
+		if err != nil {
+			return err
+		}
+		p := sealedController(ec)
+		if pin != nil && *p != *pin {
+			return fmt.Errorf("clusters %s and %s run their sealed-secrets controllers in different places (spec.clusters[].sealedSecrets), and a migration seals for one; migrate to them separately", from, name)
+		}
+		pin, from = p, name
+	}
+	ss := &cfg.Secrets.SealedSecrets
+	if (ss.ControllerNamespace != "" && ss.ControllerNamespace != pin.ControllerNamespace) || (ss.ControllerName != "" && ss.ControllerName != pin.ControllerName) {
+		return fmt.Errorf("spec.secrets.sealedSecrets: the server seals with the controller configured for cluster %s (%s/%s); remove controllerNamespace and controllerName", from, pin.ControllerNamespace, pin.ControllerName)
+	}
+	ss.ControllerNamespace, ss.ControllerName = pin.ControllerNamespace, pin.ControllerName
+	return nil
+}
+
+func sealedController(c *config.ServerCluster) *config.ServerSealedSecrets {
+	p := config.ServerSealedSecrets{ControllerNamespace: "kube-system", ControllerName: "sealed-secrets-controller"}
+	if c.SealedSecrets != nil {
+		if c.SealedSecrets.ControllerNamespace != "" {
+			p.ControllerNamespace = c.SealedSecrets.ControllerNamespace
+		}
+		if c.SealedSecrets.ControllerName != "" {
+			p.ControllerName = c.SealedSecrets.ControllerName
+		}
+	}
+	return &p
 }
 
 func usesSealedSecrets(cfg *config.Config) bool {
@@ -267,7 +359,8 @@ func publicDocument(cfg *config.Config) any {
 
 func (s *Server) pipelineOptions(rc *runContext, cfg *config.Config) pipeline.Options {
 	return pipeline.Options{Config: cfg, Version: s.version, Connect: kube.ConnectOptions{NoInput: true},
-		Log: func(format string, args ...any) { rc.Info(format, args...) }}
+		RedactValues: !s.cfg.Runs.AllowSecretValues,
+		Log:          func(format string, args ...any) { rc.Info(format, args...) }}
 }
 
 func (s *Server) scan(ctx context.Context, rc *runContext, cfg *config.Config) error {
@@ -346,16 +439,20 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 
 // publish commits and pushes a migration's or an export's output.
 func (s *Server) publish(ctx context.Context, id string, u *User, message string, rc *runContext) error {
-	if !s.pushing.TryLock(id) {
+	// One push of a run at a time, across replicas; deleting waits too.
+	unlock, locked, err := s.store.tryLock(ctx, "run:"+id)
+	if err != nil {
+		return err
+	}
+	if !locked {
 		return errPushing
 	}
-	defer s.pushing.Unlock(id)
+	defer unlock()
 	r, ok := s.runs.get(id)
 	if !ok {
 		return os.ErrNotExist
 	}
 	var cfg *config.Config
-	var err error
 	if r.Type == RunExport {
 		if r.Repo == nil || r.Repo.URL == "" {
 			return errors.New("the export has no repository to push to")
@@ -364,7 +461,7 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 	} else if cfg, err = config.ParseMigration("migration.json", r.Spec); err != nil {
 		return err
 	}
-	if cfg.Output.Dir, err = s.runs.ensureOutput(context.Background(), id); err != nil {
+	if cfg.Output.Dir, err = s.runs.ensureOutput(ctx, id, r.OutputVersion); err != nil {
 		return fmt.Errorf("the run's output: %w", err)
 	}
 	if cfg.Output.Repo.URL == "" && (cfg.Output.Layout != config.LayoutRepoPerEnv || len(cfg.Environments) == 0 || cfg.Environments[0].RepoURL == "") {
@@ -387,6 +484,7 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 	}
 	sort.Strings(keys)
 	var failed error
+	var pubs []Publish
 	for _, d := range keys {
 		remote := dirs[d]
 		p := Publish{At: time.Now().UTC(), By: u.Username, Dir: strings.TrimPrefix(strings.TrimPrefix(d, cfg.Output.Dir), "/"),
@@ -422,11 +520,27 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 				rc.Info("pushed %s to %s (%s)", p.Commit, remote, p.Branch)
 			}
 		}
-		s.recordPublish(id, p, rc)
+		pubs = append(pubs, p)
 	}
-	// Keep the commit for later pushes from any replica.
+	if rc != nil {
+		// Part of the run: finishing it stores the output.
+		rc.update(func(r *Run) { r.Publishes = append(r.Publishes, pubs...) })
+		return failed
+	}
+	// Keep the commits for later pushes from any replica: replicas with an
+	// older copy unpack this one.
+	bump := true
 	if err := s.runs.saveOutput(id); err != nil {
 		s.log.Warn("storing the output after a push", "run", id, "error", err)
+		bump = false
+	}
+	sctx, cancel := bg()
+	defer cancel()
+	nr, err := s.store.addPublishes(sctx, id, pubs, bump && s.store.shared())
+	if err != nil {
+		s.log.Warn("recording a push", "run", id, "error", err)
+	} else if bump && s.store.shared() {
+		s.runs.markOutput(id, nr.OutputVersion)
 	}
 	return failed
 }
@@ -498,27 +612,6 @@ func (s *Server) putJSON(id, name string, v any) error {
 
 // recordPublish adds a push to a run: through its run context while it
 // works, in the store afterwards.
-func (s *Server) recordPublish(id string, p Publish, rc *runContext) {
-	if rc != nil {
-		rc.update(func(r *Run) { r.Publishes = append(r.Publishes, p) })
-		return
-	}
-	s.pubMu.Lock()
-	defer s.pubMu.Unlock()
-	r, ok := s.runs.get(id)
-	if !ok {
-		return
-	}
-	r.Publishes = append(r.Publishes, p)
-	ctx, cancel := bg()
-	defer cancel()
-	if err := s.store.saveRun(ctx, r, ""); err != nil {
-		s.log.Warn("recording a push", "run", id, "error", err)
-	}
-}
-
-var errPushing = errors.New("this run is being pushed already")
-
 // keyLocks are try-locks by key (a push per run at a time).
 type keyLocks struct {
 	mu   sync.Mutex

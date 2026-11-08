@@ -6,8 +6,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/cgi"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,7 +66,7 @@ func TestStores(t *testing.T) {
 				if err := os.MkdirAll(filepath.Join(fileRunsDir(st), r.ID), 0o700); err != nil && fileRunsDir(st) != "" {
 					t.Fatal(err)
 				}
-				if err := st.saveRun(ctx, &r, "me"); err != nil {
+				if err := st.createRun(ctx, &r, "me"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -70,9 +74,58 @@ func TestStores(t *testing.T) {
 			if err != nil || string(got.Spec) != `{"a":1}` {
 				t.Fatalf("get: %+v %v", got, err)
 			}
-			list, _ := st.listRuns(ctx)
-			if len(list) != 2 || list[0].ID != done.ID {
+			list, _ := st.listRuns(ctx, runQuery{})
+			if len(list) != 2 || list[0].ID != done.ID || list[0].Spec != nil {
 				t.Errorf("list (newest first): %+v", list)
+			}
+			if l, _ := st.listRuns(ctx, runQuery{Before: done.CreatedAt}); len(l) != 1 || l[0].ID != old.ID {
+				t.Errorf("list before: %+v", l)
+			}
+			if l, _ := st.listRuns(ctx, runQuery{Active: true, Type: RunScan, Limit: 5}); len(l) != 1 || l[0].ID != old.ID {
+				t.Errorf("list active scans: %+v", l)
+			}
+			if l, _ := st.listRuns(ctx, runQuery{Limit: 1}); len(l) != 1 {
+				t.Errorf("list limit: %+v", l)
+			}
+
+			// Only the owner updates a run, and only until it finishes.
+			upd := old
+			upd.Error = "x"
+			if err := st.updateRun(ctx, &upd, "someone else"); err != errFenced {
+				t.Errorf("update by another owner: %v", err)
+			}
+			if err := st.updateRun(ctx, &upd, "me"); err != nil {
+				t.Errorf("update by the owner: %v", err)
+			}
+			if err := st.updateRun(ctx, &done, "me"); err != errFenced {
+				t.Errorf("update of a finished run: %v", err)
+			}
+			if lost, err := st.heartbeat(ctx, "me", []string{old.ID, "gone"}); err != nil || len(lost) != 1 || lost[0] != "gone" {
+				t.Errorf("heartbeat: %v %v", lost, err)
+			}
+
+			// Pushes are appended in one step; deleted runs aren't brought back.
+			if _, err := st.addPublishes(ctx, done.ID, []Publish{{Remote: "a"}}, false); err != nil {
+				t.Fatal(err)
+			}
+			if r, err := st.addPublishes(ctx, done.ID, []Publish{{Remote: "b"}}, true); err != nil || len(r.Publishes) != 2 || r.OutputVersion != 1 {
+				t.Errorf("publishes: %+v %v", r, err)
+			}
+			if _, err := st.addPublishes(ctx, "gone", []Publish{{Remote: "a"}}, false); err != errNotFound {
+				t.Errorf("publishes of a missing run: %v", err)
+			}
+			unlock, ok, err := st.tryLock(ctx, "run:"+done.ID)
+			if err != nil || !ok {
+				t.Fatalf("lock: %v %v", ok, err)
+			}
+			if _, ok2, _ := st.tryLock(ctx, "run:"+done.ID); ok2 {
+				t.Error("a held lock was taken again")
+			}
+			unlock()
+			if unlock2, ok2, _ := st.tryLock(ctx, "run:"+done.ID); !ok2 {
+				t.Error("a released lock couldn't be taken")
+			} else {
+				unlock2()
 			}
 			for i, m := range []string{"one", "two", "three"} {
 				if err := st.appendLog(ctx, old.ID, i, LogLine{Time: now, Level: "info", Message: m}); err != nil {
@@ -96,8 +149,30 @@ func TestStores(t *testing.T) {
 			if ids, _ := st.cancelRequested(ctx, []string{old.ID, done.ID}); len(ids) != 1 || ids[0] != old.ID {
 				t.Errorf("cancel requests: %v", ids)
 			}
-			if stale, _ := st.staleRuns(ctx, time.Now().Add(time.Minute)); len(stale) != 1 || stale[0].ID != old.ID {
-				t.Errorf("stale: %+v", stale)
+			// Reaping: never the reaper's own runs; others' once stale.
+			fail := func(r *Run) {
+				now := time.Now().UTC()
+				r.Status, r.FinishedAt = StatusFailed, &now
+			}
+			if reaped, _ := st.reapRuns(ctx, "me", 0, fail); len(reaped) != 0 {
+				t.Errorf("reaped its own: %+v", reaped)
+			}
+			if st.shared() { // one replica: the other owner's runs are a previous process's
+				if reaped, _ := st.reapRuns(ctx, "other", time.Hour, fail); len(reaped) != 0 {
+					t.Errorf("reaped a fresh run: %+v", reaped)
+				}
+			}
+			if reaped, err := st.reapRuns(ctx, "other", 0, fail); err != nil || len(reaped) != 1 || reaped[0].ID != old.ID {
+				t.Errorf("reap: %+v %v", reaped, err)
+			}
+			if r, _ := st.getRun(ctx, old.ID); r == nil || r.Status != StatusFailed {
+				t.Errorf("reaped run: %+v", r)
+			}
+			if err := st.updateRun(ctx, &upd, "me"); err != errFenced {
+				t.Errorf("the owner updated a reaped run: %v", err)
+			}
+			if reaped, _ := st.reapRuns(ctx, "other", 0, fail); len(reaped) != 0 {
+				t.Errorf("reaped twice: %+v", reaped)
 			}
 			if err := st.deleteRun(ctx, old.ID); err != nil {
 				t.Fatal(err)
@@ -107,6 +182,12 @@ func TestStores(t *testing.T) {
 			}
 			if lines, _ := st.readLog(ctx, old.ID, 0); len(lines) != 0 {
 				t.Errorf("deleted run's log: %v", lines)
+			}
+			if ids, err := st.pruneRuns(ctx, time.Now().Add(time.Minute)); err != nil || len(ids) != 1 || ids[0] != done.ID {
+				t.Errorf("prune: %v %v", ids, err)
+			}
+			if l, _ := st.listRuns(ctx, runQuery{}); len(l) != 0 {
+				t.Errorf("after pruning: %+v", l)
 			}
 			base := time.Now().UTC().Truncate(time.Millisecond)
 			for i, e := range []AuditEvent{
@@ -143,7 +224,8 @@ func fileRunsDir(st store) string {
 
 func TestPackDir(t *testing.T) {
 	src := t.TempDir()
-	for p, c := range map[string]string{"a.yaml": "a", "apps/web/b.yaml": "b", ".git/HEAD": "ref: refs/heads/main"} {
+	for p, c := range map[string]string{"a.yaml": "a", "apps/web/b.yaml": "b", ".git/HEAD": "ref: refs/heads/main",
+		".secrets/shop/db.yaml": "password: x", "envs/prod/x.secrets.auto.tfvars": "token = 1"} {
 		_ = os.MkdirAll(filepath.Dir(filepath.Join(src, p)), 0o755)
 		_ = os.WriteFile(filepath.Join(src, p), []byte(c), 0o644)
 	}
@@ -158,6 +240,11 @@ func TestPackDir(t *testing.T) {
 	for p, c := range map[string]string{"a.yaml": "a", "apps/web/b.yaml": "b", ".git/HEAD": "ref: refs/heads/main"} {
 		if b, _ := os.ReadFile(filepath.Join(dst, p)); string(b) != c {
 			t.Errorf("%s: %q", p, b)
+		}
+	}
+	for _, p := range []string{".secrets", "envs/prod/x.secrets.auto.tfvars"} {
+		if _, err := os.Stat(filepath.Join(dst, p)); err == nil {
+			t.Errorf("%s was archived", p)
 		}
 	}
 	// An archive that escapes the directory is refused.
@@ -235,5 +322,89 @@ func TestReplicas(t *testing.T) {
 	adminC.get("/api/v1/audit?action=run.cancel", &evs)
 	if len(evs) != 1 || evs[0].Actor != "ada@acme.io" {
 		t.Errorf("audit on a of b's cancel: %+v", evs)
+	}
+}
+
+// TestReplicaPushes: pushes of one run through two replicas each start from
+// the other's last commit, and the run keeps both.
+func TestReplicaPushes(t *testing.T) {
+	url := pgURL(t)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "--bare", "-b", "main", "gitops.git"}, {"-C", "gitops.git", "config", "http.receivepack", "true"}} {
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	gitSrv := httptest.NewServer(&cgi.Handler{Path: gitPath, Args: []string{"http-backend"},
+		Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}})
+	defer gitSrv.Close()
+	remote := gitSrv.URL + "/gitops.git"
+
+	pg, err := newPGStore(context.Background(), url, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = pg.pool.Exec(context.Background(), `TRUNCATE gitopsify_runs, gitopsify_audit CASCADE`)
+	_ = pg.close()
+	shared := func(c *config.Server) {
+		c.Spec.Storage = config.ServerStorage{Type: "postgres", Postgres: &config.ServerPostgres{URL: config.SettingValue{Value: url}}}
+		c.Spec.Git.AllowHTTP = true
+	}
+	a, b := newTestEnv(t, shared), newTestEnv(t, shared)
+	spec, _ := json.Marshal(map[string]any{"apiVersion": "gitopsify.io/v1alpha1", "kind": "Migration", "metadata": map[string]string{"name": "shop"},
+		"spec": map[string]any{"output": map[string]any{"tool": "none", "repo": map[string]any{"url": remote}}}})
+	write := func(dir, content string) {
+		_ = os.MkdirAll(filepath.Join(dir, "apps/web"), 0o755)
+		_ = os.WriteFile(filepath.Join(dir, "apps/web/deployment.yaml"), []byte(content), 0o644)
+	}
+	r, err := a.s.runs.start(Run{Type: RunMigrate, Name: "shop", Cluster: "dev", CreatedBy: "ada@acme.io", Spec: spec},
+		func(ctx context.Context, rc *runContext) error {
+			write(a.s.runs.outputDir(rc.ID()), "kind: Deployment\n")
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRun(t, a.s, r.ID)
+	ca, cb := a.login(ada), b.login(ada)
+	var files []fileEntry
+	ca.get("/api/v1/runs/"+r.ID+"/files", &files) // a's copy: version 0
+	if code := cb.do(http.MethodPost, "/api/v1/runs/"+r.ID+"/publish", map[string]string{"message": "first"}, nil); code != http.StatusOK {
+		t.Fatalf("push through b: %d", code)
+	}
+	if code := ca.do(http.MethodPost, "/api/v1/runs/"+r.ID+"/publish", map[string]string{"message": "second"}, nil); code != http.StatusOK {
+		t.Fatalf("push through a after b's: %d", code)
+	}
+	var got Run
+	ca.get("/api/v1/runs/"+r.ID, &got)
+	if len(got.Publishes) != 2 || got.OutputVersion != 2 {
+		t.Fatalf("publishes: %+v (version %d)", got.Publishes, got.OutputVersion)
+	}
+	for _, p := range got.Publishes {
+		if p.Error != "" {
+			t.Errorf("push: %+v", p)
+		}
+	}
+	out, _ := exec.Command(gitPath, "-C", filepath.Join(root, "gitops.git"), "log", "--format=%s", "main").CombinedOutput()
+	if !strings.Contains(string(out), "first") {
+		t.Errorf("remote history: %s", out)
+	}
+	// Deleting waits for a push, on any replica.
+	unlock, ok, err := b.s.store.tryLock(context.Background(), "run:"+r.ID)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if code := ca.do(http.MethodDelete, "/api/v1/runs/"+r.ID, nil, nil); code != http.StatusConflict {
+		t.Errorf("delete during a push: %d", code)
+	}
+	unlock()
+	if code := ca.do(http.MethodDelete, "/api/v1/runs/"+r.ID, nil, nil); code != http.StatusOK {
+		t.Errorf("delete: %d", code)
 	}
 }

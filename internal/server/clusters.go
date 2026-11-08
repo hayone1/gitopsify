@@ -11,6 +11,7 @@ import (
 
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/kube"
+	"github.com/hayone1/gitopsify/pkg/match"
 )
 
 // clusterInfo is a cluster as the API lists it.
@@ -81,12 +82,25 @@ func (s *Server) access(c *config.ServerCluster, u *User) (config.Access, error)
 		a.Impersonate = c.ImpersonateUserPrefix + u.Username
 		a.ImpersonateGroups = []string{"system:authenticated"}
 		for _, g := range u.Groups {
-			if !strings.HasPrefix(g, "system:") {
+			if impersonable(c, g) {
 				a.ImpersonateGroups = append(a.ImpersonateGroups, c.ImpersonateGroupPrefix+g)
 			}
 		}
 	}
 	return a, nil
+}
+
+// impersonable reports whether a group of the signed-in person is passed
+// to the cluster. Groups Kubernetes and kubeadm bind to administrators
+// (system:masters, kubeadm:cluster-admins) never are, unprefixed.
+func impersonable(c *config.ServerCluster, g string) bool {
+	if strings.HasPrefix(g, "system:") {
+		return false
+	}
+	if len(c.ImpersonateGroups) > 0 && !match.Glob(c.ImpersonateGroups, g) {
+		return false
+	}
+	return c.ImpersonateGroupPrefix != "" || !strings.HasPrefix(g, "kubeadm:")
 }
 
 func (s *Server) connect(name string, u *User) (*kube.Client, error) {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,9 @@ type Run struct {
 	Publishes  []Publish       `json:"publishes,omitempty"`
 	// From is the scan a migration was made from.
 	From string `json:"from,omitempty"`
+	// OutputVersion counts changes of the stored output (pushes commit
+	// to it); replicas holding an older copy unpack it again.
+	OutputVersion int `json:"outputVersion,omitempty"`
 }
 
 // RunRepo is a Git repository and branch.
@@ -103,7 +107,13 @@ const (
 	// staleAfter is how long a run may go without a heartbeat before
 	// another replica fails it (its pod died).
 	staleAfter = 2 * time.Minute
+	// cacheAge is how long a replica keeps an unused copy of another
+	// run's output (shared stores; it's unpacked again when needed).
+	cacheAge = time.Hour
 )
+
+// errPushing is returned while a run's output is being pushed.
+var errPushing = errors.New("this run is being pushed; try again when the push is done")
 
 // runs works on runs and keeps them in the store. Runs this process works
 // on live in memory too (their cancel function, live subscribers); others
@@ -136,6 +146,11 @@ type runState struct {
 	lines  []LogLine
 	subs   map[chan runEvent]struct{}
 	cancel context.CancelFunc
+	// lost is set when the run is no longer this replica's: deleted, or
+	// failed by another replica that thought it abandoned.
+	lost bool
+	// interrupted is set when the server stopped it (a restart or update).
+	interrupted bool
 }
 
 func newRuns(st store, dir string, concurrency int, timeout, retention time.Duration, log *slog.Logger, m *metrics) (*runs, error) {
@@ -146,7 +161,7 @@ func newRuns(st store, dir string, concurrency int, timeout, retention time.Dura
 	rs := &runs{store: st, dir: dir, owner: firstNonEmpty(host, "gitopsify") + "-" + randomString(4), timeout: timeout,
 		retention: retention, sem: make(chan struct{}, concurrency), log: log, metrics: m, local: map[string]*runState{},
 		stop: make(chan struct{})}
-	rs.reap(time.Now().Add(-staleAfter))
+	rs.reap()
 	go rs.loop()
 	return rs, nil
 }
@@ -156,27 +171,38 @@ func bg() (context.Context, context.CancelFunc) {
 }
 
 // reap fails unfinished runs nobody works on any more: with one replica,
-// every one the process doesn't know; with a shared store, those without a
-// recent heartbeat.
-func (rs *runs) reap(before time.Time) {
+// those of the process before a restart; with a shared store, those of
+// other replicas without a recent heartbeat.
+func (rs *runs) reap() {
 	ctx, cancel := bg()
 	defer cancel()
-	stale, err := rs.store.staleRuns(ctx, before)
+	reaped, err := rs.store.reapRuns(ctx, rs.owner, staleAfter, func(r *Run) {
+		now := time.Now().UTC()
+		r.Status, r.Error, r.FinishedAt = StatusFailed, "the server working on it stopped", &now
+	})
 	if err != nil {
 		rs.log.Warn("looking for abandoned runs", "error", err)
 		return
 	}
-	for _, r := range stale {
-		rs.mu.Lock()
-		_, mine := rs.local[r.ID]
-		rs.mu.Unlock()
-		if mine {
-			continue
+	for _, r := range reaped {
+		rs.log.Warn("failed an abandoned run", "run", r.ID)
+		if rs.finished != nil {
+			rs.finished(r)
 		}
-		now := time.Now().UTC()
-		r.Status, r.Error, r.FinishedAt = StatusFailed, "the server working on it stopped", &now
-		if err := rs.store.saveRun(ctx, &r, ""); err != nil {
-			rs.log.Warn("failing an abandoned run", "run", r.ID, "error", err)
+	}
+}
+
+// lose stops a run that is no longer this replica's.
+func (rs *runs) lose(st *runState) {
+	st.mu.Lock()
+	first := !st.lost
+	st.lost = true
+	cancel, id := st.cancel, st.run.ID
+	st.mu.Unlock()
+	if first {
+		rs.log.Warn("a run was deleted or taken over while working; stopping it", "run", id)
+		if cancel != nil {
+			cancel()
 		}
 	}
 }
@@ -207,17 +233,57 @@ func (rs *runs) loop() {
 				}
 			}
 			if time.Since(beat) > heartbeatTick {
-				if err := rs.store.heartbeat(ctx, ids); err != nil {
+				lost, err := rs.store.heartbeat(ctx, rs.owner, ids)
+				if err != nil {
 					rs.log.Warn("run heartbeat", "error", err)
+				}
+				for _, id := range lost {
+					rs.mu.Lock()
+					st, ok := rs.local[id]
+					rs.mu.Unlock()
+					if ok {
+						rs.lose(st)
+					}
 				}
 				beat = time.Now()
 			}
 		}
 		cancel()
 		if rs.store.shared() && time.Since(reaped) > time.Minute {
-			rs.reap(time.Now().Add(-staleAfter))
+			rs.reap()
+			rs.evict()
 			reaped = time.Now()
 		}
+	}
+}
+
+// evict removes copies of other runs' outputs unused for cacheAge (shared
+// stores: the store has them; deleted runs' copies go too).
+func (rs *runs) evict() {
+	entries, err := os.ReadDir(rs.dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.Contains(e.Name(), ".") {
+			continue
+		}
+		rs.mu.Lock()
+		_, live := rs.local[e.Name()]
+		rs.mu.Unlock()
+		if live {
+			continue
+		}
+		info, err := os.Stat(rs.versionFile(e.Name()))
+		if err != nil {
+			info, err = e.Info()
+		}
+		if err != nil || time.Since(info.ModTime()) < cacheAge {
+			continue
+		}
+		rs.unpack.Lock()
+		_ = os.RemoveAll(rs.runDir(e.Name()))
+		rs.unpack.Unlock()
 	}
 }
 
@@ -225,6 +291,14 @@ func (rs *runs) runDir(id string) string { return filepath.Join(rs.dir, id) }
 
 // outputDir holds a run's generated files on this replica.
 func (rs *runs) outputDir(id string) string { return filepath.Join(rs.dir, id, "output") }
+
+// versionFile holds the version of this replica's copy of the output, and
+// its time when it was last used.
+func (rs *runs) versionFile(id string) string { return filepath.Join(rs.dir, id, "output.version") }
+
+func (rs *runs) markOutput(id string, version int) {
+	_ = os.WriteFile(rs.versionFile(id), []byte(strconv.Itoa(version)), 0o600)
+}
 
 func newRunID() string {
 	return time.Now().UTC().Format("20060102-150405") + "-" + strings.ToLower(randomString(4)[:5])
@@ -279,7 +353,9 @@ func (rs *runs) update(st *runState, fn func(*Run)) {
 	st.mu.Unlock()
 	ctx, cancel := bg()
 	defer cancel()
-	if err := rs.store.saveRun(ctx, &r, rs.owner); err != nil {
+	if err := rs.store.updateRun(ctx, &r, rs.owner); errors.Is(err, errFenced) {
+		rs.lose(st)
+	} else if err != nil {
 		rs.log.Error("saving run", "run", r.ID, "error", err)
 	}
 }
@@ -295,12 +371,13 @@ func (rs *runs) start(r Run, work func(context.Context, *runContext) error) (*Ru
 	rs.mu.Unlock()
 	r.ID = newRunID()
 	r.Status = StatusQueued
-	r.CreatedAt = time.Now().UTC()
+	// PostgreSQL keeps microseconds: paging by createdAt needs the same.
+	r.CreatedAt = time.Now().UTC().Truncate(time.Microsecond)
 	if err := os.MkdirAll(rs.runDir(r.ID), 0o700); err != nil {
 		return nil, err
 	}
 	sctx, scancel := bg()
-	err := rs.store.saveRun(sctx, &r, rs.owner)
+	err := rs.store.createRun(sctx, &r, rs.owner)
 	scancel()
 	if err != nil {
 		return nil, err
@@ -346,8 +423,13 @@ func (rs *runs) finish(rc *runContext, err error) {
 	now := time.Now().UTC()
 	status := StatusSucceeded
 	msg := ""
+	rc.st.mu.Lock()
+	interrupted := rc.st.interrupted
+	rc.st.mu.Unlock()
 	switch {
 	case err == nil:
+	case interrupted && errors.Is(err, context.Canceled):
+		status, msg = StatusFailed, "interrupted: the server stopped (a restart or an update); start it again"
 	case errors.Is(err, context.Canceled):
 		status, msg = StatusCanceled, "canceled"
 	case errors.Is(err, context.DeadlineExceeded):
@@ -359,24 +441,35 @@ func (rs *runs) finish(rc *runContext, err error) {
 		rc.logf("error", "%s", msg)
 	}
 	id := rc.ID()
-	if status == StatusSucceeded {
+	st := rc.st
+	st.mu.Lock()
+	lost := st.lost
+	st.mu.Unlock()
+	if status == StatusSucceeded && !lost {
 		if err := rs.saveOutput(id); err != nil {
 			status, msg = StatusFailed, "storing the output: "+err.Error()
 			rc.logf("error", "%s", msg)
 		}
 	}
-	rc.update(func(r *Run) { r.Status, r.Error, r.FinishedAt = status, msg, &now })
-	st := rc.st
+	if !lost {
+		rc.update(func(r *Run) { r.Status, r.Error, r.FinishedAt = status, msg, &now })
+	}
 	st.mu.Lock()
 	for ch := range st.subs {
 		close(ch)
 	}
 	st.subs = map[chan runEvent]struct{}{}
 	r := st.run
+	lost = st.lost
 	st.mu.Unlock()
 	rs.mu.Lock()
 	delete(rs.local, id)
 	rs.mu.Unlock()
+	if lost {
+		// Whoever failed or deleted it has the last word (and notified).
+		rs.metrics.runFinished(r.Type, StatusFailed)
+		return
+	}
 	rs.metrics.runFinished(r.Type, status)
 	if rs.finished != nil {
 		rs.finished(r)
@@ -403,33 +496,54 @@ func (rs *runs) saveOutput(id string) error {
 }
 
 // ensureOutput returns the directory of a run's output on this replica,
-// unpacking it from a shared store when another replica wrote it.
-func (rs *runs) ensureOutput(ctx context.Context, id string) (string, error) {
+// unpacking it from a shared store when another replica wrote it, or
+// pushed it since this replica's copy (version is the run's
+// OutputVersion).
+func (rs *runs) ensureOutput(ctx context.Context, id string, version int) (string, error) {
 	dir := rs.outputDir(id)
-	if _, err := os.Stat(dir); err == nil {
-		return dir, nil
-	}
 	if !rs.store.shared() {
-		return "", errNotFound
+		if _, err := os.Stat(dir); err != nil {
+			return "", errNotFound
+		}
+		return dir, nil
 	}
 	rs.unpack.Lock()
 	defer rs.unpack.Unlock()
 	if _, err := os.Stat(dir); err == nil {
-		return dir, nil
+		// No version file: the copy the run itself wrote (version 0).
+		have := 0
+		if b, err := os.ReadFile(rs.versionFile(id)); err == nil {
+			have, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		if have >= version {
+			now := time.Now()
+			if os.Chtimes(rs.versionFile(id), now, now) != nil {
+				rs.markOutput(id, have)
+			}
+			return dir, nil
+		}
 	}
 	data, err := rs.store.getBlob(ctx, id, outputBlob)
 	if err != nil {
 		return "", err
 	}
-	tmp := dir + ".unpack"
+	tmp, old := dir+".unpack", dir+".old"
 	_ = os.RemoveAll(tmp)
 	if err := unpackDir(data, tmp); err != nil {
 		_ = os.RemoveAll(tmp)
 		return "", err
 	}
+	_ = os.RemoveAll(old)
+	if _, err := os.Stat(dir); err == nil {
+		if err := os.Rename(dir, old); err != nil {
+			return "", err
+		}
+	}
 	if err := os.Rename(tmp, dir); err != nil {
 		return "", err
 	}
+	_ = os.RemoveAll(old)
+	rs.markOutput(id, version)
 	return dir, nil
 }
 
@@ -454,22 +568,33 @@ func (rs *runs) get(id string) (*Run, bool) {
 	return r, true
 }
 
-// list returns runs newest first, keeping those keep accepts.
-func (rs *runs) list(keep func(*Run) bool) []Run {
+// list returns up to q.Limit runs q selects and keep accepts, newest
+// first, reading the store a page at a time.
+func (rs *runs) list(q runQuery, keep func(*Run) bool) []Run {
 	ctx, cancel := bg()
 	defer cancel()
-	all, err := rs.store.listRuns(ctx)
-	if err != nil {
-		rs.log.Error("listing runs", "error", err)
-		return nil
-	}
+	want := q.Limit
+	q.Limit = max(2*want, 200)
 	var out []Run
-	for i := range all {
-		r := all[i]
-		if keep(&r) {
-			r.Spec = nil // lists stay small; the run itself has it
-			out = append(out, r)
+	for range 50 {
+		page, err := rs.store.listRuns(ctx, q)
+		if err != nil {
+			rs.log.Error("listing runs", "error", err)
+			return out
 		}
+		for i := range page {
+			if keep(&page[i]) {
+				page[i].Spec = nil // lists stay small; the run itself has it
+				out = append(out, page[i])
+				if len(out) == want {
+					return out
+				}
+			}
+		}
+		if len(page) < q.Limit {
+			break
+		}
+		q.Before = page[len(page)-1].CreatedAt
 	}
 	return out
 }
@@ -505,7 +630,7 @@ func (rs *runs) cancel(id string) bool {
 	return rs.store.requestCancel(ctx, id) == nil
 }
 
-// remove deletes a finished run and its files.
+// remove deletes a finished run and its files (not while it's pushed).
 func (rs *runs) remove(id string) error {
 	r, ok := rs.get(id)
 	if !ok {
@@ -516,9 +641,19 @@ func (rs *runs) remove(id string) error {
 	}
 	ctx, cancel := bg()
 	defer cancel()
+	unlock, ok, err := rs.store.tryLock(ctx, "run:"+id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errPushing
+	}
+	defer unlock()
 	if err := rs.store.deleteRun(ctx, id); err != nil {
 		return err
 	}
+	rs.unpack.Lock()
+	defer rs.unpack.Unlock()
 	return os.RemoveAll(rs.runDir(id))
 }
 
@@ -631,11 +766,16 @@ func (rs *runs) getBlob(id, name string) ([]byte, error) {
 
 // prune removes finished runs older than the retention.
 func (rs *runs) prune() {
-	cutoff := time.Now().Add(-rs.retention)
-	for _, r := range rs.list(func(r *Run) bool { return r.finished() && r.FinishedAt != nil && r.FinishedAt.Before(cutoff) }) {
-		if err := rs.remove(r.ID); err != nil {
-			rs.log.Warn("pruning run", "run", r.ID, "error", err)
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	ids, err := rs.store.pruneRuns(ctx, time.Now().Add(-rs.retention))
+	if err != nil {
+		rs.log.Warn("pruning runs", "error", err)
+	}
+	rs.unpack.Lock()
+	defer rs.unpack.Unlock()
+	for _, id := range ids {
+		_ = os.RemoveAll(rs.runDir(id))
 	}
 }
 
@@ -649,6 +789,7 @@ func (rs *runs) shutdown(ctx context.Context) {
 	for _, st := range rs.local {
 		st.mu.Lock()
 		if st.cancel != nil && !st.run.finished() {
+			st.interrupted = true
 			st.cancel()
 		}
 		st.mu.Unlock()

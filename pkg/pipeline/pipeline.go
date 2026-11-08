@@ -52,7 +52,14 @@ type Options struct {
 	Log func(format string, args ...any)
 	// Version of gitopsify, written into generated files.
 	Version string
+	// RedactValues replaces Helm values that look like credentials with
+	// RedactedValue instead of warning about them (the server does, unless
+	// an admin allows Secret values).
+	RedactValues bool
 }
+
+// RedactedValue replaces Helm values RedactValues removes.
+const RedactedValue = "<redacted by gitopsify: set from a Secret>"
 
 // Result is the outcome of a run.
 type Result struct {
@@ -389,14 +396,21 @@ func resolveCharts(ctx context.Context, inv *model.Inventory, cfg *config.Config
 		for _, r := range refs {
 			rel.Warnings = append(rel.Warnings, fmt.Sprintf("%s differs from the chart's manifest at %s; the GitOps tool will reset it to the chart's value", r, strings.Join(drift[r], ", ")))
 		}
-		for _, p := range credentialPaths(rel.Values, "") {
+		if opts.RedactValues {
+			if ps := credentialPaths(rel.Values, "", true); len(ps) > 0 {
+				rel.Warnings = append(rel.Warnings, fmt.Sprintf("values %s look like credentials and were redacted; set them from a Secret (Flux valuesFrom, an encrypted values file) before syncing", strings.Join(ps, ", ")))
+			}
+		}
+		for _, p := range credentialPaths(rel.Values, "", false) {
 			rel.Warnings = append(rel.Warnings, fmt.Sprintf("values key %s looks like a credential and will be committed to Git; move it to a Secret (valuesFrom) or encrypt it", p))
 		}
 	}
 	return nil
 }
 
-func credentialPaths(v any, prefix string) []string {
+// credentialPaths lists the values that look like credentials, replacing
+// them with RedactedValue when redact is set.
+func credentialPaths(v any, prefix string, redact bool) []string {
 	var out []string
 	switch t := v.(type) {
 	case map[string]any:
@@ -410,15 +424,18 @@ func credentialPaths(v any, prefix string) []string {
 			if prefix != "" {
 				p = prefix + "." + k
 			}
-			if s, ok := t[k].(string); ok && s != "" && credentialKey.MatchString(k) && !strings.Contains(strings.ToLower(k), "secretname") && !strings.HasSuffix(strings.ToLower(k), "ref") {
+			if s, ok := t[k].(string); ok && s != "" && s != RedactedValue && credentialKey.MatchString(k) && !strings.Contains(strings.ToLower(k), "secretname") && !strings.HasSuffix(strings.ToLower(k), "ref") && !strings.HasPrefix(strings.ToLower(k), "existing") {
 				out = append(out, p)
+				if redact {
+					t[k] = RedactedValue
+				}
 				continue
 			}
-			out = append(out, credentialPaths(t[k], p)...)
+			out = append(out, credentialPaths(t[k], p, redact)...)
 		}
 	case []any:
 		for i, c := range t {
-			out = append(out, credentialPaths(c, fmt.Sprintf("%s[%d]", prefix, i))...)
+			out = append(out, credentialPaths(c, fmt.Sprintf("%s[%d]", prefix, i), redact)...)
 		}
 	}
 	return out

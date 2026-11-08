@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -296,6 +297,22 @@ func TestCancelAndRestart(t *testing.T) {
 		t.Errorf("after restart: %+v", got)
 	}
 	e.s.runs.cancel(r2.ID)
+	waitRun(t, e.s, r2.ID)
+
+	// Stopping the server fails its runs as interrupted, not canceled.
+	r3 := fakeMigration(t, e.s, "dev", make(chan struct{}))
+	for time.Now().Before(deadline.Add(10 * time.Second)) {
+		if got, _ := e.s.runs.get(r3.ID); got.Status == StatusRunning {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	e.s.runs.shutdown(ctx)
+	if got, _ := e.s.runs.get(r3.ID); got == nil || got.Status != StatusFailed || !strings.Contains(got.Error, "interrupted") {
+		t.Errorf("after stopping: %+v", got)
+	}
 }
 
 func TestHeadersAndUI(t *testing.T) {
@@ -371,7 +388,8 @@ func TestNotifications(t *testing.T) {
 		got <- body
 	}))
 	defer hook.Close()
-	t.Setenv("HOOK_URL", hook.URL)
+	// From a Kubernetes Secret made from a file: a trailing newline.
+	t.Setenv("HOOK_URL", hook.URL+"\n")
 	e := newTestEnv(t, func(c *config.Server) {
 		c.Spec.Notifications = []config.ServerNotification{
 			{Name: "slack", URL: config.SettingValue{Env: "HOOK_URL"}, Format: "slack"},
@@ -393,5 +411,18 @@ func TestNotifications(t *testing.T) {
 	case body := <-got:
 		t.Errorf("a hook for other events posted: %v", body)
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestNotificationURLs(t *testing.T) {
+	for _, bad := range []string{"not a url", "ftp://hooks.example/x", "https://"} {
+		cfg := &config.Server{Spec: config.ServerSpec{ExternalURL: "http://127.0.0.1:1", DataDir: t.TempDir(),
+			Auth:          config.ServerAuth{Mode: config.AuthLocal},
+			Notifications: []config.ServerNotification{{Name: "hook", URL: config.SettingValue{Value: bad}}}}}
+		cfg.Default()
+		_, err := New(context.Background(), Options{Config: cfg, Local: true, Version: "test", Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		if err == nil || strings.Contains(err.Error(), bad) {
+			t.Errorf("%q: %v", bad, err)
+		}
 	}
 }

@@ -123,7 +123,8 @@ func (s SettingValue) Resolve() (string, error) {
 		if !ok {
 			return "", fmt.Errorf("environment variable %s is not set", s.Env)
 		}
-		return v, nil
+		// Kubernetes Secrets made from files often end in a newline.
+		return strings.TrimSpace(v), nil
 	case s.File != "":
 		b, err := os.ReadFile(ExpandHome(s.File))
 		if err != nil {

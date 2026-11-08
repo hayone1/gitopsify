@@ -240,8 +240,24 @@ type ServerCluster struct {
 	// --oidc-groups-prefix do (for example "oidc:").
 	ImpersonateUserPrefix  string `json:"impersonateUserPrefix,omitempty"`
 	ImpersonateGroupPrefix string `json:"impersonateGroupPrefix,omitempty"`
+	// ImpersonateGroups are the groups impersonated (globs, matched before
+	// the prefix is added); empty impersonates all but system: and
+	// kubeadm: groups. Set it, or a prefix, when people can name their own
+	// groups in the identity provider.
+	ImpersonateGroups []string `json:"impersonateGroups,omitempty"`
+	// SealedSecrets is where the cluster's sealed-secrets controller runs
+	// (default kube-system/sealed-secrets-controller). Migrations sealing
+	// for this cluster use it; they can't name another controller unless
+	// spec.runs.allowSecretValues is set.
+	SealedSecrets *ServerSealedSecrets `json:"sealedSecrets,omitempty"`
 	// Token is a bearer token for the cluster, from env or file.
 	Token SettingValue `json:"token,omitzero"`
+}
+
+// ServerSealedSecrets is where a cluster's sealed-secrets controller runs.
+type ServerSealedSecrets struct {
+	ControllerNamespace string `json:"controllerNamespace,omitempty"`
+	ControllerName      string `json:"controllerName,omitempty"`
 }
 
 // ServerGit is how the server pushes to Git remotes.
@@ -292,8 +308,11 @@ type ServerRuns struct {
 	Timeout string `json:"timeout,omitempty"`
 	// Retention is how long finished runs are kept (default 720h).
 	Retention string `json:"retention,omitempty"`
-	// AllowSecretValues allows the local and plain Secret strategies, which
-	// store Secret values on the server and in its downloads.
+	// AllowSecretValues allows what can put Secret values in runs' output
+	// in clear: the local and plain Secret strategies, jsonPatch copy and
+	// move, a custom SOPS encryptedRegex, sealing for another controller
+	// or a wider scope than strict, and Helm values that look like
+	// credentials (otherwise redacted).
 	AllowSecretValues bool `json:"allowSecretValues,omitempty"`
 	// SOPSRecipients are the age, PGP or KMS recipients SOPS may encrypt
 	// to. A migration whose recipients aren't all listed is refused, unless

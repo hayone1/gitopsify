@@ -24,6 +24,7 @@ import (
 // and reports whether anything changed.
 func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform) (bool, error) {
 	before, _ := json.Marshal(u.Object)
+	secret := u.GetAPIVersion() == "v1" && u.GetKind() == "Secret"
 	for i, t := range ts {
 		ok, err := match.SelectorOrAll(t.Target, o, o.App)
 		if err != nil {
@@ -35,6 +36,11 @@ func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform
 		if err := apply(u, t); err != nil {
 			return false, fmt.Errorf("transform %d (%s) on %s: %w", i, t.Type, o.Ref, err)
 		}
+	}
+	// A Secret that became another kind would skip the secrets strategy,
+	// and its values would be written as they are.
+	if secret && (u.GetAPIVersion() != "v1" || u.GetKind() != "Secret") {
+		return false, fmt.Errorf("transforms change Secret %s into %s %s: a Secret must stay a Secret", o.Ref, u.GetAPIVersion(), u.GetKind())
 	}
 	after, _ := json.Marshal(u.Object)
 	return string(before) != string(after), nil
