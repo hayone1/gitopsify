@@ -114,8 +114,8 @@ func (s SettingValue) MarshalJSON() ([]byte, error) {
 // Literal reports whether the value is written in the file itself.
 func (s SettingValue) Literal() bool { return s.Env == "" && s.File == "" }
 
-// Resolve returns the value: from the environment, a file (trimmed), or as
-// written.
+// Resolve returns the value: from the environment or a file (both without
+// surrounding whitespace, such as a trailing newline), or as written.
 func (s SettingValue) Resolve() (string, error) {
 	switch {
 	case s.Env != "":

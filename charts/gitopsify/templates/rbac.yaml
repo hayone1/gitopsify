@@ -42,7 +42,7 @@ subjects:
     namespace: {{ .Release.Namespace }}
 {{- end }}
 {{- with .Values.inCluster.sealedSecrets }}
-{{- if and $.Values.rbac.create $.Values.inCluster.enabled .controllerNamespace (not $.Values.inCluster.impersonate) }}
+{{- if and $.Values.rbac.create $.Values.inCluster.enabled .controllerNamespace .controllerName (not $.Values.inCluster.impersonate) }}
 ---
 # Sealing for this cluster fetches the sealed-secrets controller's public
 # certificate through the API server's service proxy: only that service.

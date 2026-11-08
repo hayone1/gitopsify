@@ -7,13 +7,18 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,8 +64,9 @@ func TestStores(t *testing.T) {
 	ctx := context.Background()
 	for name, st := range testStores(t) {
 		t.Run(name, func(t *testing.T) {
-			old := Run{ID: "20260101-000000-aaaaa", Type: RunScan, Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour).UTC(), Spec: []byte(`{"a":1}`)}
-			now := time.Now().UTC()
+			// Runs are created with microseconds, as PostgreSQL keeps them.
+			old := Run{ID: "20260101-000000-aaaaa", Type: RunScan, Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond), Spec: []byte(`{"a":1}`)}
+			now := time.Now().UTC().Truncate(time.Microsecond)
 			done := Run{ID: "20260101-000001-bbbbb", Type: RunMigrate, Status: StatusSucceeded, CreatedAt: now, FinishedAt: &now}
 			for _, r := range []Run{old, done} {
 				if err := os.MkdirAll(filepath.Join(fileRunsDir(st), r.ID), 0o700); err != nil && fileRunsDir(st) != "" {
@@ -86,6 +92,31 @@ func TestStores(t *testing.T) {
 			}
 			if l, _ := st.listRuns(ctx, runQuery{Limit: 1}); len(l) != 1 {
 				t.Errorf("list limit: %+v", l)
+			}
+			// Paging past runs created at the same time.
+			same := []Run{{ID: "20260101-000002-ccccc", Type: RunScan, Status: StatusSucceeded, CreatedAt: done.CreatedAt, FinishedAt: &now},
+				{ID: "20260101-000002-ddddd", Type: RunScan, Status: StatusSucceeded, CreatedAt: done.CreatedAt, FinishedAt: &now}}
+			for _, r := range same {
+				_ = os.MkdirAll(filepath.Join(fileRunsDir(st), r.ID), 0o700)
+				if err := st.createRun(ctx, &r, "me"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var seen []string
+			q := runQuery{Limit: 1}
+			for range 10 {
+				page, _ := st.listRuns(ctx, q)
+				if len(page) == 0 {
+					break
+				}
+				seen = append(seen, page[0].ID)
+				q.Before, q.BeforeID = page[0].CreatedAt, page[0].ID
+			}
+			if strings.Join(seen, " ") != same[1].ID+" "+same[0].ID+" "+done.ID+" "+old.ID {
+				t.Errorf("pages: %v", seen)
+			}
+			for _, r := range same {
+				_ = st.deleteRun(ctx, r.ID)
 			}
 
 			// Only the owner updates a run, and only until it finishes.
@@ -114,18 +145,26 @@ func TestStores(t *testing.T) {
 			if _, err := st.addPublishes(ctx, "gone", []Publish{{Remote: "a"}}, false); err != errNotFound {
 				t.Errorf("publishes of a missing run: %v", err)
 			}
-			unlock, ok, err := st.tryLock(ctx, "run:"+done.ID)
+			unlock, ok, err := st.lockRun(ctx, done.ID)
 			if err != nil || !ok {
 				t.Fatalf("lock: %v %v", ok, err)
 			}
-			if _, ok2, _ := st.tryLock(ctx, "run:"+done.ID); ok2 {
+			if _, ok2, _ := st.lockRun(ctx, done.ID); ok2 {
 				t.Error("a held lock was taken again")
 			}
+			// Pruning leaves a locked run alone.
+			if ids, _ := st.pruneRuns(ctx, time.Now().Add(time.Hour)); len(ids) != 0 {
+				t.Errorf("pruned a locked run: %v", ids)
+			}
 			unlock()
-			if unlock2, ok2, _ := st.tryLock(ctx, "run:"+done.ID); !ok2 {
+			unlock() // twice is fine
+			if unlock2, ok2, _ := st.lockRun(ctx, done.ID); !ok2 {
 				t.Error("a released lock couldn't be taken")
 			} else {
 				unlock2()
+			}
+			if _, _, err := st.lockRun(ctx, "gone"); err != errNotFound {
+				t.Errorf("lock of a missing run: %v", err)
 			}
 			for i, m := range []string{"one", "two", "three"} {
 				if err := st.appendLog(ctx, old.ID, i, LogLine{Time: now, Level: "info", Message: m}); err != nil {
@@ -154,15 +193,15 @@ func TestStores(t *testing.T) {
 				now := time.Now().UTC()
 				r.Status, r.FinishedAt = StatusFailed, &now
 			}
-			if reaped, _ := st.reapRuns(ctx, "me", 0, fail); len(reaped) != 0 {
-				t.Errorf("reaped its own: %+v", reaped)
+			if reaped, _ := st.reapRuns(ctx, []string{old.ID}, 0, fail); len(reaped) != 0 {
+				t.Errorf("reaped a run the replica works on: %+v", reaped)
 			}
-			if st.shared() { // one replica: the other owner's runs are a previous process's
-				if reaped, _ := st.reapRuns(ctx, "other", time.Hour, fail); len(reaped) != 0 {
+			if st.shared() { // one replica: other runs are a previous process's
+				if reaped, _ := st.reapRuns(ctx, nil, time.Hour, fail); len(reaped) != 0 {
 					t.Errorf("reaped a fresh run: %+v", reaped)
 				}
 			}
-			if reaped, err := st.reapRuns(ctx, "other", 0, fail); err != nil || len(reaped) != 1 || reaped[0].ID != old.ID {
+			if reaped, err := st.reapRuns(ctx, nil, 0, fail); err != nil || len(reaped) != 1 || reaped[0].ID != old.ID {
 				t.Errorf("reap: %+v %v", reaped, err)
 			}
 			if r, _ := st.getRun(ctx, old.ID); r == nil || r.Status != StatusFailed {
@@ -171,7 +210,7 @@ func TestStores(t *testing.T) {
 			if err := st.updateRun(ctx, &upd, "me"); err != errFenced {
 				t.Errorf("the owner updated a reaped run: %v", err)
 			}
-			if reaped, _ := st.reapRuns(ctx, "other", 0, fail); len(reaped) != 0 {
+			if reaped, _ := st.reapRuns(ctx, nil, 0, fail); len(reaped) != 0 {
 				t.Errorf("reaped twice: %+v", reaped)
 			}
 			if err := st.deleteRun(ctx, old.ID); err != nil {
@@ -245,6 +284,38 @@ func TestPackDir(t *testing.T) {
 	for _, p := range []string{".secrets", "envs/prod/x.secrets.auto.tfvars"} {
 		if _, err := os.Stat(filepath.Join(dst, p)); err == nil {
 			t.Errorf("%s was archived", p)
+		}
+	}
+
+	// In a repository, secret-named files it tracks are kept (a push from
+	// the archive would delete them otherwise); ignored ones aren't.
+	if _, err := exec.LookPath("git"); err != nil {
+		return
+	}
+	repo := t.TempDir()
+	for p, c := range map[string]string{"apps/shop/values.secrets.yaml": "sops: {}", ".secrets/kept/x.yaml": "a: 1",
+		".gitignore": ".secrets/local/\n*.secrets.auto.tfvars\n", ".secrets/local/db.yaml": "password: x", "x.secrets.auto.tfvars": "t = 1"} {
+		_ = os.MkdirAll(filepath.Dir(filepath.Join(repo, p)), 0o755)
+		_ = os.WriteFile(filepath.Join(repo, p), []byte(c), 0o644)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	data, err = packDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst = filepath.Join(t.TempDir(), "repo")
+	if err := unpackDir(data, dst); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]bool{"apps/shop/values.secrets.yaml": true, ".secrets/kept/x.yaml": true, ".secrets/local/db.yaml": false, "x.secrets.auto.tfvars": false} {
+		if _, err := os.Stat(filepath.Join(dst, p)); (err == nil) != want {
+			t.Errorf("%s archived: %v, want %v", p, err == nil, want)
 		}
 	}
 	// An archive that escapes the directory is refused.
@@ -396,7 +467,7 @@ func TestReplicaPushes(t *testing.T) {
 		t.Errorf("remote history: %s", out)
 	}
 	// Deleting waits for a push, on any replica.
-	unlock, ok, err := b.s.store.tryLock(context.Background(), "run:"+r.ID)
+	unlock, ok, err := b.s.store.lockRun(context.Background(), r.ID)
 	if err != nil || !ok {
 		t.Fatal(ok, err)
 	}
@@ -406,5 +477,141 @@ func TestReplicaPushes(t *testing.T) {
 	unlock()
 	if code := ca.do(http.MethodDelete, "/api/v1/runs/"+r.ID, nil, nil); code != http.StatusOK {
 		t.Errorf("delete: %d", code)
+	}
+}
+
+// sharedFiles is a file store that says it's shared, to test what replicas
+// do without PostgreSQL.
+type sharedFiles struct{ *fileStore }
+
+func (sharedFiles) shared() bool { return true }
+
+func TestReplicaCopies(t *testing.T) {
+	fs, err := newFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := sharedFiles{fs}
+	var notified []string
+	var nmu sync.Mutex
+	rs, err := newRuns(st, t.TempDir(), 2, time.Minute, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)), nil,
+		func(r Run) { nmu.Lock(); notified = append(notified, r.ID); nmu.Unlock() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rs.shutdown(context.Background())
+	write := func(dir, content string) {
+		_ = os.MkdirAll(dir, 0o755)
+		_ = os.WriteFile(filepath.Join(dir, "a.yaml"), []byte(content), 0o644)
+	}
+	r, err := rs.start(Run{Type: RunMigrate, Name: "x"}, func(ctx context.Context, rc *runContext) error {
+		write(rs.outputDir(rc.ID()), "v0")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for !func() bool { got, _ := rs.get(r.ID); return got.finished() }() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	ctx := context.Background()
+	read := func() string {
+		dir, err := rs.ensureOutput(ctx, r.ID, func() int { got, _ := rs.get(r.ID); return got.OutputVersion }())
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(filepath.Join(dir, "a.yaml"))
+		return string(b)
+	}
+	if got := read(); got != "v0" {
+		t.Fatalf("own copy: %q", got)
+	}
+	// Another replica pushed: a newer archive and version.
+	other := t.TempDir()
+	write(other, "v1")
+	data, _ := packDir(other)
+	if err := st.putBlob(ctx, r.ID, outputBlob, data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.addPublishes(ctx, r.ID, []Publish{{Remote: "x"}}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != "v1" {
+		t.Errorf("after another replica's push: %q", got)
+	}
+
+	// Eviction: not while the run is locked; then idle copies go.
+	unlock, _, _ := st.lockRun(ctx, r.ID)
+	rs.evict(0)
+	if _, err := os.Stat(rs.runDir(r.ID)); err != nil {
+		t.Error("evicted while locked")
+	}
+	unlock()
+	rs.evict(time.Hour)
+	if _, err := os.Stat(rs.runDir(r.ID)); err != nil {
+		t.Error("evicted a copy in use")
+	}
+	rs.evict(0)
+	if _, err := os.Stat(rs.runDir(r.ID)); err == nil {
+		t.Error("an idle copy stayed")
+	}
+	if got := read(); got != "v1" {
+		t.Errorf("unpacked again: %q", got)
+	}
+
+	// A run deleted while working stops, and isn't brought back or
+	// notified.
+	block := make(chan struct{})
+	r2, _ := rs.start(Run{Type: RunScan, Name: "y"}, func(ctx context.Context, rc *runContext) error {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return nil
+	})
+	for !func() bool { got, _ := rs.get(r2.ID); return got.Status == StatusRunning }() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := st.deleteRun(ctx, r2.ID); err != nil {
+		t.Fatal(err)
+	}
+	rs.beat(ctx, []string{r2.ID})
+	for start := time.Now(); time.Since(start) < 5*time.Second; time.Sleep(10 * time.Millisecond) {
+		rs.mu.Lock()
+		_, working := rs.local[r2.ID]
+		rs.mu.Unlock()
+		if !working {
+			break
+		}
+	}
+	if _, err := st.getRun(ctx, r2.ID); err != errNotFound {
+		t.Errorf("a deleted run came back: %v", err)
+	}
+	nmu.Lock()
+	defer nmu.Unlock()
+	if len(notified) != 1 || notified[0] != r.ID {
+		t.Errorf("notified: %v", notified)
+	}
+}
+
+func TestProviderEnv(t *testing.T) {
+	env := []string{"PATH=/bin", "HOME=/tmp", "GITOPSIFY_SESSION_KEY=k", "DATABASE_URL=postgres://u:p@h", "AWS_ROLE_ARN=arn",
+		"AWS_WEB_IDENTITY_TOKEN_FILE=/t", "GITHUB_TOKEN=x", "LC_ALL=C", "KUBERNETES_SERVICE_HOST=10.0.0.1"}
+	got := providerEnv(env, []string{"AWS_*", "GITHUB_*"}, []string{"DATABASE_URL", "GITHUB_TOKEN"})
+	want := []string{"PATH=/bin", "HOME=/tmp", "AWS_ROLE_ARN=arn", "AWS_WEB_IDENTITY_TOKEN_FILE=/t", "LC_ALL=C", "KUBERNETES_SERVICE_HOST=10.0.0.1"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("env %v, want %v", got, want)
+	}
+	if e := providerEnv(nil, nil, nil); e == nil {
+		t.Error("an empty environment is nil (it would pass the server's)")
+	}
+	cfg := config.ServerSpec{Auth: config.ServerAuth{SessionKey: config.SettingValue{Env: "SK"}, OIDC: &config.ServerOIDC{ClientSecret: config.SettingValue{Env: "CS"}}},
+		Git:   config.ServerGit{Credentials: []config.GitCredential{{Host: "h", Token: config.SettingValue{Env: "GT"}}}},
+		Tools: []config.ServerTool{{Name: "g", Settings: map[string]config.SettingValue{"auth": {Env: "GA"}, "url": {Value: "u"}}}}}
+	envs := settingEnvs(reflect.ValueOf(&cfg))
+	sort.Strings(envs)
+	if strings.Join(envs, ",") != "CS,GA,GT,SK" {
+		t.Errorf("setting envs: %v", envs)
 	}
 }

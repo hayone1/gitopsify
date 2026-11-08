@@ -5,6 +5,7 @@ package pipeline
 import (
 	"context"
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -52,13 +53,14 @@ type Options struct {
 	Log func(format string, args ...any)
 	// Version of gitopsify, written into generated files.
 	Version string
-	// RedactValues replaces Helm values that look like credentials with
-	// RedactedValue instead of warning about them (the server does, unless
-	// an admin allows Secret values).
-	RedactValues bool
+	// ProtectSecrets keeps Secret values from being learnt from the output
+	// (the server sets it unless an admin allows Secret values): Secrets
+	// written encrypted are Protected from transforms, and Helm values
+	// that look like credentials are replaced with RedactedValue.
+	ProtectSecrets bool
 }
 
-// RedactedValue replaces Helm values RedactValues removes.
+// RedactedValue replaces Helm values ProtectSecrets removes.
 const RedactedValue = "<redacted by gitopsify: set from a Secret>"
 
 // Result is the outcome of a run.
@@ -119,6 +121,16 @@ func Scan(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	ExcludeApps(inv, cfg.Scope.ExcludeApps)
+	if opts.ProtectSecrets {
+		for _, o := range inv.Objects {
+			if o.IsSecret() {
+				switch secrets.StrategyFor(cfg, o.Ref.Namespace, o.Ref.Name) {
+				case config.SecretsSealedSecrets, config.SecretsSOPS, config.SecretsPlain, config.SecretsLocal:
+					o.Protected = true
+				}
+			}
+		}
+	}
 	if err := applyGlobalTransforms(inv, cfg); err != nil {
 		return nil, err
 	}
@@ -396,9 +408,15 @@ func resolveCharts(ctx context.Context, inv *model.Inventory, cfg *config.Config
 		for _, r := range refs {
 			rel.Warnings = append(rel.Warnings, fmt.Sprintf("%s differs from the chart's manifest at %s; the GitOps tool will reset it to the chart's value", r, strings.Join(drift[r], ", ")))
 		}
-		if opts.RedactValues {
-			if ps := credentialPaths(rel.Values, "", true); len(ps) > 0 {
+		if opts.ProtectSecrets {
+			if ps := redactCredentials(rel.Values, ""); len(ps) > 0 {
 				rel.Warnings = append(rel.Warnings, fmt.Sprintf("values %s look like credentials and were redacted; set them from a Secret (Flux valuesFrom, an encrypted values file) before syncing", strings.Join(ps, ", ")))
+			}
+			if rel.Mode == model.HelmModeVendor {
+				// The vendored chart's own values.yaml is written too.
+				if ps := redactCredentials(rel.ChartValues, ""); len(ps) > 0 {
+					rel.Warnings = append(rel.Warnings, fmt.Sprintf("the vendored chart's values %s look like credentials and were redacted", strings.Join(ps, ", ")))
+				}
 			}
 		}
 		for _, p := range credentialPaths(rel.Values, "", false) {
@@ -406,6 +424,107 @@ func resolveCharts(ctx context.Context, inv *model.Inventory, cfg *config.Config
 		}
 	}
 	return nil
+}
+
+// credentialName reports whether a values key names a credential (and not
+// a reference to one, such as existingSecret or passwordKey).
+func credentialName(k, parent string) bool {
+	l := strings.ToLower(k)
+	return credentialKey.MatchString(k) && !strings.Contains(l, "secretname") && !strings.HasSuffix(l, "ref") &&
+		!strings.HasPrefix(l, "existing") && !strings.HasSuffix(l, "passwordkey") && !strings.Contains(strings.ToLower(parent), "secretkeys")
+}
+
+// redactCredentials replaces values that look like credentials with
+// RedactedValue and returns their paths: strings and numbers under
+// credential keys (and the string leaves of maps and lists under them,
+// but references such as names and keys), and the value of name/value
+// pairs whose name is a credential (env lists).
+func redactCredentials(v any, prefix string) []string {
+	var out []string
+	join := func(k string) string {
+		if prefix == "" {
+			return k
+		}
+		return prefix + "." + k
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		if n, ok := t["name"].(string); ok && credentialName(n, "") && redactable(t["value"]) {
+			t["value"] = RedactedValue
+			out = append(out, join("value"))
+		}
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parent := prefix[strings.LastIndex(prefix, ".")+1:]
+		for _, k := range keys {
+			if credentialName(k, parent) {
+				if redactable(t[k]) {
+					t[k] = RedactedValue
+					out = append(out, join(k))
+					continue
+				}
+				out = append(out, redactLeaves(t[k], join(k))...)
+			}
+			out = append(out, redactCredentials(t[k], join(k))...)
+		}
+	case []any:
+		for i, c := range t {
+			out = append(out, redactCredentials(c, fmt.Sprintf("%s[%d]", prefix, i))...)
+		}
+	}
+	return out
+}
+
+// redactLeaves redacts the string values in a map or list under a
+// credential key, but those that name or point at something.
+func redactLeaves(v any, prefix string) []string {
+	var out []string
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			l := strings.ToLower(k)
+			if l == "create" || l == "enabled" || strings.HasSuffix(l, "name") || strings.HasSuffix(l, "ref") || strings.HasSuffix(l, "key") ||
+				strings.HasPrefix(l, "existing") || l == "annotations" || l == "labels" {
+				continue
+			}
+			if s, ok := t[k].(string); ok && s != "" && s != RedactedValue {
+				t[k] = RedactedValue
+				out = append(out, prefix+"."+k)
+				continue
+			}
+			out = append(out, redactLeaves(t[k], prefix+"."+k)...)
+		}
+	case []any:
+		for i, c := range t {
+			if s, ok := c.(string); ok && s != "" && s != RedactedValue {
+				t[i] = RedactedValue
+				out = append(out, fmt.Sprintf("%s[%d]", prefix, i))
+				continue
+			}
+			out = append(out, redactLeaves(c, fmt.Sprintf("%s[%d]", prefix, i))...)
+		}
+	}
+	return out
+}
+
+// redactable reports whether a value is a credential's value: a non-empty
+// string or a number.
+func redactable(v any) bool {
+	switch x := v.(type) {
+	case string:
+		return x != "" && x != RedactedValue
+	case int, int64, float64, json.Number:
+		return true
+	}
+	return false
 }
 
 // credentialPaths lists the values that look like credentials, replacing

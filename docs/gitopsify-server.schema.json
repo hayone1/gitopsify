@@ -507,6 +507,12 @@
             "disableInstall": {
               "type": "boolean"
             },
+            "env": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "index": {
               "type": "string"
             }

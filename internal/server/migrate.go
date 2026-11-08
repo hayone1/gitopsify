@@ -359,8 +359,8 @@ func publicDocument(cfg *config.Config) any {
 
 func (s *Server) pipelineOptions(rc *runContext, cfg *config.Config) pipeline.Options {
 	return pipeline.Options{Config: cfg, Version: s.version, Connect: kube.ConnectOptions{NoInput: true},
-		RedactValues: !s.cfg.Runs.AllowSecretValues,
-		Log:          func(format string, args ...any) { rc.Info(format, args...) }}
+		ProtectSecrets: !s.cfg.Runs.AllowSecretValues,
+		Log:            func(format string, args ...any) { rc.Info(format, args...) }}
 }
 
 func (s *Server) scan(ctx context.Context, rc *runContext, cfg *config.Config) error {
@@ -440,7 +440,10 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 // publish commits and pushes a migration's or an export's output.
 func (s *Server) publish(ctx context.Context, id string, u *User, message string, rc *runContext) error {
 	// One push of a run at a time, across replicas; deleting waits too.
-	unlock, locked, err := s.store.tryLock(ctx, "run:"+id)
+	unlock, locked, err := s.store.lockRun(ctx, id)
+	if errors.Is(err, errNotFound) {
+		return os.ErrNotExist
+	}
 	if err != nil {
 		return err
 	}
@@ -536,7 +539,15 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 	}
 	sctx, cancel := bg()
 	defer cancel()
-	nr, err := s.store.addPublishes(sctx, id, pubs, bump && s.store.shared())
+	var nr *Run
+	for attempt := 1; ; attempt++ {
+		// Retried: with the archive stored but the version not moved on,
+		// other replicas would push from older copies.
+		if nr, err = s.store.addPublishes(sctx, id, pubs, bump && s.store.shared()); err == nil || errors.Is(err, errNotFound) || attempt == 3 {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * time.Second)
+	}
 	if err != nil {
 		s.log.Warn("recording a push", "run", id, "error", err)
 	} else if bump && s.store.shared() {
@@ -610,9 +621,7 @@ func (s *Server) putJSON(id, name string, v any) error {
 	return s.runs.putBlob(id, name, b)
 }
 
-// recordPublish adds a push to a run: through its run context while it
-// works, in the store afterwards.
-// keyLocks are try-locks by key (a push per run at a time).
+// keyLocks are try-locks by key (the file store's run locks).
 type keyLocks struct {
 	mu   sync.Mutex
 	held map[string]bool

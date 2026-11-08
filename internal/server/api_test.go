@@ -288,7 +288,7 @@ func TestCancelAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := newRuns(st, filepath.Join(dataDir, "runs"), 1, time.Minute, time.Hour, e.s.log, nil)
+	again, err := newRuns(st, filepath.Join(dataDir, "runs"), 1, time.Minute, time.Hour, e.s.log, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

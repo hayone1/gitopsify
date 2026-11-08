@@ -101,7 +101,8 @@ type ServerPostgres struct {
 	// postgres://gitopsify:<password>@db:5432/gitopsify?sslmode=require,
 	// usually from env or file.
 	URL SettingValue `json:"url"`
-	// MaxConnections caps the connection pool (default 4 per CPU).
+	// MaxConnections caps the connection pool (default: 4 or the number of
+	// CPUs, whichever is more).
 	MaxConnections int `json:"maxConnections,omitempty"`
 }
 
@@ -222,6 +223,11 @@ type ServerProviders struct {
 	// DisableInstall stops admins from installing providers from the UI
 	// (for air-gapped servers whose image brings its providers).
 	DisableInstall bool `json:"disableInstall,omitempty"`
+	// Env are the server's environment variables providers see besides
+	// what programs need (PATH, HOME, proxies, certificates, the in-cluster
+	// API address): globs such as AWS_* for providers that use the pod's
+	// cloud identity. The server's own secrets are never passed.
+	Env []string `json:"env,omitempty"`
 }
 
 // ServerCluster is a cluster people can use by name.

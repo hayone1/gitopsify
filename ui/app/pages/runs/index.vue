@@ -49,7 +49,7 @@ async function loadMore() {
   if (!last) return
   loadingMore.value = true
   try {
-    const page = await api<Run[]>('/runs', { query: { ...filters(), before: last.createdAt } })
+    const page = await api<Run[]>('/runs', { query: { ...filters(), before: last.createdAt, beforeID: last.id } })
     const ids = new Set(runs.value.map(r => r.id))
     runs.value = [...runs.value, ...page.filter(r => !ids.has(r.id))]
     more.value = page.length === pageSize

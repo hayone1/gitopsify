@@ -104,22 +104,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 	s.policy = &policy{local: s.auth.mode == config.AuthLocal, def: cfg.RBAC.DefaultRole, bindings: cfg.RBAC.Bindings}
-	if s.store, err = openStore(ctx, cfg); err != nil {
-		return nil, err
-	}
-	s.audit = newAuditLog(s.store, cfg.Audit.Stdout, config.Duration(cfg.Audit.Retention), o.Log)
-	if s.runs, err = newRuns(s.store, filepath.Join(cfg.DataDir, "runs"), cfg.Runs.Concurrency, config.Duration(cfg.Runs.Timeout),
-		config.Duration(cfg.Runs.Retention), o.Log, s.metrics); err != nil {
-		_ = s.store.close()
-		return nil, fmt.Errorf("data directory %s: %w", cfg.DataDir, err)
-	}
-	if len(cfg.Git.Repositories) == 0 && len(cfg.Git.Credentials) > 0 && scoped(cfg) {
-		o.Log.Warn("roles are limited to clusters or tools, but spec.git.repositories is empty: " +
-			"an operator of any cluster or tool can push to every repository the server's Git credentials reach")
-	}
 	for _, h := range cfg.Notifications {
 		if _, err := webhookURL(h); err != nil {
-			_ = s.store.close()
 			return nil, fmt.Errorf("spec.notifications %s: %w", h.Name, err)
 		}
 	}
@@ -129,7 +115,19 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		// send the payload elsewhere.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
-	s.runs.finished = s.notify.runFinished
+	if s.store, err = openStore(ctx, cfg); err != nil {
+		return nil, err
+	}
+	s.audit = newAuditLog(s.store, cfg.Audit.Stdout, config.Duration(cfg.Audit.Retention), o.Log)
+	if s.runs, err = newRuns(s.store, filepath.Join(cfg.DataDir, "runs"), cfg.Runs.Concurrency, config.Duration(cfg.Runs.Timeout),
+		config.Duration(cfg.Runs.Retention), o.Log, s.metrics, s.notify.runFinished); err != nil {
+		_ = s.store.close()
+		return nil, fmt.Errorf("data directory %s: %w", cfg.DataDir, err)
+	}
+	if len(cfg.Git.Repositories) == 0 && len(cfg.Git.Credentials) > 0 && scoped(cfg) {
+		o.Log.Warn("roles are limited to clusters or tools, but spec.git.repositories is empty: " +
+			"an operator of any cluster or tool can push to every repository the server's Git credentials reach")
+	}
 	s.ui = newUIHandler(o.UI)
 	s.descs = &describes{byID: map[string]*sdk.Description{}}
 	if !o.Local && os.Getenv(provider.EnvDir) == "" {

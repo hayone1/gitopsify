@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/iac"
+	"github.com/hayone1/gitopsify/pkg/match"
 	"github.com/hayone1/gitopsify/pkg/provider"
 	"github.com/hayone1/gitopsify/sdk"
 )
@@ -83,7 +85,7 @@ func (s *Server) describe(ctx context.Context, name string) (*provider.Installed
 
 // toolSettings resolves a tool's connection settings: configured ones, then
 // the provider's environment variables, as gitopsify export does.
-func toolSettings(t *config.ServerTool, d *sdk.Description) (map[string]string, error) {
+func toolSettings(t *config.ServerTool, d *sdk.Description, own []string) (map[string]string, error) {
 	out := map[string]string{}
 	for name, v := range t.Settings {
 		val, err := v.Resolve()
@@ -97,7 +99,9 @@ func toolSettings(t *config.ServerTool, d *sdk.Description) (map[string]string, 
 		if _, ok := out[st.Name]; ok {
 			continue
 		}
-		if st.Env != "" {
+		// From the provider's variable, unless it's one of the server's
+		// own secrets (a provider could name any).
+		if st.Env != "" && !contains(own, st.Env) && !strings.HasPrefix(st.Env, "GITOPSIFY_") {
 			if v := os.Getenv(st.Env); v != "" {
 				out[st.Name] = v
 				continue
@@ -158,7 +162,7 @@ func (s *Server) checkTool(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		return
 	}
 	res := toolCheck{Description: d}
-	settings, err := toolSettings(t, d)
+	settings, err := toolSettings(t, d, s.ownSecretEnvs())
 	if err == nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
@@ -315,7 +319,7 @@ func (s *Server) startExport(req runRequest, u *User) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	settings, err := toolSettings(t, d)
+	settings, err := toolSettings(t, d, s.ownSecretEnvs())
 	if err != nil {
 		return nil, err
 	}
@@ -442,18 +446,72 @@ func (s *Server) providerEnv() []string {
 	if s.local {
 		return nil // gitopsify ui: like the CLI
 	}
-	var out []string
-	for _, kv := range os.Environ() {
+	return providerEnv(os.Environ(), s.cfg.Providers.Env, settingEnvs(reflect.ValueOf(s.cfg)))
+}
+
+func providerEnv(environ, allow, deny []string) []string {
+	out := []string{} // never nil: nil would pass everything
+	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
+		if contains(deny, name) || strings.HasPrefix(name, "GITOPSIFY_") {
+			continue
+		}
 		switch strings.ToUpper(name) {
 		case "PATH", "HOME", "TMPDIR", "TZ", "LANG", "USER", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-			"SSL_CERT_FILE", "SSL_CERT_DIR", "GODEBUG":
+			"SSL_CERT_FILE", "SSL_CERT_DIR", "GODEBUG", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT":
 			out = append(out, kv)
 		default:
-			if strings.HasPrefix(name, "LC_") {
+			if strings.HasPrefix(name, "LC_") || match.Glob(allow, name) {
 				out = append(out, kv)
 			}
 		}
 	}
 	return out
+}
+
+// ownSecretEnvs are the variables the server's own secrets come from (not
+// the tools': their providers get those).
+func (s *Server) ownSecretEnvs() []string {
+	c := *s.cfg
+	c.Tools = nil
+	return settingEnvs(reflect.ValueOf(&c))
+}
+
+// settingEnvs lists the environment variables the configuration reads
+// settings from (its secrets): providers never get them.
+func settingEnvs(v reflect.Value) []string {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if v.IsNil() {
+			return nil
+		}
+		return settingEnvs(v.Elem())
+	case reflect.Struct:
+		if sv, ok := v.Interface().(config.SettingValue); ok {
+			if sv.Env != "" {
+				return []string{sv.Env}
+			}
+			return nil
+		}
+		var out []string
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() {
+				out = append(out, settingEnvs(v.Field(i))...)
+			}
+		}
+		return out
+	case reflect.Slice, reflect.Array:
+		var out []string
+		for i := range v.Len() {
+			out = append(out, settingEnvs(v.Index(i))...)
+		}
+		return out
+	case reflect.Map:
+		var out []string
+		for it := v.MapRange(); it.Next(); {
+			out = append(out, settingEnvs(it.Value())...)
+		}
+		return out
+	}
+	return nil
 }

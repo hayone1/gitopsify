@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -27,10 +28,12 @@ var errNotFound = errors.New("not found")
 // it: the run was deleted, or another replica failed it as abandoned.
 var errFenced = errors.New("the run was taken over")
 
-// runQuery selects runs, newest first.
+// runQuery selects runs, newest first (by creation, then ID).
 type runQuery struct {
-	// Before pages: runs created before it (zero: the newest).
+	// Before and BeforeID page: runs after the run created at Before with
+	// ID BeforeID in that order (zero: the newest; no ID: created before).
 	Before                           time.Time
+	BeforeID                         string
 	Type, Cluster, Status, CreatedBy string
 	// Active keeps unfinished runs only.
 	Active bool
@@ -38,7 +41,7 @@ type runQuery struct {
 }
 
 func (q runQuery) matches(r *Run) bool {
-	return (q.Before.IsZero() || r.CreatedAt.Before(q.Before)) &&
+	return (q.Before.IsZero() || r.CreatedAt.Before(q.Before) || (q.BeforeID != "" && r.CreatedAt.Equal(q.Before) && r.ID < q.BeforeID)) &&
 		(q.Type == "" || r.Type == q.Type) && (q.Cluster == "" || r.Cluster == q.Cluster) &&
 		(q.Status == "" || r.Status == q.Status) && (q.CreatedBy == "" || r.CreatedBy == q.CreatedBy) &&
 		(!q.Active || !r.finished())
@@ -65,10 +68,12 @@ type store interface {
 	// moves its output version on (the archive changed). It returns the
 	// run as saved.
 	addPublishes(ctx context.Context, id string, ps []Publish, bump bool) (*Run, error)
-	// tryLock takes a lock on key, across replicas; ok is false when
-	// someone else holds it.
-	tryLock(ctx context.Context, key string) (unlock func(), ok bool, err error)
-	// pruneRuns deletes the runs finished before before and returns them.
+	// lockRun takes a run's lock (held while pushing or deleting it),
+	// across replicas; ok is false when someone else holds it, and the
+	// error errNotFound when the run doesn't exist.
+	lockRun(ctx context.Context, id string) (unlock func(), ok bool, err error)
+	// pruneRuns deletes the runs finished before before, but locked ones,
+	// and returns them.
 	pruneRuns(ctx context.Context, before time.Time) ([]string, error)
 	appendLog(ctx context.Context, id string, seq int, l LogLine) error
 	// readLog returns the lines from seq from on.
@@ -81,9 +86,10 @@ type store interface {
 	// heartbeat records that owner still works on the runs, and returns
 	// those it lost (deleted, or failed by another replica).
 	heartbeat(ctx context.Context, owner string, ids []string) (lost []string, err error)
-	// reapRuns fails the unfinished runs of other owners that had no
-	// heartbeat for staleAfter (by the store's clock), and returns them.
-	reapRuns(ctx context.Context, owner string, staleAfter time.Duration, fail func(*Run)) ([]Run, error)
+	// reapRuns fails the unfinished runs, but those in keep (this
+	// replica's), that had no heartbeat for staleAfter (by the store's
+	// clock), and returns them.
+	reapRuns(ctx context.Context, keep []string, staleAfter time.Duration, fail func(*Run)) ([]Run, error)
 	appendAudit(ctx context.Context, e AuditEvent) error
 	queryAudit(ctx context.Context, q auditQuery) ([]AuditEvent, error)
 	pruneAudit(ctx context.Context, before time.Time) error
@@ -173,11 +179,17 @@ func (f *fileStore) addPublishes(_ context.Context, id string, ps []Publish, bum
 	return &r, f.write(&r)
 }
 
-func (f *fileStore) tryLock(_ context.Context, key string) (func(), bool, error) {
-	if !f.locks.TryLock(key) {
+func (f *fileStore) lockRun(_ context.Context, id string) (func(), bool, error) {
+	f.mu.Lock()
+	_, ok := f.runs[id]
+	f.mu.Unlock()
+	if !ok {
+		return nil, false, errNotFound
+	}
+	if !f.locks.TryLock(id) {
 		return nil, false, nil
 	}
-	return func() { f.locks.Unlock(key) }, true, nil
+	return func() { f.locks.Unlock(id) }, true, nil
 }
 
 func (f *fileStore) pruneRuns(ctx context.Context, before time.Time) ([]string, error) {
@@ -189,12 +201,19 @@ func (f *fileStore) pruneRuns(ctx context.Context, before time.Time) ([]string, 
 		}
 	}
 	f.mu.Unlock()
+	var pruned []string
 	for _, id := range ids {
-		if err := f.deleteRun(ctx, id); err != nil {
-			return nil, err
+		if !f.locks.TryLock(id) {
+			continue // being pushed: next time
 		}
+		err := f.deleteRun(ctx, id)
+		f.locks.Unlock(id)
+		if err != nil {
+			return pruned, err
+		}
+		pruned = append(pruned, id)
 	}
-	return ids, nil
+	return pruned, nil
 }
 
 // write saves run.json (callers hold wmu).
@@ -355,15 +374,16 @@ func (f *fileStore) heartbeat(_ context.Context, _ string, ids []string) ([]stri
 	return lost, nil
 }
 
-// reapRuns: with one replica, every unfinished run of another owner (the
-// process before a restart) is abandoned, however recent.
-func (f *fileStore) reapRuns(_ context.Context, owner string, _ time.Duration, fail func(*Run)) ([]Run, error) {
+// reapRuns: with one replica, every unfinished run the process doesn't
+// work on (the process before a restart worked on it) is abandoned,
+// however recent.
+func (f *fileStore) reapRuns(_ context.Context, keep []string, _ time.Duration, fail func(*Run)) ([]Run, error) {
 	f.wmu.Lock()
 	defer f.wmu.Unlock()
 	f.mu.Lock()
 	var out []Run
 	for id, r := range f.runs {
-		if !r.finished() && f.owners[id] != owner {
+		if !r.finished() && !contains(keep, id) {
 			fail(&r)
 			out = append(out, r)
 		}
@@ -467,20 +487,59 @@ func readAudit(path string) ([]AuditEvent, error) {
 
 // --- output archives (for stores shared between replicas) --------------------
 
+// trackedFiles adds the files the repository in dir tracks, prefixed with
+// prefix (dir's path in the archive).
+func trackedFiles(dir, prefix string, into map[string]bool) {
+	cmd := exec.Command("git", "-c", "core.fsmonitor=false", "-C", dir, "ls-files", "-z")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+	out, err := cmd.Output()
+	if err != nil {
+		return // not a usable repository: nothing to keep
+	}
+	for _, f := range strings.Split(string(out), "\x00") {
+		if f == "" {
+			continue
+		}
+		if prefix != "." && prefix != "" {
+			f = prefix + "/" + f
+		}
+		into[f] = true
+	}
+}
+
+func hasTracked(tracked map[string]bool, dirPrefix string) bool {
+	for f := range tracked {
+		if strings.HasPrefix(f, dirPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // packDir archives a directory, everything in it (Git history included).
 func packDir(dir string) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
+	// Files a repository in the output tracks, by path from dir: secret
+	// files gitopsify wrote (git-ignored) stay out of the archive, but
+	// tracked ones (a SOPS-encrypted values.secrets.yaml) must stay, or a
+	// push from the archive would delete them.
+	tracked := map[string]bool{}
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		rel, _ := filepath.Rel(dir, p)
+		if d.IsDir() {
+			if fi, err := os.Lstat(filepath.Join(p, ".git")); err == nil && fi.IsDir() {
+				trackedFiles(p, filepath.ToSlash(rel), tracked)
+			}
+		}
 		if rel == "." || !(d.IsDir() || d.Type().IsRegular()) {
 			return nil
 		}
-		if secretFile(filepath.ToSlash(rel)) {
+		if slash := filepath.ToSlash(rel); secretFile(slash) && !tracked[slash] && !(d.IsDir() && hasTracked(tracked, slash+"/")) {
 			// Kept out of the database (and its backups).
 			if d.IsDir() {
 				return filepath.SkipDir

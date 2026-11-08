@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -53,7 +54,14 @@ var pgSchema = []string{
 	`CREATE INDEX IF NOT EXISTS gitopsify_audit_time ON gitopsify_audit (time DESC)`,
 	`CREATE INDEX IF NOT EXISTS gitopsify_runs_unfinished ON gitopsify_runs (heartbeat) WHERE finished_at IS NULL`,
 	`CREATE INDEX IF NOT EXISTS gitopsify_runs_finished ON gitopsify_runs (finished_at) WHERE finished_at IS NOT NULL`,
+	// A run's lock is a lease (no connection is held while pushing).
+	`ALTER TABLE gitopsify_runs ADD COLUMN IF NOT EXISTS lock_owner text NOT NULL DEFAULT ''`,
+	`ALTER TABLE gitopsify_runs ADD COLUMN IF NOT EXISTS lock_until timestamptz`,
 }
+
+// lockLease is how long a run's lock lasts unless renewed: a replica that
+// dies while pushing blocks the run for that long.
+const lockLease = 2 * time.Minute
 
 const pgLock = 7041993 // advisory lock id for schema changes
 
@@ -171,31 +179,58 @@ func (p *pgStore) addPublishes(ctx context.Context, id string, ps []Publish, bum
 	return out, err
 }
 
-// tryLock holds a session advisory lock on a connection of its own until
-// unlock (so not behind a transaction-mode pooler such as PgBouncer's).
-func (p *pgStore) tryLock(ctx context.Context, key string) (func(), bool, error) {
-	conn, err := p.pool.Acquire(ctx)
-	if err != nil {
+// lockRun takes a lease on the run, renewed until unlock: no connection is
+// held meanwhile (a pool of n connections would stall with n pushes).
+func (p *pgStore) lockRun(ctx context.Context, id string) (func(), bool, error) {
+	token := randomString(12)
+	var exists, locked int
+	err := p.pool.QueryRow(ctx, `
+		WITH l AS (
+			UPDATE gitopsify_runs SET lock_owner = $2, lock_until = now() + make_interval(secs => $3)
+			WHERE id = $1 AND (lock_until IS NULL OR lock_until < now()) RETURNING id)
+		SELECT (SELECT count(*) FROM gitopsify_runs WHERE id = $1), (SELECT count(*) FROM l)`,
+		id, token, lockLease.Seconds()).Scan(&exists, &locked)
+	switch {
+	case err != nil:
 		return nil, false, err
+	case exists == 0:
+		return nil, false, errNotFound
+	case locked == 0:
+		return nil, false, nil
 	}
-	var ok bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, "gitopsify:"+key).Scan(&ok); err != nil || !ok {
-		conn.Release()
-		return nil, false, err
-	}
-	return func() {
-		ctx, cancel := bg()
-		defer cancel()
-		if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, "gitopsify:"+key); err != nil {
-			// The lock would outlive us on a pooled connection: drop it.
-			_ = conn.Conn().Close(ctx)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(lockLease / 4)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				rctx, cancel := bg()
+				_, _ = p.pool.Exec(rctx, `UPDATE gitopsify_runs SET lock_until = now() + make_interval(secs => $3)
+					WHERE id = $1 AND lock_owner = $2`, id, token, lockLease.Seconds())
+				cancel()
+			}
 		}
-		conn.Release()
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(stop)
+			<-done
+			uctx, cancel := bg()
+			defer cancel()
+			_, _ = p.pool.Exec(uctx, `UPDATE gitopsify_runs SET lock_until = NULL, lock_owner = '' WHERE id = $1 AND lock_owner = $2`, id, token)
+		})
 	}, true, nil
 }
 
 func (p *pgStore) pruneRuns(ctx context.Context, before time.Time) ([]string, error) {
-	rows, err := p.pool.Query(ctx, `DELETE FROM gitopsify_runs WHERE finished_at < $1 RETURNING id`, before)
+	rows, err := p.pool.Query(ctx, `DELETE FROM gitopsify_runs
+		WHERE finished_at < $1 AND (lock_until IS NULL OR lock_until < now()) RETURNING id`, before)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +257,11 @@ func (p *pgStore) listRuns(ctx context.Context, q runQuery) ([]Run, error) {
 	sql := `SELECT data::jsonb - 'spec' FROM gitopsify_runs WHERE true`
 	var args []any
 	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
-	if !q.Before.IsZero() {
+	// PostgreSQL keeps microseconds; runs are created with no more.
+	q.Before = q.Before.Truncate(time.Microsecond)
+	if !q.Before.IsZero() && q.BeforeID != "" {
+		sql += ` AND (created_at, id) < (` + arg(q.Before) + `, ` + arg(q.BeforeID) + `)`
+	} else if !q.Before.IsZero() {
 		sql += ` AND created_at < ` + arg(q.Before)
 	}
 	if q.Type != "" {
@@ -346,12 +385,15 @@ func (p *pgStore) heartbeat(ctx context.Context, owner string, ids []string) ([]
 
 // reapRuns compares heartbeats with the database's clock, and locks the
 // rows it fails: two replicas never fail (and notify about) the same run.
-func (p *pgStore) reapRuns(ctx context.Context, owner string, staleAfter time.Duration, fail func(*Run)) ([]Run, error) {
+func (p *pgStore) reapRuns(ctx context.Context, keep []string, staleAfter time.Duration, fail func(*Run)) ([]Run, error) {
 	var out []Run
+	if keep == nil {
+		keep = []string{}
+	}
 	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT data FROM gitopsify_runs
-			WHERE finished_at IS NULL AND owner <> $1 AND heartbeat < now() - make_interval(secs => $2)
-			FOR UPDATE SKIP LOCKED`, owner, staleAfter.Seconds())
+			WHERE finished_at IS NULL AND NOT (id = ANY($1)) AND heartbeat < now() - make_interval(secs => $2)
+			FOR UPDATE SKIP LOCKED`, keep, staleAfter.Seconds())
 		if err != nil {
 			return err
 		}

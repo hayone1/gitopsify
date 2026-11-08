@@ -334,7 +334,7 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 			writeError(w, http.StatusBadRequest, "before: an RFC 3339 time, such as a run's createdAt")
 			return
 		}
-		rq.Before = t
+		rq.Before, rq.BeforeID = t, q.Get("beforeID")
 	}
 	list := s.runs.list(rq, func(run *Run) bool { return roleForRun(ri.grants, run) != "" })
 	if list == nil {

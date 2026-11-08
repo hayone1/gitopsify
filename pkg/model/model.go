@@ -69,8 +69,14 @@ type Object struct {
 	// the object is written to the environment overlays instead of the base.
 	EnvOut map[string]*unstructured.Unstructured
 	// Encrypt marks Secrets that must be encrypted with SOPS when written.
-	Encrypt  bool
-	Warnings []string
+	Encrypt bool
+	// Protected marks Secrets written encrypted while their values must
+	// not be learnt from the output (the server, unless an admin allows
+	// Secret values): transforms keep their namespace and name (sealing
+	// binds to them) and leave their data alone (a replace changes the
+	// ciphertext's length, which tells about the value).
+	Protected bool
+	Warnings  []string
 }
 
 // Exclude marks the object as excluded unless it already is.

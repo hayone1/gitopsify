@@ -205,3 +205,38 @@ func TestSecretKeepsKind(t *testing.T) {
 		t.Fatalf("namespace: %v %s", err, u.GetNamespace())
 	}
 }
+
+// Protected Secrets keep their namespace, name and data.
+func TestProtectedSecret(t *testing.T) {
+	const secret = "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop, labels: {host: a.example.com}}\ndata: {password: aHVudGVyMg==}\nstringData: {url: https://a.example.com}\n"
+	u, o := object(t, secret)
+	o.Protected = true
+	if _, err := Object(u, o, []config.Transform{{Type: "replace", From: "^h.*", To: "", Regex: true}, {Type: "replace", From: "a.example.com", To: "b.example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	if d, _, _ := unstructured.NestedString(u.Object, "data", "password"); d != "aHVudGVyMg==" {
+		t.Errorf("data replaced: %s", d)
+	}
+	if s, _, _ := unstructured.NestedString(u.Object, "stringData", "url"); s != "https://a.example.com" {
+		t.Errorf("stringData replaced: %s", s)
+	}
+	if u.GetLabels()["host"] != "b.example.com" {
+		t.Errorf("labels: %v", u.GetLabels())
+	}
+	for _, tr := range []config.Transform{
+		{Type: "namespace", Map: map[string]string{"shop": "mine"}},
+		{Type: "set", Path: "metadata.name", Value: "other"},
+		{Type: "jsonPatch", Patch: []map[string]any{{"op": "replace", "path": "/metadata/namespace", "value": "mine"}}},
+	} {
+		u, o := object(t, secret)
+		o.Protected = true
+		if _, err := Object(u, o, []config.Transform{tr}); err == nil {
+			t.Errorf("%s moved a protected Secret", tr.Type)
+		}
+	}
+	// Unprotected (the CLI): namespaces move and data is replaced.
+	u, o = object(t, secret)
+	if _, err := Object(u, o, []config.Transform{{Type: "namespace", Map: map[string]string{"shop": "mine"}}, {Type: "replace", From: "hunter2", To: "x"}}); err != nil || u.GetNamespace() != "mine" {
+		t.Errorf("unprotected: %v %s", err, u.GetNamespace())
+	}
+}

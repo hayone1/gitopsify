@@ -33,7 +33,7 @@ func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform
 		if !ok {
 			continue
 		}
-		if err := apply(u, t); err != nil {
+		if err := apply(u, t, secret && o.Protected); err != nil {
 			return false, fmt.Errorf("transform %d (%s) on %s: %w", i, t.Type, o.Ref, err)
 		}
 	}
@@ -42,11 +42,15 @@ func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform
 	if secret && (u.GetAPIVersion() != "v1" || u.GetKind() != "Secret") {
 		return false, fmt.Errorf("transforms change Secret %s into %s %s: a Secret must stay a Secret", o.Ref, u.GetAPIVersion(), u.GetKind())
 	}
+	if secret && o.Protected && (u.GetNamespace() != o.Ref.Namespace || u.GetName() != o.Ref.Name) {
+		return false, fmt.Errorf("transforms move Secret %s to %s/%s: its values are protected, so it keeps its namespace and name (an admin can allow Secret values)", o.Ref, u.GetNamespace(), u.GetName())
+	}
 	after, _ := json.Marshal(u.Object)
 	return string(before) != string(after), nil
 }
 
-func apply(u *unstructured.Unstructured, t config.Transform) error {
+// apply applies one transform; protected leaves a Secret's values alone.
+func apply(u *unstructured.Unstructured, t config.Transform, protected bool) error {
 	obj := u.Object
 	switch t.Type {
 	case "replace":
@@ -58,6 +62,7 @@ func apply(u *unstructured.Unstructured, t config.Transform) error {
 		for k, v := range obj {
 			switch {
 			case k == "apiVersion" || k == "kind":
+			case protected && (k == "data" || k == "stringData"):
 			case k == "metadata":
 				m, _ := v.(map[string]any)
 				for mk, mv := range m {

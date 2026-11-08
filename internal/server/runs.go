@@ -137,7 +137,8 @@ type runs struct {
 	closed bool
 	wg     sync.WaitGroup
 	stop   chan struct{}
-	unpack sync.Mutex
+	// dirs locks a run's directory on this replica (unpacking, removing).
+	dirs dirLocks
 }
 
 type runState struct {
@@ -153,17 +154,56 @@ type runState struct {
 	interrupted bool
 }
 
-func newRuns(st store, dir string, concurrency int, timeout, retention time.Duration, log *slog.Logger, m *metrics) (*runs, error) {
+// newRuns starts working on runs; finished (may be nil) is told about
+// every run that finishes, including those failed as abandoned.
+func newRuns(st store, dir string, concurrency int, timeout, retention time.Duration, log *slog.Logger, m *metrics, finished func(Run)) (*runs, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	host, _ := os.Hostname()
 	rs := &runs{store: st, dir: dir, owner: firstNonEmpty(host, "gitopsify") + "-" + randomString(4), timeout: timeout,
 		retention: retention, sem: make(chan struct{}, concurrency), log: log, metrics: m, local: map[string]*runState{},
-		stop: make(chan struct{})}
+		stop: make(chan struct{}), finished: finished}
 	rs.reap()
 	go rs.loop()
+	if st.shared() {
+		go rs.evictLoop()
+	}
 	return rs, nil
+}
+
+// dirLocks are mutexes by run ID, dropped when unused.
+type dirLocks struct {
+	mu sync.Mutex
+	m  map[string]*dirLock
+}
+
+type dirLock struct {
+	sync.Mutex
+	refs int
+}
+
+func (d *dirLocks) lock(id string) (unlock func()) {
+	d.mu.Lock()
+	if d.m == nil {
+		d.m = map[string]*dirLock{}
+	}
+	l := d.m[id]
+	if l == nil {
+		l = &dirLock{}
+		d.m[id] = l
+	}
+	l.refs++
+	d.mu.Unlock()
+	l.Lock()
+	return func() {
+		l.Unlock()
+		d.mu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(d.m, id)
+		}
+		d.mu.Unlock()
+	}
 }
 
 func bg() (context.Context, context.CancelFunc) {
@@ -176,7 +216,13 @@ func bg() (context.Context, context.CancelFunc) {
 func (rs *runs) reap() {
 	ctx, cancel := bg()
 	defer cancel()
-	reaped, err := rs.store.reapRuns(ctx, rs.owner, staleAfter, func(r *Run) {
+	rs.mu.Lock()
+	keep := make([]string, 0, len(rs.local))
+	for id := range rs.local {
+		keep = append(keep, id)
+	}
+	rs.mu.Unlock()
+	reaped, err := rs.store.reapRuns(ctx, keep, staleAfter, func(r *Run) {
 		now := time.Now().UTC()
 		r.Status, r.Error, r.FinishedAt = StatusFailed, "the server working on it stopped", &now
 	})
@@ -233,57 +279,90 @@ func (rs *runs) loop() {
 				}
 			}
 			if time.Since(beat) > heartbeatTick {
-				lost, err := rs.store.heartbeat(ctx, rs.owner, ids)
-				if err != nil {
-					rs.log.Warn("run heartbeat", "error", err)
-				}
-				for _, id := range lost {
-					rs.mu.Lock()
-					st, ok := rs.local[id]
-					rs.mu.Unlock()
-					if ok {
-						rs.lose(st)
-					}
-				}
+				rs.beat(ctx, ids)
 				beat = time.Now()
 			}
 		}
 		cancel()
 		if rs.store.shared() && time.Since(reaped) > time.Minute {
 			rs.reap()
-			rs.evict()
 			reaped = time.Now()
 		}
 	}
 }
 
-// evict removes copies of other runs' outputs unused for cacheAge (shared
-// stores: the store has them; deleted runs' copies go too).
-func (rs *runs) evict() {
+// beat records that this replica still works on the runs, and stops those
+// it lost.
+func (rs *runs) beat(ctx context.Context, ids []string) {
+	lost, err := rs.store.heartbeat(ctx, rs.owner, ids)
+	if err != nil {
+		rs.log.Warn("run heartbeat", "error", err)
+	}
+	for _, id := range lost {
+		rs.mu.Lock()
+		st, ok := rs.local[id]
+		rs.mu.Unlock()
+		if ok {
+			rs.lose(st)
+		}
+	}
+}
+
+func (rs *runs) evictLoop() {
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-rs.stop:
+			return
+		case <-t.C:
+			rs.evict(cacheAge)
+		}
+	}
+}
+
+// evict removes copies of other runs' outputs unused for maxAge (shared
+// stores: the store has them; deleted runs' copies go too), never while
+// the run is pushed.
+func (rs *runs) evict(maxAge time.Duration) {
 	entries, err := os.ReadDir(rs.dir)
 	if err != nil {
 		return
 	}
+	idle := func(id string) bool {
+		info, err := os.Stat(rs.versionFile(id))
+		if err != nil {
+			info, err = os.Stat(rs.runDir(id))
+		}
+		return err == nil && time.Since(info.ModTime()) >= maxAge
+	}
 	for _, e := range entries {
-		if !e.IsDir() || strings.Contains(e.Name(), ".") {
+		id := e.Name()
+		if !e.IsDir() || strings.Contains(id, ".") || !idle(id) {
 			continue
 		}
 		rs.mu.Lock()
-		_, live := rs.local[e.Name()]
+		_, live := rs.local[id]
 		rs.mu.Unlock()
 		if live {
 			continue
 		}
-		info, err := os.Stat(rs.versionFile(e.Name()))
-		if err != nil {
-			info, err = e.Info()
+		ctx, cancel := bg()
+		unlock, ok, err := rs.store.lockRun(ctx, id)
+		cancel()
+		switch {
+		case errors.Is(err, errNotFound): // deleted: its copy goes
+		case err != nil || !ok:
+			continue // being pushed, or the store is unreachable
 		}
-		if err != nil || time.Since(info.ModTime()) < cacheAge {
-			continue
+		release := rs.dirs.lock(id)
+		if idle(id) {
+			_ = os.RemoveAll(rs.runDir(id))
 		}
-		rs.unpack.Lock()
-		_ = os.RemoveAll(rs.runDir(e.Name()))
-		rs.unpack.Unlock()
+		release()
+		if unlock != nil {
+			unlock()
+		}
 	}
 }
 
@@ -339,7 +418,10 @@ func (rc *runContext) Warn(format string, args ...any) { rc.logf("warn", format,
 
 func (rc *runContext) update(fn func(*Run)) { rc.rs.update(rc.st, fn) }
 
-func (rs *runs) update(st *runState, fn func(*Run)) {
+func (rs *runs) update(st *runState, fn func(*Run)) { _ = rs.save(st, fn) }
+
+// save changes a run and stores it; a run this replica lost is stopped.
+func (rs *runs) save(st *runState, fn func(*Run)) error {
 	st.mu.Lock()
 	fn(&st.run)
 	r := st.run
@@ -353,11 +435,13 @@ func (rs *runs) update(st *runState, fn func(*Run)) {
 	st.mu.Unlock()
 	ctx, cancel := bg()
 	defer cancel()
-	if err := rs.store.updateRun(ctx, &r, rs.owner); errors.Is(err, errFenced) {
+	err := rs.store.updateRun(ctx, &r, rs.owner)
+	if errors.Is(err, errFenced) {
 		rs.lose(st)
 	} else if err != nil {
 		rs.log.Error("saving run", "run", r.ID, "error", err)
 	}
+	return err
 }
 
 // start records a run and does work in the background. work's error fails
@@ -452,7 +536,15 @@ func (rs *runs) finish(rc *runContext, err error) {
 		}
 	}
 	if !lost {
-		rc.update(func(r *Run) { r.Status, r.Error, r.FinishedAt = status, msg, &now })
+		// The last word: retried, or the run would stay "running" until
+		// another replica fails it as abandoned.
+		for attempt := 1; ; attempt++ {
+			err := rs.save(rc.st, func(r *Run) { r.Status, r.Error, r.FinishedAt = status, msg, &now })
+			if err == nil || errors.Is(err, errFenced) || attempt == 4 {
+				break
+			}
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
 	}
 	st.mu.Lock()
 	for ch := range st.subs {
@@ -507,8 +599,8 @@ func (rs *runs) ensureOutput(ctx context.Context, id string, version int) (strin
 		}
 		return dir, nil
 	}
-	rs.unpack.Lock()
-	defer rs.unpack.Unlock()
+	release := rs.dirs.lock(id)
+	defer release()
 	if _, err := os.Stat(dir); err == nil {
 		// No version file: the copy the run itself wrote (version 0).
 		have := 0
@@ -594,7 +686,7 @@ func (rs *runs) list(q runQuery, keep func(*Run) bool) []Run {
 		if len(page) < q.Limit {
 			break
 		}
-		q.Before = page[len(page)-1].CreatedAt
+		q.Before, q.BeforeID = page[len(page)-1].CreatedAt, page[len(page)-1].ID
 	}
 	return out
 }
@@ -641,7 +733,10 @@ func (rs *runs) remove(id string) error {
 	}
 	ctx, cancel := bg()
 	defer cancel()
-	unlock, ok, err := rs.store.tryLock(ctx, "run:"+id)
+	unlock, ok, err := rs.store.lockRun(ctx, id)
+	if errors.Is(err, errNotFound) {
+		return os.ErrNotExist
+	}
 	if err != nil {
 		return err
 	}
@@ -652,8 +747,8 @@ func (rs *runs) remove(id string) error {
 	if err := rs.store.deleteRun(ctx, id); err != nil {
 		return err
 	}
-	rs.unpack.Lock()
-	defer rs.unpack.Unlock()
+	release := rs.dirs.lock(id)
+	defer release()
 	return os.RemoveAll(rs.runDir(id))
 }
 
@@ -772,10 +867,10 @@ func (rs *runs) prune() {
 	if err != nil {
 		rs.log.Warn("pruning runs", "error", err)
 	}
-	rs.unpack.Lock()
-	defer rs.unpack.Unlock()
 	for _, id := range ids {
+		release := rs.dirs.lock(id)
 		_ = os.RemoveAll(rs.runDir(id))
+		release()
 	}
 }
 

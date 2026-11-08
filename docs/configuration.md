@@ -212,4 +212,8 @@ name or namespace the overlay holds full copies instead.
 | `jsonPatch` | `patch` | RFC 6902 operations |
 | `labels` / `annotations` | `set`, `remove` (globs) | Edit metadata |
 
-`helmValues: false` keeps `replace`/`image` away from Helm values.
+`helmValues: false` keeps `replace`/`image` away from Helm values. A Secret
+must stay a Secret: transforms that change its `apiVersion` or `kind` are
+refused (its values would skip the secrets strategy). Settings read from
+`{env: ...}` and `{file: ...}` lose surrounding whitespace, such as a
+trailing newline.
