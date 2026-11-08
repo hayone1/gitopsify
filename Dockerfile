@@ -27,10 +27,14 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
 FROM --platform=$BUILDPLATFORM alpine:3.20 AS tools
 ARG TARGETARCH HELM_VERSION=v3.19.0 KUBECTL_VERSION=v1.34.1
 # sops, pinned by checksum (from the release's checksums); SOPS_VERSION=""
-# builds without it.
+# builds without it. The asset IDs are a second way to the same files
+# (GitHub's API), for when release downloads fail (504s on 2026-11-08):
+# gh api repos/getsops/sops/releases/tags/<version> -q '.assets[]|"\(.name) \(.id)"'
 ARG SOPS_VERSION=v3.13.3 \
     SOPS_SHA256_amd64=e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b \
-    SOPS_SHA256_arm64=53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77
+    SOPS_SHA256_arm64=53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77 \
+    SOPS_ASSET_amd64=486808201 \
+    SOPS_ASSET_arm64=486808229
 # Every download is checked against its project's published checksum.
 RUN apk add --no-cache curl \
  && cd /tmp && get() { curl -fsSL --retry 5 --retry-all-errors "$@"; } \
@@ -41,8 +45,9 @@ RUN apk add --no-cache curl \
  && echo "$(get "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/$TARGETARCH/kubectl.sha256")  /usr/local/bin/kubectl" | sha256sum -c - \
  && chmod +x /usr/local/bin/kubectl \
  && if [ -n "$SOPS_VERSION" ]; then \
-      sum=$(eval echo "\$SOPS_SHA256_$TARGETARCH") \
-      && get -o /usr/local/bin/sops "https://github.com/getsops/sops/releases/download/$SOPS_VERSION/sops-$SOPS_VERSION.linux.$TARGETARCH" \
+      sum=$(eval echo "\$SOPS_SHA256_$TARGETARCH") && asset=$(eval echo "\$SOPS_ASSET_$TARGETARCH") \
+      && { curl -fsSL --retry 2 -o /usr/local/bin/sops "https://github.com/getsops/sops/releases/download/$SOPS_VERSION/sops-$SOPS_VERSION.linux.$TARGETARCH" \
+           || get -H "Accept: application/octet-stream" -o /usr/local/bin/sops "https://api.github.com/repos/getsops/sops/releases/assets/$asset"; } \
       && echo "$sum  /usr/local/bin/sops" | sha256sum -c - && chmod +x /usr/local/bin/sops; \
     else printf '#!/bin/sh\necho "this image was built without sops" >&2; exit 1\n' > /usr/local/bin/sops && chmod +x /usr/local/bin/sops; fi
 
