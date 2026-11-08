@@ -195,12 +195,12 @@ func normalize(v any) any {
 
 // A Secret turned into another kind would skip the secrets strategy.
 func TestSecretKeepsKind(t *testing.T) {
-	u, o := object(t, "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop}\ndata: {password: aHVudGVyMg==}\n")
+	u, o := object(t, "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop}\ndata: {k: c2FtcGxl}\n")
 	_, err := Object(u, o, []config.Transform{{Type: "set", Path: "kind", Value: "ConfigMap"}})
 	if err == nil {
 		t.Fatal("a Secret became a ConfigMap")
 	}
-	u, o = object(t, "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop}\ndata: {password: aHVudGVyMg==}\n")
+	u, o = object(t, "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop}\ndata: {k: c2FtcGxl}\n")
 	if _, err := Object(u, o, []config.Transform{{Type: "namespace", Map: map[string]string{"shop": "store"}}}); err != nil || u.GetNamespace() != "store" {
 		t.Fatalf("namespace: %v %s", err, u.GetNamespace())
 	}
@@ -208,13 +208,13 @@ func TestSecretKeepsKind(t *testing.T) {
 
 // Protected Secrets keep their namespace, name and data.
 func TestProtectedSecret(t *testing.T) {
-	const secret = "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop, labels: {host: a.example.com}}\ndata: {password: aHVudGVyMg==}\nstringData: {url: https://a.example.com}\n"
+	const secret = "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop, labels: {host: a.example.com}}\ndata: {k: c2FtcGxl}\nstringData: {url: https://a.example.com}\n"
 	u, o := object(t, secret)
 	o.Protected = true
 	if _, err := Object(u, o, []config.Transform{{Type: "replace", From: "^h.*", To: "", Regex: true}, {Type: "replace", From: "a.example.com", To: "b.example.com"}}); err != nil {
 		t.Fatal(err)
 	}
-	if d, _, _ := unstructured.NestedString(u.Object, "data", "password"); d != "aHVudGVyMg==" {
+	if d, _, _ := unstructured.NestedString(u.Object, "data", "k"); d != "c2FtcGxl" {
 		t.Errorf("data replaced: %s", d)
 	}
 	if s, _, _ := unstructured.NestedString(u.Object, "stringData", "url"); s != "https://a.example.com" {
@@ -237,10 +237,10 @@ func TestProtectedSecret(t *testing.T) {
 	// Values come out unchanged whatever is set (a right guess and a wrong
 	// one look the same).
 	for _, tr := range []config.Transform{
-		{Type: "set", Path: "data.password", Value: "aHVudGVyMg=="},
-		{Type: "set", Path: "data.password", Value: "d3Jvbmc="},
+		{Type: "set", Path: "data.k", Value: "c2FtcGxl"},
+		{Type: "set", Path: "data.k", Value: "d3Jvbmc="},
 		{Type: "jsonPatch", Patch: []map[string]any{{"op": "replace", "path": "/stringData/url", "value": "x"}}},
-		{Type: "remove", Path: "data.password"},
+		{Type: "remove", Path: "data.k"},
 		{Type: "set", Path: "data.extra", Value: "eA=="},
 	} {
 		u, o := object(t, secret)
@@ -248,9 +248,20 @@ func TestProtectedSecret(t *testing.T) {
 		changed, err := Object(u, o, []config.Transform{tr})
 		d, _, _ := unstructured.NestedStringMap(u.Object, "data")
 		sd, _, _ := unstructured.NestedStringMap(u.Object, "stringData")
-		if err != nil || changed || len(d) != 1 || d["password"] != "aHVudGVyMg==" || sd["url"] != "https://a.example.com" {
+		if err != nil || changed || len(d) != 1 || d["k"] != "c2FtcGxl" || sd["url"] != "https://a.example.com" {
 			t.Errorf("%s %s: changed %v, %v, data %v %v", tr.Type, tr.Path, changed, err, d, sd)
 		}
+	}
+	// Ops that read values are refused as written; value changes warn.
+	u, o = object(t, secret)
+	o.Protected = true
+	if _, err := Object(u, o, []config.Transform{{Type: "jsonPatch", Patch: []map[string]any{{"op": "copy", "from": "/data/k", "path": "/metadata/labels/x"}}}}); err == nil {
+		t.Error("jsonPatch copy on a protected Secret")
+	}
+	u, o = object(t, secret)
+	o.Protected = true
+	if _, err := Object(u, o, []config.Transform{{Type: "set", Path: "data.k", Value: "eA=="}, {Type: "set", Path: "metadata.labels.a", Value: "b"}}); err != nil || len(o.Warnings) != 1 || u.GetLabels()["a"] != "b" {
+		t.Errorf("warnings %v, %v, labels %v", o.Warnings, err, u.GetLabels())
 	}
 	// A protected Secret's SealedSecret keeps its identity too.
 	u, o = object(t, "apiVersion: bitnami.com/v1alpha1\nkind: SealedSecret\nmetadata: {name: db, namespace: shop}\n")
@@ -260,7 +271,7 @@ func TestProtectedSecret(t *testing.T) {
 	}
 	// Unprotected (the CLI): namespaces move and data is replaced.
 	u, o = object(t, secret)
-	if _, err := Object(u, o, []config.Transform{{Type: "namespace", Map: map[string]string{"shop": "mine"}}, {Type: "replace", From: "hunter2", To: "x"}}); err != nil || u.GetNamespace() != "mine" {
+	if _, err := Object(u, o, []config.Transform{{Type: "namespace", Map: map[string]string{"shop": "mine"}}, {Type: "replace", From: "sample", To: "x"}}); err != nil || u.GetNamespace() != "mine" {
 		t.Errorf("unprotected: %v %s", err, u.GetNamespace())
 	}
 }

@@ -338,7 +338,7 @@ func TestPrepareMigration(t *testing.T) {
 		// Ways to put Secret values in clear into the output (review N1).
 		"jsonPatch copy":     "spec:\n  transforms:\n    - type: jsonPatch\n      target: {kinds: [Secret]}\n      patch: [{op: copy, from: /data/password, path: /metadata/annotations/leak}]\n",
 		"env jsonPatch move": "spec:\n  environments:\n    - name: prod\n      transforms:\n        - type: jsonPatch\n          patch: [{op: move, from: /data/password, path: /metadata/labels/x}]\n",
-		"jsonPatch test":     "spec:\n  transforms:\n    - type: jsonPatch\n      patch: [{op: test, path: /data/password, value: aHVudGVyMg==}]\n",
+		"jsonPatch test":     "spec:\n  transforms:\n    - type: jsonPatch\n      patch: [{op: test, path: /data/k, value: c2FtcGxl}]\n",
 		"sops regex":         "spec:\n  secrets:\n    strategy: skip\n    sops: {encryptedRegex: ^$}\n",
 		"sealed scope":       "spec:\n  environments:\n    - name: prod\n      cluster: {context: prod}\n  secrets:\n    strategy: sealed-secrets\n    sealedSecrets: {scope: cluster-wide}\n",
 		"sealed controller":  "spec:\n  environments:\n    - name: prod\n      cluster: {context: prod}\n  secrets:\n    strategy: sealed-secrets\n    sealedSecrets: {controllerNamespace: mine, controllerName: fake}\n",

@@ -61,8 +61,11 @@ var pgSchema = []string{
 }
 
 // lockLease is how long a run's lock lasts unless renewed: a replica that
-// dies while pushing blocks the run for that long.
-const lockLease = 2 * time.Minute
+// dies while pushing blocks the run for that long (a variable for tests).
+var lockLease = 2 * time.Minute
+
+// errLockLost ends a push whose lock lease couldn't be renewed in time.
+var errLockLost = errors.New("the run's lock was lost (the database was unreachable for too long): another replica may push it now; push again")
 
 const pgLock = 7041993 // advisory lock id for schema changes
 
@@ -203,24 +206,35 @@ func (p *pgStore) lockRun(ctx context.Context, id string) (context.Context, func
 	case locked == 0:
 		return nil, nil, false, nil
 	}
-	lctx, lost := context.WithCancel(ctx)
+	lctx, cancelLock := context.WithCancelCause(ctx)
+	lost := func() { cancelLock(errLockLost) }
+	lease := lockLease
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		t := time.NewTicker(lockLease / 4)
+		t := time.NewTicker(lease / 4)
 		defer t.Stop()
+		renewed := time.Now()
 		for {
 			select {
 			case <-stop:
 				return
 			case <-t.C:
-				rctx, cancel := bg()
+				rctx, cancel := context.WithTimeout(context.Background(), lease/4)
 				tag, err := p.pool.Exec(rctx, `UPDATE gitopsify_runs SET lock_until = now() + make_interval(secs => $3)
-					WHERE id = $1 AND lock_owner = $2 AND lock_until > now()`, id, token, lockLease.Seconds())
+					WHERE id = $1 AND lock_owner = $2 AND lock_until > now()`, id, token, lease.Seconds())
 				cancel()
-				if err == nil && tag.RowsAffected() == 0 {
-					lost() // expired (the database was unreachable) or the run is gone
+				switch {
+				case err == nil && tag.RowsAffected() == 0:
+					lost() // expired, or the run is gone
+					return
+				case err == nil:
+					renewed = time.Now()
+				case time.Since(renewed) > lease-lease/4:
+					// Unreachable: by the time it answers again, the lease
+					// may have run out and another replica hold it.
+					lost()
 					return
 				}
 			}
@@ -231,7 +245,7 @@ func (p *pgStore) lockRun(ctx context.Context, id string) (context.Context, func
 		once.Do(func() {
 			close(stop)
 			<-done
-			lost()
+			cancelLock(context.Canceled)
 			uctx, cancel := bg()
 			defer cancel()
 			_, _ = p.pool.Exec(uctx, `UPDATE gitopsify_runs SET lock_until = NULL, lock_owner = '' WHERE id = $1 AND lock_owner = $2`, id, token)

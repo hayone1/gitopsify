@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -46,6 +47,19 @@ func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform
 		if !ok {
 			continue
 		}
+		if secret && o.Protected {
+			// Decided by the transform as written, never by its effect.
+			if t.Type == "jsonPatch" {
+				for _, op := range t.Patch {
+					if name, _ := op["op"].(string); name != "add" && name != "remove" && name != "replace" {
+						return false, fmt.Errorf("transform %d (jsonPatch) on %s: %q isn't allowed on a Secret whose values are protected", i, o.Ref, name)
+					}
+				}
+			}
+			if msg := fmt.Sprintf("transform %d (%s) doesn't change this Secret's values: they are protected (an admin can allow Secret values)", i, t.Type); touchesValues(t) && !slices.Contains(o.Warnings, msg) {
+				o.Warnings = append(o.Warnings, msg)
+			}
+		}
 		if err := apply(u, t, secret && o.Protected); err != nil {
 			return false, fmt.Errorf("transform %d (%s) on %s: %w", i, t.Type, o.Ref, err)
 		}
@@ -53,12 +67,15 @@ func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform
 	// A Secret that became another kind would skip the secrets strategy,
 	// and its values would be written as they are.
 	if secret && (u.GetAPIVersion() != "v1" || u.GetKind() != "Secret") {
+		if o.Protected { // what it became could hold a value
+			return false, fmt.Errorf("transforms change the kind of Secret %s: a Secret must stay a Secret", o.Ref)
+		}
 		return false, fmt.Errorf("transforms change Secret %s into %s %s: a Secret must stay a Secret", o.Ref, u.GetAPIVersion(), u.GetKind())
 	}
 	// Protected Secrets (and their SealedSecrets) keep their identity,
 	// which sealing binds to.
 	if o.Protected && (u.GetNamespace() != o.Ref.Namespace || u.GetName() != o.Ref.Name) {
-		return false, fmt.Errorf("transforms move Secret %s to %s/%s: its values are protected, so it keeps its namespace and name (an admin can allow Secret values)", o.Ref, u.GetNamespace(), u.GetName())
+		return false, fmt.Errorf("transforms move Secret %s to another namespace or name: its values are protected, so it keeps them (an admin can allow Secret values)", o.Ref)
 	}
 	if values != nil {
 		for _, f := range []string{"data", "stringData"} {
@@ -71,6 +88,32 @@ func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform
 	}
 	after, _ := json.Marshal(u.Object)
 	return string(before) != string(after), nil
+}
+
+// touchesValues reports whether a transform, as written, sets or removes a
+// Secret's values (or reads them, for jsonPatch).
+func touchesValues(t config.Transform) bool {
+	under := func(p, sep string) bool {
+		for _, f := range []string{"data", "stringData"} {
+			if p == sep+f || strings.HasPrefix(p, sep+f+sep) || strings.HasPrefix(p, sep+f+"[") {
+				return true
+			}
+		}
+		return false
+	}
+	switch t.Type {
+	case "set", "remove":
+		return under("."+t.Path, ".")
+	case "jsonPatch":
+		for _, op := range t.Patch {
+			for _, k := range []string{"path", "from"} {
+				if p, _ := op[k].(string); under(p, "/") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // apply applies one transform; protected leaves a Secret's values alone.

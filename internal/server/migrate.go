@@ -514,6 +514,9 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 				p.Commit, p.Pushed = res.Commit, res.Pushed
 			}
 		}
+		if err != nil && errors.Is(context.Cause(ctx), errLockLost) {
+			err = errLockLost // rather than git's "signal: killed"
+		}
 		outcome, detail := "ok", p.Remote+" "+p.Branch+" "+p.Commit
 		if err != nil {
 			p.Error = err.Error()
@@ -538,9 +541,12 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 		return failed
 	}
 	// Keep the commits for later pushes from any replica: replicas with an
-	// older copy unpack this one.
-	bump := true
-	if err := s.runs.saveOutput(id); err != nil {
+	// older copy unpack this one. Not after losing the lock: the new
+	// holder's archive would be overwritten with older history.
+	bump := ctx.Err() == nil
+	if !bump {
+		s.log.Warn("not storing the output after a push: the run's lock was lost", "run", id)
+	} else if err := s.runs.saveOutput(id); err != nil {
 		s.log.Warn("storing the output after a push", "run", id, "error", err)
 		bump = false
 	}

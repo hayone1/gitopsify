@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path"
@@ -533,46 +532,26 @@ func trackedFiles(dir, prefix string, into map[string]bool) error {
 	return nil
 }
 
-func hasTracked(tracked map[string]bool, dirPrefix string) bool {
-	for f := range tracked {
-		if strings.HasPrefix(f, dirPrefix) {
-			return true
-		}
-	}
-	return false
-}
-
 // packDir archives a directory, everything in it (Git history included).
 func packDir(dir string) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	// Files a repository in the output tracks, by path from dir: secret
-	// files gitopsify wrote (git-ignored) stay out of the archive, but
-	// tracked ones (a SOPS-encrypted values.secrets.yaml) must stay, or a
-	// push from the archive would delete them.
-	tracked := map[string]bool{}
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		rel, _ := filepath.Rel(dir, p)
-		if d.IsDir() {
-			if fi, err := os.Lstat(filepath.Join(p, ".git")); err == nil && fi.IsDir() {
-				if err := trackedFiles(p, filepath.ToSlash(rel), tracked); err != nil {
-					slog.Warn("archiving a run's output: secret-named files the repository may track are left out", "dir", rel, "error", err)
-				}
-			}
-		}
 		if rel == "." || !(d.IsDir() || d.Type().IsRegular()) {
 			return nil
 		}
 		slash := filepath.ToSlash(rel)
 		inGit := slash == ".git" || strings.HasPrefix(slash, ".git/") || strings.Contains(slash, "/.git/") || strings.HasSuffix(slash, "/.git")
-		// Kept out of the database (and its backups): what gitopsify writes
-		// in clear always; other secret-named files unless a repository
-		// tracks them (a SOPS-encrypted values.secrets.yaml).
-		if !inGit && (ownSecretFile(slash) || (secretFile(slash) && !tracked[slash] && !(d.IsDir() && hasTracked(tracked, slash+"/")))) {
+		// What gitopsify writes in clear stays out of the database (and its
+		// backups), and so out of pushes from other replicas; other
+		// secret-named files come from checked-out repositories (a
+		// SOPS-encrypted values.secrets.yaml) and stay.
+		if !inGit && ownSecretFile(slash) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

@@ -122,19 +122,7 @@ func Scan(ctx context.Context, opts Options) (*Result, error) {
 	}
 	ExcludeApps(inv, cfg.Scope.ExcludeApps)
 	if opts.ProtectSecrets {
-		for _, o := range inv.Objects {
-			if o.IsSecret() {
-				if o.HelmRelease != "" {
-					if r := inv.Release(o.HelmRelease); r != nil && r.Mode != model.HelmModeManifests {
-						continue // the chart renders it: never written
-					}
-				}
-				switch secrets.StrategyFor(cfg, o.Ref.Namespace, o.Ref.Name) {
-				case config.SecretsSealedSecrets, config.SecretsSOPS, config.SecretsPlain, config.SecretsLocal:
-					o.Protected = true
-				}
-			}
-		}
+		protectSecrets(inv, cfg)
 	}
 	if err := applyGlobalTransforms(inv, cfg); err != nil {
 		return nil, err
@@ -432,20 +420,23 @@ func resolveCharts(ctx context.Context, inv *model.Inventory, cfg *config.Config
 }
 
 // credentialName reports whether a values key names a credential (and not
-// a reference to one, such as existingSecret or passwordKey).
+// a reference to one, such as existingSecret or passwordKey, or image pull
+// secrets).
 func credentialName(k, parent string) bool {
 	l := strings.ToLower(k)
 	return credentialKey.MatchString(k) && !strings.Contains(l, "secretname") && !strings.HasSuffix(l, "ref") &&
-		!strings.HasPrefix(l, "existing") && !strings.HasSuffix(l, "passwordkey") && !strings.Contains(strings.ToLower(parent), "secretkeys")
+		!strings.HasPrefix(l, "existing") && !strings.HasSuffix(l, "passwordkey") && !strings.Contains(l, "pullsecret") &&
+		!strings.Contains(strings.ToLower(parent), "secretkeys")
 }
 
 // redactCredentials replaces values that look like credentials with
-// RedactedValue and returns their paths: strings under credential keys
-// (and the value-like strings of maps and lists under them, such as
-// DB_URL or accessKey, but not names, references or settings such as
-// mountPath), numbers under keys that end like a credential (password,
-// not passwordMinLength), the value of name/value pairs (env lists) whose
-// name ends like one, and the password of URLs anywhere.
+// RedactedValue and returns their paths: strings under credential keys,
+// and the strings of maps and lists under them but names, references and
+// settings (velero's credentials.secretContents, Airflow's
+// extraSecrets.*.data, Argo CD's configs.secret.extra); numbers under keys
+// whose last word is a password or PIN; the value of name/value pairs
+// (env lists) whose name holds a credential word but isn't a setting
+// (DB_PASSWORD, not TOKEN_TTL); and the password of URLs anywhere.
 func redactCredentials(v any, prefix string) []string {
 	var out []string
 	join := func(k string) string {
@@ -456,7 +447,7 @@ func redactCredentials(v any, prefix string) []string {
 	}
 	switch t := v.(type) {
 	case map[string]any:
-		if n, ok := t["name"].(string); ok && credentialEnd.MatchString(n) && redactable(t["value"]) {
+		if n, ok := t["name"].(string); ok && envCredential(n) && redactable(t["value"]) {
 			t["value"] = RedactedValue
 			out = append(out, join("value"))
 		}
@@ -467,6 +458,9 @@ func redactCredentials(v any, prefix string) []string {
 		sort.Strings(keys)
 		parent := prefix[strings.LastIndex(prefix, ".")+1:]
 		for _, k := range keys {
+			if skipSubtree(k) {
+				continue
+			}
 			switch x := t[k].(type) {
 			case string:
 				if credentialName(k, parent) && redactable(x) {
@@ -476,19 +470,17 @@ func redactCredentials(v any, prefix string) []string {
 					t[k] = r
 					out = append(out, join(k))
 				}
-				continue
 			case map[string]any, []any:
 				if credentialName(k, parent) {
 					out = append(out, redactLeaves(x, join(k))...)
 				}
+				out = append(out, redactCredentials(x, join(k))...)
 			default:
-				if credentialEnd.MatchString(k) && redactable(x) {
+				if numberCredential(k) && redactable(x) {
 					t[k] = RedactedValue
 					out = append(out, join(k))
 				}
-				continue
 			}
-			out = append(out, redactCredentials(t[k], join(k))...)
 		}
 	case []any:
 		for i, c := range t {
@@ -505,27 +497,8 @@ func redactCredentials(v any, prefix string) []string {
 	return out
 }
 
-// credentialEnd matches names that end like a credential (DB_PASSWORD,
-// apiToken; not TOKEN_TTL or passwordMinLength).
-var credentialEnd = regexp.MustCompile(`(?i)(password|passwd|passphrase|secret|token|api_?key|private_?key|access_?key|secret_?key|_key|credentials?|dsn|pin)$`)
-
-// valueLike matches keys, in a map under a credential key, whose strings
-// are values: env-style names and names of keys, URLs and the like.
-var valueLike = regexp.MustCompile(`(?i)(key|url|uri|dsn|pass|secret|token|credential|auth|cert)`)
-
-// redactURL replaces the password of a URL with credentials in it.
-func redactURL(s string) (string, bool) {
-	m := urlCredentials.FindStringSubmatchIndex(s)
-	if m == nil || s[m[2]:m[3]] == "<redacted>" {
-		return s, false
-	}
-	return s[:m[2]] + "<redacted>" + s[m[3]:], true
-}
-
-var urlCredentials = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://[^/@:\s]*:([^/@\s]+)@`)
-
-// redactLeaves redacts the value-like strings in a map or list under a
-// credential key.
+// redactLeaves redacts the strings in a map or list under a credential
+// key, but names, references and settings.
 func redactLeaves(v any, prefix string) []string {
 	var out []string
 	switch t := v.(type) {
@@ -536,12 +509,11 @@ func redactLeaves(v any, prefix string) []string {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			l := strings.ToLower(k)
-			envStyle := strings.ToUpper(k) == k && strings.ContainsAny(k, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-			reference := strings.HasSuffix(l, "name") || strings.HasSuffix(l, "ref") || strings.HasPrefix(l, "existing") ||
-				strings.HasSuffix(l, "passwordkey") || strings.HasSuffix(l, "tokenkey")
+			if skipSubtree(k) || reference(k) || settingKeys[strings.ToLower(k)] {
+				continue
+			}
 			if s, ok := t[k].(string); ok {
-				if !reference && (envStyle || valueLike.MatchString(k)) && redactable(s) {
+				if redactable(s) {
 					t[k] = RedactedValue
 					out = append(out, prefix+"."+k)
 				}
@@ -561,6 +533,83 @@ func redactLeaves(v any, prefix string) []string {
 	}
 	return out
 }
+
+// skipSubtree reports keys whose values are never credentials: metadata,
+// references to Secrets, image pull secrets.
+func skipSubtree(k string) bool {
+	l := strings.ToLower(k)
+	return l == "annotations" || l == "labels" || l == "valuefrom" || strings.HasSuffix(l, "ref") || strings.Contains(l, "pullsecret")
+}
+
+// reference reports keys whose strings name or point at something.
+func reference(k string) bool {
+	l := strings.ToLower(k)
+	return strings.HasSuffix(l, "name") || strings.HasPrefix(l, "existing") || strings.HasSuffix(l, "passwordkey") ||
+		strings.HasSuffix(l, "tokenkey")
+}
+
+// settingKeys are settings of a Secret, not values, under credential keys.
+var settingKeys = map[string]bool{"create": true, "enabled": true, "mountpath": true, "subpath": true, "path": true, "type": true,
+	"mode": true, "defaultmode": true, "driver": true, "prefix": true, "provider": true, "format": true, "encoding": true,
+	"refreshinterval": true, "namespace": true, "kind": true, "apiversion": true, "scope": true, "immutable": true}
+
+// envCredential reports env variable names that hold a credential:
+// DB_PASSWORD, SECRET_KEY_BASE, GCP_CREDENTIALS_JSON; not settings about
+// one (TOKEN_TTL, PASSWORD_FILE, API_KEY_ID).
+func envCredential(n string) bool {
+	return credentialKey.MatchString(n) && !envSetting.MatchString(n)
+}
+
+var envSetting = regexp.MustCompile(`(?i)(_ttl|_file|_path|_length|_timeout|_enabled|_name|_key_id|_expiry|_expiration|_seconds|_minutes|_hours|_days|_size|_count|_header|_type|_mode)$`)
+
+// numberCredential reports keys whose numbers are credentials: their last
+// word is a password or a PIN (adminPin, PASSWORD; not spin or
+// passwordMinLength).
+func numberCredential(k string) bool {
+	l := strings.ToLower(k)
+	for _, w := range []string{"password", "passwd", "passphrase", "passcode", "pin"} {
+		if !strings.HasSuffix(l, w) {
+			continue
+		}
+		i := len(k) - len(w)
+		if i == 0 || strings.ContainsRune("_.-", rune(k[i-1])) || (k[i] >= 'A' && k[i] <= 'Z' && k[i-1] >= 'a' && k[i-1] <= 'z') {
+			return true
+		}
+	}
+	return false
+}
+
+// redactURL replaces the password of a URL with <redacted>: the userinfo
+// is what comes before the last @ of the authority (passwords may hold @
+// and :), the password what follows its first colon. References to
+// variables ($(DB_PASSWORD), ${DB_PASSWORD}) are left alone.
+func redactURL(s string) (string, bool) {
+	i := strings.Index(s, "://")
+	if i <= 0 || !urlScheme.MatchString(s[:i]) {
+		return s, false
+	}
+	rest := s[i+3:]
+	end := strings.IndexAny(rest, "/?#")
+	if end < 0 {
+		end = len(rest)
+	}
+	at := strings.LastIndex(rest[:end], "@")
+	if at < 0 {
+		return s, false
+	}
+	userinfo := rest[:at]
+	c := strings.Index(userinfo, ":")
+	if c < 0 {
+		return s, false
+	}
+	pw := userinfo[c+1:]
+	if pw == "" || pw == "<redacted>" || ((strings.HasPrefix(pw, "$(") && strings.HasSuffix(pw, ")")) || (strings.HasPrefix(pw, "${") && strings.HasSuffix(pw, "}"))) {
+		return s, false
+	}
+	return s[:i+3] + userinfo[:c+1] + "<redacted>" + rest[at:], true
+}
+
+var urlScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*$`)
 
 // redactable reports whether a value is a credential's value: a non-empty
 // string or a number.
@@ -627,6 +676,25 @@ func ExcludeApps(inv *model.Inventory, patterns []string) {
 		}
 	}
 	inv.Apps = kept
+}
+
+// protectSecrets marks the Secrets gitopsify writes with their values
+// (encrypted) Protected; those a chart renders are never written.
+func protectSecrets(inv *model.Inventory, cfg *config.Config) {
+	for _, o := range inv.Objects {
+		if !o.IsSecret() {
+			continue
+		}
+		if o.HelmRelease != "" {
+			if r := inv.Release(o.HelmRelease); r != nil && r.Mode != model.HelmModeManifests {
+				continue
+			}
+		}
+		switch secrets.StrategyFor(cfg, o.Ref.Namespace, o.Ref.Name) {
+		case config.SecretsSealedSecrets, config.SecretsSOPS, config.SecretsPlain, config.SecretsLocal:
+			o.Protected = true
+		}
+	}
 }
 
 // applyGlobalTransforms applies the transforms that hold for every

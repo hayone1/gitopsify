@@ -441,8 +441,14 @@ func (rs *runs) saveFinal(st *runState, fn func(*Run)) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		err := rs.store.updateRun(ctx, &r, rs.owner)
 		if errors.Is(err, errFenced) && attempt > 1 {
-			if got, gerr := rs.store.getRun(ctx, r.ID); gerr == nil && got.Status == r.Status && got.FinishedAt != nil {
+			// Ours (the same finish time, to the nanosecond), or another
+			// replica's that failed it meanwhile? Unknown: try again.
+			got, gerr := rs.store.getRun(ctx, r.ID)
+			switch {
+			case gerr == nil && got.FinishedAt != nil && r.FinishedAt != nil && got.FinishedAt.Equal(*r.FinishedAt):
 				err = nil
+			case gerr != nil && !errors.Is(gerr, errNotFound):
+				err = gerr
 			}
 		}
 		cancel()

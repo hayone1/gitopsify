@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -141,6 +142,10 @@ func TestStores(t *testing.T) {
 			}
 			if r, err := st.addPublishes(ctx, done.ID, []Publish{{Remote: "b"}}, true); err != nil || len(r.Publishes) != 2 || r.OutputVersion != 1 {
 				t.Errorf("publishes: %+v %v", r, err)
+			}
+			// A retry of a write that was stored changes nothing.
+			if r, err := st.addPublishes(ctx, done.ID, []Publish{{Remote: "b"}}, true); err != nil || len(r.Publishes) != 2 || r.OutputVersion != 1 {
+				t.Errorf("publishes retried: %+v %v", r, err)
 			}
 			if _, err := st.addPublishes(ctx, "gone", []Publish{{Remote: "a"}}, false); err != errNotFound {
 				t.Errorf("publishes of a missing run: %v", err)
@@ -621,5 +626,89 @@ func TestProviderEnv(t *testing.T) {
 	sort.Strings(envs)
 	if strings.Join(envs, ",") != "CS,GA,GT,SK" {
 		t.Errorf("setting envs: %v", envs)
+	}
+}
+
+// flakyStore stores a run's last update but answers with an error, once.
+type flakyStore struct {
+	*fileStore
+	failed bool
+}
+
+func (f *flakyStore) updateRun(ctx context.Context, r *Run, owner string) error {
+	err := f.fileStore.updateRun(ctx, r, owner)
+	if err == nil && r.finished() && !f.failed {
+		f.failed = true
+		return errors.New("connection reset")
+	}
+	return err
+}
+
+// A final update whose answer was lost isn't taken for someone else's.
+func TestSaveFinalLostAnswer(t *testing.T) {
+	fs, err := newFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &flakyStore{fileStore: fs}
+	var notified []Run
+	var nmu sync.Mutex
+	rs, err := newRuns(st, t.TempDir(), 1, time.Minute, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)), nil,
+		func(r Run) { nmu.Lock(); notified = append(notified, r); nmu.Unlock() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rs.shutdown(context.Background())
+	r, _ := rs.start(Run{Type: RunScan, Name: "x"}, func(context.Context, *runContext) error { return nil })
+	for start := time.Now(); time.Since(start) < 15*time.Second; time.Sleep(20 * time.Millisecond) {
+		nmu.Lock()
+		n := len(notified)
+		nmu.Unlock()
+		if n > 0 {
+			break
+		}
+	}
+	nmu.Lock()
+	defer nmu.Unlock()
+	if !st.failed || len(notified) != 1 || notified[0].Status != StatusSucceeded {
+		t.Fatalf("failed once %v, notified %+v", st.failed, notified)
+	}
+	if got, _ := fs.getRun(context.Background(), r.ID); got.Status != StatusSucceeded {
+		t.Errorf("stored: %+v", got)
+	}
+}
+
+// A lease that can't be renewed ends the work done under it.
+func TestLeaseLoss(t *testing.T) {
+	url := pgURL(t)
+	pg, err := newPGStore(context.Background(), url, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.close()
+	defer func(l time.Duration) { lockLease = l }(lockLease)
+	lockLease = 2 * time.Second
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	r := Run{ID: "20260101-000000-lease", Type: RunScan, Status: StatusSucceeded, CreatedAt: now, FinishedAt: &now}
+	_, _ = pg.pool.Exec(ctx, `DELETE FROM gitopsify_runs WHERE id = $1`, r.ID)
+	if err := pg.createRun(ctx, &r, "me"); err != nil {
+		t.Fatal(err)
+	}
+	lctx, unlock, ok, err := pg.lockRun(ctx, r.ID)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	defer unlock()
+	if _, err := pg.pool.Exec(ctx, `UPDATE gitopsify_runs SET lock_until = now() - interval '1 second' WHERE id = $1`, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-lctx.Done():
+		if !errors.Is(context.Cause(lctx), errLockLost) {
+			t.Errorf("cause: %v", context.Cause(lctx))
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("an expired lease wasn't noticed")
 	}
 }

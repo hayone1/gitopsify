@@ -37,10 +37,14 @@ design docs/DESIGN-webui.md (W1-W10).
 - `pkg/config/server.go`: the `Server` resource; its JSON Schema
   `docs/gitopsify-server.schema.json` (`make docs`, TestServerSchemaIsCurrent).
 - Secret values (W8): `checkSecretLeaks`/`pinSealedSecrets` in migrate.go,
-  the Secret-kind guard in pkg/transform, `pipeline.Options.RedactValues`
-  (Helm values by key name); all lifted by `runs.allowSecretValues`.
-- Secret files in archives: packDir leaves out `.secrets/` and
-  `*.secrets.*` unless a repository in the output tracks them.
+  the Secret-kind guard in pkg/transform, `pipeline.Options.ProtectSecrets`
+  (Protected Secrets, Helm value redaction: redactCredentials/redactURL);
+  all lifted by `runs.allowSecretValues`.
+- Secret files in archives: packDir never archives gitopsify's own
+  plaintext files (`ownSecretFile`: `.secrets/`, `*.secrets.auto.tfvars`);
+  other `*.secrets.*` files come from checkouts and are kept. Repositories
+  tracking the former are refused (`refuseTrackedSecrets`) before checkout
+  results and pushes.
 - Replicas (W9): runs are owned (createRun, owner-fenced updateRun,
   heartbeat returns lost runs), reaped in SQL time (any stale run not in
   the reaper's local set), pushes and deletes take `store.lockRun(id)` (a
@@ -49,8 +53,13 @@ design docs/DESIGN-webui.md (W1-W10).
   (`output.version` marker, per-run `dirLocks`), listing (keyset paging)
   and pruning in SQL, idle copies evicted (evictLoop, under the run lock).
 - Protected Secrets: `pipeline.Options.ProtectSecrets` (server) marks
-  sealed/SOPS Secrets `model.Object.Protected`; transforms can't rename
-  them and `replace` skips their data. Providers get `providerEnv`
+  sealed/SOPS Secrets gitopsify writes `model.Object.Protected`
+  (`protectSecrets`; chart-rendered ones aren't written, so not marked);
+  transforms can't rename them, jsonPatch ops other than add/remove/replace
+  are refused as written, and their values are restored after transforms
+  (refusing changes would be an oracle; a constant warning names the
+  transforms that targeted values). `gitopsify ui` sets
+  allowSecretValues (one person, like the CLI). Providers get `providerEnv`
   (allowlist `spec.providers.env`, never the server's own secret
   variables, found by reflection over the config: `settingEnvs`).
 - `ui/`: Nuxt 4 + Nuxt UI 4 SPA (`make ui` builds into web/dist, embedded by
@@ -341,6 +350,13 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   typecheck). Chart RBAC checked on kind: a list/watch-only
   ServiceAccount scans fine; can-i denies nodes/proxy, pods/log, exec and
   other services' proxies; allows only the sealed-secrets service proxy.
+  Round 4 confirmed round 3's lease locks and directory handling, and
+  found tracked `.secrets/` plaintext reaching the database and pushes, an
+  equality oracle through per-environment `set` on protected Secrets,
+  chart-owned Secrets blocking namespace renames, and a docs overclaim
+  (the protections cover runs' output, not targets: pushing to a target
+  repository is deploying to it): fixed (commit "fixes from the fourth
+  review"). Round 5 reviewed that commit (see below).
 - GitHub release downloads returned 504 for every project on 2026-11-08
   (from Hetzner, WSL and GitHub Actions); the Dockerfile now falls back to
   the API asset endpoint (pinned asset IDs, same checksums), and the

@@ -329,10 +329,13 @@ Everything the UI does goes through `/api/v1`, with the session cookie (and an
 - **Sessions** are AES-GCM encrypted, HttpOnly, SameSite=Lax cookies (Secure
   behind HTTPS); changes need a CSRF header only the UI knows. Sign-ins use
   PKCE, state and nonce checks; unverified emails don't identify anyone.
-- **Secrets** stay out of runs (see above); git-ignored secret files
-  (`.secrets/`, `*.secrets.*`) are never listed, served, stored in the
-  database or pushed, and exports never write the tool's credentials (their
-  export file names environment variables). Providers run with a minimal
+- **Secrets** stay out of runs (see above). The files gitopsify writes
+  values to in clear (`.secrets/`, `*.secrets.auto.tfvars`, git-ignored)
+  are never listed, served, stored in the database or pushed; other
+  `*.secrets.*` files (a SOPS-encrypted values file a repository tracks)
+  aren't listed or served, but are kept and pushed. Exports never write
+  the tool's credentials (their export file names environment
+  variables). Providers run with a minimal
   environment (`PATH`, `HOME`, proxies, certificates) plus the variables
   `providers.env` lists (such as `AWS_*` for the pod's cloud identity, or
   `KUBERNETES_SERVICE_*`, which would let a provider use the server's
