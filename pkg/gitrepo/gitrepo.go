@@ -18,6 +18,12 @@ type Options struct {
 	Branch  string
 	Message string
 	Push    bool
+	// AuthorName and AuthorEmail sign the commit; empty uses git's
+	// configuration (or gitopsify when there is none).
+	AuthorName, AuthorEmail string
+	// Env is added to git's environment (credentials for the remote, as the
+	// web server passes them).
+	Env []string
 }
 
 // Result describes what Publish did.
@@ -36,6 +42,12 @@ type Result struct {
 // repository, holds files, or the remote has no such branch. It reports
 // whether it checked anything out.
 func Checkout(dir, remote, branch string) (bool, error) {
+	return CheckoutEnv(dir, remote, branch, nil)
+}
+
+// CheckoutEnv is Checkout with env added to git's environment.
+func CheckoutEnv(dir, remote, branch string, env []string) (bool, error) {
+	git := func(dir string, args ...string) (string, error) { return gitEnv(dir, env, args...) }
 	if remote == "" {
 		return false, nil
 	}
@@ -74,6 +86,7 @@ func Checkout(dir, remote, branch string) (bool, error) {
 // Publish initializes the repository if needed, commits every change and
 // optionally pushes it.
 func Publish(o Options) (*Result, error) {
+	git := func(dir string, args ...string) (string, error) { return gitEnv(dir, o.Env, args...) }
 	if o.Branch == "" {
 		o.Branch = "main"
 	}
@@ -104,7 +117,9 @@ func Publish(o Options) (*Result, error) {
 	}
 	if status != "" {
 		args := []string{"commit", "-q", "-m", o.Message}
-		if email, _ := git(o.Dir, "config", "user.email"); email == "" {
+		if o.AuthorName != "" && o.AuthorEmail != "" {
+			args = append([]string{"-c", "user.name=" + o.AuthorName, "-c", "user.email=" + o.AuthorEmail}, args...)
+		} else if email, _ := git(o.Dir, "config", "user.email"); email == "" {
 			// Fresh CI runners have no identity; commit as gitopsify.
 			args = append([]string{"-c", "user.name=gitopsify", "-c", "user.email=gitopsify@users.noreply.github.com"}, args...)
 		}
@@ -128,11 +143,11 @@ func Publish(o Options) (*Result, error) {
 	return res, nil
 }
 
-func git(dir string, args ...string) (string, error) {
+func gitEnv(dir string, env []string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	// Fail instead of waiting for a password nobody will type.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

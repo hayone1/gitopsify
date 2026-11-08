@@ -126,6 +126,7 @@ providers: gitopsify provider search, then gitopsify export <provider>.`,
 		&cobra.Group{ID: "migrate", Title: "Migration:"},
 		&cobra.Group{ID: "target", Title: "Target cluster:"},
 		&cobra.Group{ID: "providers", Title: "Tools to Terraform and Crossplane:"},
+		&cobra.Group{ID: "web", Title: "Web UI:"},
 	)
 	for _, c := range []*cobra.Command{newInit(o), newScan(o), newGenerate(o), newMigrate(o)} {
 		c.GroupID = "migrate"
@@ -137,6 +138,10 @@ providers: gitopsify provider search, then gitopsify export <provider>.`,
 	}
 	for _, c := range []*cobra.Command{newExport(o), newProvider(o)} {
 		c.GroupID = "providers"
+		root.AddCommand(c)
+	}
+	for _, c := range []*cobra.Command{newUI(o), newServer(o)} {
+		c.GroupID = "web"
 		root.AddCommand(c)
 	}
 	root.AddCommand(newRules(o), newDoctor(o), newSkills(o), newVersion(), newGenDocs(o))

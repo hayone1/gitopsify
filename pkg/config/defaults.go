@@ -356,6 +356,20 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err // names the file
 	}
+	return loadMigration(path, docs)
+}
+
+// ParseMigration reads the migration in data (YAML, or JSON when name ends in
+// .json); name appears in errors.
+func ParseMigration(name string, data []byte) (*Config, error) {
+	docs, err := ParseDocuments(name, data)
+	if err != nil {
+		return nil, err
+	}
+	return loadMigration(name, docs)
+}
+
+func loadMigration(path string, docs []Document) (*Config, error) {
 	if len(docs) == 0 {
 		return &Config{}, nil // empty, or only comments: the defaults, as in v0.1
 	}
