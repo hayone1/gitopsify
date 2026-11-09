@@ -8,10 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -381,6 +384,24 @@ func TestRateLimit(t *testing.T) {
 	if !l.allow("5.6.7.8", true) {
 		t.Error("another address was limited")
 	}
+	// IPv6 clients are limited by their /64: rotating addresses in it
+	// doesn't give fresh buckets.
+	n = 0
+	for i := range 100 {
+		if l.allow(fmt.Sprintf("2001:db8:0:1::%x", i+1), true) {
+			n++
+		}
+	}
+	if n > 25 {
+		t.Errorf("one /64 got %d sign-in attempts through", n)
+	}
+	// The table stays bounded.
+	for i := range maxLimited + 10 {
+		l.allow(fmt.Sprintf("10.%d.%d.%d", i>>16&255, i>>8&255, i&255), false)
+	}
+	if len(l.api) > maxLimited+1 {
+		t.Errorf("%d clients tracked", len(l.api))
+	}
 }
 
 func TestNotifications(t *testing.T) {
@@ -477,5 +498,76 @@ func TestTelemetry(t *testing.T) {
 	}
 	if !rcv.Metric("gitopsify.runs") || !rcv.Metric("gitopsify.logins") || !rcv.Metric("http.server.request.duration") {
 		t.Error("missing metrics")
+	}
+}
+
+// gitopsify ui signs in with its token posted from a local page (or the
+// printed link), once; its cookie carries the port, so two instances on one
+// machine keep their sessions.
+func TestLocalSignIn(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := "http://" + ln.Addr().String()
+	cfg := &config.Server{Spec: config.ServerSpec{ExternalURL: external, DataDir: t.TempDir(), Auth: config.ServerAuth{Mode: config.AuthLocal}}}
+	cfg.Default()
+	s, err := New(context.Background(), Options{Config: cfg, Local: true, LocalToken: "tok-123", Version: "test",
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: s.Handler()}}
+	srv.Start()
+	defer func() { srv.Close(); s.close(context.Background()) }()
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := noRedirect.PostForm(external+"/api/v1/auth/local", url.Values{"token": {"tok-123"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == sessionCookie+"_"+port && c.Value != "" {
+			cookie = c
+		}
+	}
+	if resp.StatusCode != http.StatusFound || cookie == nil {
+		t.Fatalf("posted token: %d, cookies %v", resp.StatusCode, resp.Cookies())
+	}
+	req, _ := http.NewRequest(http.MethodGet, external+"/api/v1/me", nil)
+	req.AddCookie(cookie)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("session: %v %v", resp, err)
+	}
+	// Used: the link (from the browser's history) says so.
+	resp, err = noRedirect.Get(external + "/api/v1/auth/local?token=tok-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/login?error=link" {
+		t.Errorf("reused link: %d %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// Run errors can quote tools' data: notifications show it as text.
+func TestNotificationEscaping(t *testing.T) {
+	n := &notifier{external: "https://gitopsify.example.com"}
+	r := Run{ID: "r1", Type: RunExport, Name: "dash", Tool: "grafana", Status: StatusFailed, CreatedBy: "ada",
+		Error: "dashboard <!channel> <https://evil.example|Re-authenticate> & more"}
+	b, err := n.payload("slack", "run.failed", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var slack struct{ Text string }
+	_ = json.Unmarshal(b, &slack)
+	if strings.Contains(slack.Text, "<!channel>") || strings.Contains(slack.Text, "<https://evil") || !strings.Contains(slack.Text, "&lt;!channel&gt;") {
+		t.Errorf("slack: %q", slack.Text)
+	}
+	b, _ = n.payload("teams", "run.failed", r)
+	if !strings.Contains(string(b), `"TextRun"`) || strings.Contains(string(b), `"TextBlock"`) {
+		t.Errorf("teams: %s", b)
 	}
 }

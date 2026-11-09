@@ -856,3 +856,36 @@ func TestPGSchemaError(t *testing.T) {
 	}
 	_ = st.close()
 }
+
+// A NUL character in a run (its spec, its error) or a log line doesn't break
+// the run list or the log.
+func TestStoresNUL(t *testing.T) {
+	for name, st := range testStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			r := &Run{ID: "nul-" + name, Type: RunScan, Name: "x\x00y", Status: StatusQueued, CreatedAt: time.Now().UTC().Truncate(time.Microsecond),
+				Spec: json.RawMessage(`{"metadata":{"name":"a\u0000b"}}`)}
+			if err := st.createRun(ctx, r, "me"); err != nil {
+				t.Fatal(err)
+			}
+			list, err := st.listRuns(ctx, runQuery{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, l := range list {
+				found = found || l.ID == r.ID
+			}
+			if !found {
+				t.Errorf("the run isn't listed: %v", list)
+			}
+			line := LogLine{Time: time.Now().UTC(), Level: "info", Message: logText("a\x00b")}
+			if err := st.appendLog(ctx, r.ID, 0, line); err != nil {
+				t.Fatal(err)
+			}
+			if lines, err := st.readLog(ctx, r.ID, 0); err != nil || len(lines) != 1 {
+				t.Errorf("log: %v %v", lines, err)
+			}
+		})
+	}
+}

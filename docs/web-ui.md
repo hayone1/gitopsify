@@ -394,7 +394,8 @@ last one's commit (copies older than the stored output are unpacked
 again; unused copies are removed after an hour). The files gitopsify
 writes values to in clear stay out of the database. If a replica dies
 while working, another fails its runs
-within two minutes (by the database's clock) and notifies about them; a
+within about three and a half minutes (two minutes without a heartbeat,
+by the database's clock, plus the next check) and notifies about them; a
 replica that comes back stops working on runs it no longer owns, and a
 run whose final update failed is failed by the next check. Sessions
 work on every replica because they're sealed with the shared `sessionKey`.

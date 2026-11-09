@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -69,6 +70,11 @@ type Server struct {
 	stop       chan struct{}
 	stopOnce   sync.Once
 	closeOnce  sync.Once
+	// pushes counts pushes requested through the API; shutdown waits for
+	// them. pushMu orders their Add before its Wait.
+	pushes     sync.WaitGroup
+	pushMu     sync.Mutex
+	pushesShut bool
 }
 
 // New builds a server: it connects to the OIDC provider, opens the data
@@ -99,6 +105,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		secure: external.Scheme == "https", tokens: cfg.Auth.Tokens, local: o.LocalToken, external: external}
 	if o.Local {
 		s.auth.mode = config.AuthLocal
+	}
+	if s.auth.mode == config.AuthLocal && external.Port() != "" {
+		s.auth.cookie = sessionCookie + "_" + external.Port()
 	}
 	if s.auth.mode == config.AuthOIDC {
 		if s.auth.oidc, err = newOIDC(ctx, cfg.Auth.OIDC, external); err != nil {
@@ -155,6 +164,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			s.close(context.Background())
 			return nil, fmt.Errorf("spec.metrics.token: %w", err)
 		}
+		if s.metricsKey == "" {
+			// An empty token would leave /metrics open.
+			s.close(context.Background())
+			return nil, errors.New("spec.metrics.token is empty (an empty variable or file?); /metrics would be open")
+		}
 	}
 	// API requests get spans and http.server.* metrics when OpenTelemetry
 	// is on (the UI's files and the probes don't); trace headers count from
@@ -197,7 +211,26 @@ func (s *Server) ListenAndServe(ctx context.Context, ln net.Listener) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	err := srv.Shutdown(shutdown)
-	s.close(context.Background())
+	if errors.Is(err, context.DeadlineExceeded) {
+		// Long requests (pushes, downloads) still going: a normal stop.
+		s.log.Warn("stopping with requests still running")
+		err = nil
+	}
+	// A push that reached the remote must still be recorded: wait for
+	// pushes before closing the store (Kubernetes gives 30s by default).
+	s.pushMu.Lock()
+	s.pushesShut = true
+	s.pushMu.Unlock()
+	pushes := make(chan struct{})
+	go func() { s.pushes.Wait(); close(pushes) }()
+	select {
+	case <-pushes:
+	case <-time.After(20 * time.Second):
+		s.log.Warn("stopping during a push; if it reached the remote, push the run again to record it")
+	}
+	closing, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelClose()
+	s.close(closing)
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
 	}
@@ -302,7 +335,13 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		ri := &reqInfo{id: firstNonEmpty(sanitizeID(r.Header.Get("X-Request-Id")), randomString(9)), ip: s.clientIP(r)}
+		// A request ID from a trusted proxy ties its logs to ours; clients
+		// don't pick what the audit log records.
+		var given string
+		if s.fromProxy(r) {
+			given = sanitizeID(r.Header.Get("X-Request-Id"))
+		}
+		ri := &reqInfo{id: firstNonEmpty(given, randomString(9)), ip: s.clientIP(r)}
 		r = r.WithContext(context.WithValue(r.Context(), reqKey, ri))
 		sw := &statusWriter{ResponseWriter: w}
 		h := w.Header()
@@ -316,7 +355,12 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		defer func() {
-			if p := recover(); p != nil {
+			p := recover()
+			if p == http.ErrAbortHandler {
+				// A handler broke the response off on purpose: the server
+				// drops the connection.
+				defer panic(p)
+			} else if p != nil {
 				s.log.Error("panic", "request", ri.id, "panic", p, "stack", string(debug.Stack()))
 				if sw.code == 0 {
 					writeError(sw, http.StatusInternalServerError, "internal error (request "+ri.id+")")
@@ -372,6 +416,9 @@ func (s *Server) clientIP(r *http.Request) string {
 	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
 	for i := len(hops) - 1; i >= 0; i-- {
 		h := strings.TrimSpace(hops[i])
+		if ap, err := netip.ParseAddrPort(h); err == nil {
+			h = ap.Addr().String() // proxies that add the port: 192.0.2.1:4711, [2001:db8::1]:4711
+		}
 		if net.ParseIP(h) == nil {
 			break
 		}
@@ -513,6 +560,10 @@ type entry struct {
 
 func newLimiter() *limiter { return &limiter{api: map[string]*entry{}, auth: map[string]*entry{}} }
 
+// maxLimited bounds the clients tracked per limit: beyond it, idle ones
+// go, then new ones share one bucket (memory stays bounded).
+const maxLimited = 50000
+
 func (l *limiter) allow(ip string, auth bool) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -520,13 +571,41 @@ func (l *limiter) allow(ip string, auth bool) bool {
 	if auth {
 		m, r, b = l.auth, rate.Every(2*time.Second), 20
 	}
-	e := m[ip]
+	key := limitKey(ip)
+	e := m[key]
 	if e == nil {
-		e = &entry{l: rate.NewLimiter(r, b)}
-		m[ip] = e
+		if len(m) >= maxLimited {
+			for k, old := range m {
+				if time.Since(old.seen) > time.Minute {
+					delete(m, k)
+				}
+			}
+			if len(m) >= maxLimited {
+				key = "overflow"
+				e = m[key]
+			}
+		}
+		if e == nil {
+			e = &entry{l: rate.NewLimiter(r, b)}
+			m[key] = e
+		}
 	}
 	e.seen = time.Now()
 	return e.l.Allow()
+}
+
+// limitKey is the client a limit applies to: its IPv6 /64 (one host often
+// has the whole prefix), or its address.
+func limitKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil || a.Is4() || a.Is4In6() {
+		return ip
+	}
+	p, err := a.Prefix(64)
+	if err != nil {
+		return ip
+	}
+	return p.String()
 }
 
 func (l *limiter) cleanup() {
@@ -555,4 +634,15 @@ func scoped(cfg *config.ServerSpec) bool {
 		}
 	}
 	return false
+}
+
+// startPush counts a push, unless the server is stopping.
+func (s *Server) startPush() bool {
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	if s.pushesShut {
+		return false
+	}
+	s.pushes.Add(1)
+	return true
 }

@@ -29,13 +29,31 @@ async function open(p: string) {
   selected.value = p
   contentLoading.value = true
   try {
-    content.value = await $fetch<string>(`/api/v1/runs/${props.runId}/files/${p.split('/').map(encodeURIComponent).join('/')}`, { responseType: 'text' })
+    const text = await $fetch<string>(`/api/v1/runs/${props.runId}/files/${p.split('/').map(encodeURIComponent).join('/')}`, { responseType: 'text' })
+    if (selected.value !== p) return // another file was opened meanwhile
+    content.value = text
   } catch (e) {
+    if (selected.value !== p) return
     content.value = ''
     notify.error('Opening the file failed', e)
   } finally {
-    contentLoading.value = false
+    if (selected.value === p) contentLoading.value = false
   }
+}
+
+// openLink opens a file a document links to, relative to that document.
+function openLink(href: string) {
+  const target = href.split('#')[0]!.split('?')[0]!
+  if (!target) return
+  const parts = target.startsWith('/') ? [] : selected.value.split('/').slice(0, -1)
+  for (const part of decodeURIComponent(target).split('/')) {
+    if (part === '..') parts.pop()
+    else if (part && part !== '.') parts.push(part)
+  }
+  const p = parts.join('/')
+  const hit = files.value.find(f => f.path === p) || files.value.find(f => f.path === `${p}/README.md`)
+  if (hit) open(hit.path)
+  else notify.error('That file isn\'t in this run', new Error(p))
 }
 
 function icon(p: string) {
@@ -100,7 +118,7 @@ const lines = computed(() => content.value.split('\n'))
       </template>
       <USkeleton v-if="contentLoading" class="h-64 m-4" />
       <div v-else-if="isMarkdown && rendered" class="p-4 overflow-auto max-h-[70vh]">
-        <MarkdownView :source="content" />
+        <MarkdownView :source="content" @open="openLink" />
       </div>
       <div v-else class="overflow-auto max-h-[70vh] font-mono text-xs">
         <table class="w-full">

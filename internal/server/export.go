@@ -315,6 +315,9 @@ func (s *Server) startExport(ctx context.Context, req runRequest, u *User) (*Run
 			return nil, fmt.Errorf("repo: %w", err)
 		}
 	}
+	if req.Publish != nil && (req.Repo == nil || req.Repo.URL == "") {
+		return nil, errors.New("publish: name the repository to push to (repo.url)")
+	}
 	in, d, err := s.describe(context.Background(), t.Provider)
 	if err != nil {
 		return nil, err
@@ -330,7 +333,9 @@ func (s *Server) startExport(ctx context.Context, req runRequest, u *User) (*Run
 			return err
 		}
 		if req.Publish != nil {
-			_ = s.publish(ctx, rc.ID(), u, req.Publish.Message, rc) // recorded on the run
+			if err := s.publish(ctx, rc.ID(), u, req.Publish.Message, rc); err != nil {
+				rc.Warn("not pushed: %v", err)
+			}
 		}
 		return nil
 	})

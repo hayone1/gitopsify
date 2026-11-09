@@ -140,13 +140,14 @@ func (r *renderer) report(l layout) []byte {
 		for _, rel := range inv.Releases {
 			repo, src, mode := "—", "—", string(rel.Mode)
 			if rel.Repo != nil {
-				repo, src = "`"+rel.Repo.URL+"`", rel.Repo.Source
+				// A code span: no HTML inside, only its own delimiters.
+				repo, src = "`"+strings.NewReplacer("`", "'", "|", `\|`).Replace(rel.Repo.URL)+"`", escape(rel.Repo.Source)
 			}
 			notes := strings.Join(rel.Warnings, "; ")
 			if rel.Skip {
 				mode, notes = "skipped", rel.SkipReason
 			}
-			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s |\n", rel.Key(), rel.Chart.Name, rel.Chart.Version, mode, repo, src, escape(notes))
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s |\n", escape(rel.Key()), escape(rel.Chart.Name), escape(rel.Chart.Version), mode, repo, src, escape(notes))
 		}
 		b.WriteString("\nModes: **chart** pulls the chart from its repository; **vendor** writes the chart, rebuilt from the release, into `apps/<app>/charts/`; **manifests** writes the release's objects as plain manifests (used when the chart can be neither found nor rebuilt).\n\n")
 	}
@@ -161,7 +162,7 @@ func (r *renderer) report(l layout) []byte {
 		b.WriteString("None.\n")
 	}
 	for _, s := range inv.SecretActions {
-		fmt.Fprintf(&b, "- %s\n", s)
+		fmt.Fprintf(&b, "- %s\n", mdText(s))
 	}
 
 	b.WriteString("\n## Warnings\n\n")
@@ -169,19 +170,19 @@ func (r *renderer) report(l layout) []byte {
 		b.WriteString("None.\n")
 	}
 	for _, w := range inv.Warnings {
-		fmt.Fprintf(&b, "- %s\n", w)
+		fmt.Fprintf(&b, "- %s\n", mdText(w))
 	}
 	for _, rel := range inv.Releases {
 		if rel.Skip {
 			continue
 		}
 		for _, w := range rel.Warnings {
-			fmt.Fprintf(&b, "- Helm release `%s`: %s\n", rel.Key(), w)
+			fmt.Fprintf(&b, "- Helm release `%s`: %s\n", rel.Key(), mdText(w))
 		}
 	}
 	for _, o := range included {
 		for _, w := range o.Warnings {
-			fmt.Fprintf(&b, "- `%s`: %s\n", o.Ref, w)
+			fmt.Fprintf(&b, "- `%s`: %s\n", o.Ref, mdText(w))
 		}
 	}
 
@@ -217,7 +218,7 @@ func (r *renderer) report(l layout) []byte {
 		}
 		for _, o := range objs {
 			_, detail, _ := strings.Cut(o.Reason, ": ")
-			fmt.Fprintf(&b, "- `%s` — %s\n", o.Ref, detail)
+			fmt.Fprintf(&b, "- `%s` — %s\n", o.Ref, mdText(detail))
 		}
 		if len(objs) > 15 {
 			b.WriteString("\n</details>\n")
@@ -242,4 +243,9 @@ func (r *renderer) warningCount() int {
 	return n
 }
 
-func escape(s string) string { return strings.ReplaceAll(s, "|", `\|`) }
+// mdText keeps text from clusters and tools (names, messages) from being
+// read as HTML by markdown renderers.
+var mdText = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace
+
+// escape is mdText for a table cell.
+func escape(s string) string { return strings.ReplaceAll(mdText(s), "|", `\|`) }

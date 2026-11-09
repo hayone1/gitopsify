@@ -157,6 +157,17 @@ type authenticator struct {
 	localMu  sync.Mutex
 	oidc     *oidcLogin
 	external *url.URL
+	// cookie is the session cookie's name. Cookies ignore ports: local mode
+	// adds its port, so two gitopsify ui on one machine don't sign each
+	// other out.
+	cookie string
+}
+
+func (a *authenticator) cookieName() string {
+	if a.cookie != "" {
+		return a.cookie
+	}
+	return sessionCookie
 }
 
 type oidcLogin struct {
@@ -212,8 +223,9 @@ func newOIDC(ctx context.Context, c *config.ServerOIDC, external *url.URL) (*oid
 // fromRequest returns the user of a request and their session (nil for API
 // tokens), or nil when nobody is signed in.
 func (a *authenticator) fromRequest(r *http.Request) (*User, *session, []config.ServerToken) {
-	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-		tok := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+	// The scheme is case-insensitive (RFC 9110).
+	if scheme, rest, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
+		tok := strings.TrimSpace(rest)
 		hash := TokenHash(tok)
 		for _, t := range a.tokens {
 			if subtle.ConstantTimeCompare([]byte(hash), []byte(strings.ToLower(t.SHA256))) == 1 {
@@ -222,12 +234,12 @@ func (a *authenticator) fromRequest(r *http.Request) (*User, *session, []config.
 		}
 		return nil, nil, nil
 	}
-	c, err := r.Cookie(sessionCookie)
+	c, err := r.Cookie(a.cookieName())
 	if err != nil {
 		return nil, nil, nil
 	}
 	var s session
-	if err := a.sealer.open(sessionCookie, c.Value, &s); err != nil || time.Now().Unix() > s.Expires {
+	if err := a.sealer.open(a.cookieName(), c.Value, &s); err != nil || time.Now().Unix() > s.Expires {
 		return nil, nil, nil
 	}
 	return &s.User, &s, nil
@@ -235,20 +247,20 @@ func (a *authenticator) fromRequest(r *http.Request) (*User, *session, []config.
 
 func (a *authenticator) setSession(w http.ResponseWriter, u User) (*session, error) {
 	s := &session{User: u, Expires: time.Now().Add(a.ttl).Unix(), CSRF: randomString(24)}
-	v, err := a.sealer.seal(sessionCookie, s)
+	v, err := a.sealer.seal(a.cookieName(), s)
 	if err != nil {
 		return nil, err
 	}
 	if len(v) > 3800 {
 		return nil, errors.New("too many groups to fit in a session cookie; narrow the groups claim or the scopes")
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: v, Path: "/", HttpOnly: true, Secure: a.secure,
+	http.SetCookie(w, &http.Cookie{Name: a.cookieName(), Value: v, Path: "/", HttpOnly: true, Secure: a.secure,
 		SameSite: http.SameSiteLaxMode, MaxAge: int(a.ttl.Seconds())})
 	return s, nil
 }
 
 func (a *authenticator) clearSession(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, Secure: a.secure,
+	http.SetCookie(w, &http.Cookie{Name: a.cookieName(), Value: "", Path: "/", HttpOnly: true, Secure: a.secure,
 		SameSite: http.SameSiteLaxMode, MaxAge: -1})
 }
 
@@ -309,11 +321,12 @@ func (a *authenticator) finishLogin(w http.ResponseWriter, r *http.Request) (*Us
 		return nil, "", loginFailed("expired", "the sign-in expired")
 	}
 	q := r.URL.Query()
-	if e := q.Get("error"); e != "" {
-		return nil, "", loginFailed("refused", "the identity provider refused the sign-in: %.100s %.300s", e, q.Get("error_description"))
-	}
+	// State first: any page can send a browser here with an error.
 	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(st.State)) != 1 {
 		return nil, "", loginFailed("expired", "the sign-in state doesn't match")
+	}
+	if e := q.Get("error"); e != "" {
+		return nil, "", loginFailed("refused", "the identity provider refused the sign-in: %.100s %.300s", e, q.Get("error_description"))
 	}
 	ctx := oidc.ClientContext(r.Context(), a.oidc.client)
 	tok, err := a.oidc.oauth.Exchange(ctx, q.Get("code"), oauth2.VerifierOption(st.Verifier))

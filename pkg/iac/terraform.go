@@ -98,7 +98,7 @@ func providersFile(d *sdk.Description, w *workspace) []byte {
 			envs = append(envs, fmt.Sprintf("%s (%s)", s.Env, firstNonEmpty(s.Title, s.Name)))
 		}
 	}
-	comment := fmt.Sprintf("# %s: %s\n", w.inst.Name, firstNonEmpty(w.inst.Target, d.Title))
+	comment := fmt.Sprintf("# %s: %s\n", oneLine(w.inst.Name), oneLine(firstNonEmpty(w.inst.Target, d.Title)))
 	if len(envs) > 0 {
 		comment += "# Credentials come from the environment: " + strings.Join(envs, ", ") + ".\n"
 	}
@@ -280,7 +280,7 @@ func renderTerraformKind(res *Result, in Input, w *workspace, kind *sdk.Kind, by
 		u.add(base+"/"+fileName, hclwrite.Format(f.Bytes()), false)
 	}
 	if len(tfvars) > 0 {
-		u.add(base+"/"+kindFileBase(kind)+SecretTFVarsSuffix, []byte("# Secret values read from "+in.Description.Title+". Never commit this file. gitopsify export\n# rewrites it: set other values in TF_VAR_ variables or a *.auto.tfvars file of your own.\n"+strings.Join(tfvars, "")), true)
+		u.add(base+"/"+kindFileBase(kind)+SecretTFVarsSuffix, []byte("# Secret values read from "+oneLine(in.Description.Title)+". Never commit this file. gitopsify export\n# rewrites it: set other values in TF_VAR_ variables or a *.auto.tfvars file of your own.\n"+strings.Join(tfvars, "")), true)
 	}
 	return nil
 }
@@ -407,4 +407,15 @@ func describe(s string) string {
 		return ""
 	}
 	return " (" + s + ")"
+}
+
+// oneLine keeps a provider's or tool's text (a target, a title) inside the
+// comment it goes into: a line break would start configuration.
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
 }

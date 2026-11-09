@@ -276,6 +276,9 @@ func TestClientIP(t *testing.T) {
 		{"10.1.2.3:1234", "6.6.6.6, 198.51.100.7", "198.51.100.7"},  // a forged first entry
 		{"10.1.2.3:1234", "198.51.100.7, 10.9.9.9", "198.51.100.7"}, // two proxies
 		{"10.1.2.3:1234", "", "10.1.2.3"},
+		{"10.1.2.3:1234", "198.51.100.7:4711", "198.51.100.7"},         // a proxy that adds the port
+		{"10.1.2.3:1234", "[2001:db8::7]:4711", "2001:db8::7"},         // IPv6 with a port
+		{"10.1.2.3:1234", "198.51.100.7, 10.9.9.9:80", "198.51.100.7"}, // a proxy hop with a port
 	} {
 		r, _ := http.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = c.remote

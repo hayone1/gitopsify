@@ -113,12 +113,13 @@ func (s *Server) prepareMigration(text, cluster string, u *User) (*config.Config
 		if name == "" {
 			continue
 		}
+		// The role first: unknown and forbidden names get the same answer.
+		if role := roleOn(s.grantsOf(u), name); !atLeast(role, config.RoleViewer) {
+			return nil, fmt.Errorf("spec.environments[%d]: you have no access to a cluster named %s", i, name)
+		}
 		ec, err := s.cluster(name)
 		if err != nil {
 			return nil, fmt.Errorf("spec.environments[%d].cluster.context: %w", i, err)
-		}
-		if role := roleOn(s.grantsOf(u), name); !atLeast(role, config.RoleViewer) {
-			return nil, fmt.Errorf("spec.environments[%d]: you have no access to cluster %s", i, name)
 		}
 		if e.Cluster.Access, err = s.access(ec, u); err != nil {
 			return nil, err
@@ -323,6 +324,9 @@ func (s *Server) startRun(ctx context.Context, req runRequest, u *User) (*Run, e
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	if req.Publish != nil && req.Type == RunMigrate && len(nonEmpty(layoutDirs(cfg))) == 0 {
+		return nil, errors.New("publish: the migration has no spec.output.repo.url (or environments[].repoURL) to push to")
+	}
 	// The resource as submitted (with the defaults), without the access
 	// settings the server filled in.
 	spec, _ := json.Marshal(publicDocument(cfg))
@@ -338,7 +342,9 @@ func (s *Server) startRun(ctx context.Context, req runRequest, u *User) (*Run, e
 			if req.Publish != nil {
 				// A failed push is recorded on the run, which keeps its
 				// output: push again once the cause is fixed.
-				_ = s.publish(ctx, rc.ID(), u, req.Publish.Message, rc)
+				if err := s.publish(ctx, rc.ID(), u, req.Publish.Message, rc); err != nil {
+					rc.Warn("not pushed: %v", err)
+				}
 			}
 			return nil
 		})
@@ -456,6 +462,9 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 }
 
 // publish commits and pushes a migration's or an export's output.
+// errNoRemote is a push of a run that names no repository.
+var errNoRemote = errors.New("nothing to push to")
+
 func (s *Server) publish(ctx context.Context, id string, u *User, message string, rc *runContext) error {
 	// One push of a run at a time, across replicas; deleting waits too.
 	lctx, unlock, locked, err := s.store.lockRun(ctx, id)
@@ -477,7 +486,7 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 	var cfg *config.Config
 	if r.Type == RunExport {
 		if r.Repo == nil || r.Repo.URL == "" {
-			return errors.New("the export has no repository to push to")
+			return fmt.Errorf("%w: the export names no repository", errNoRemote)
 		}
 		cfg = &config.Config{Output: config.Output{Repo: config.Repo{URL: r.Repo.URL, Revision: r.Repo.Branch}}}
 	} else if cfg, err = config.ParseMigration("migration.json", r.Spec); err != nil {
@@ -486,8 +495,8 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 	if cfg.Output.Dir, err = s.runs.ensureOutput(ctx, id, r.OutputVersion); err != nil {
 		return fmt.Errorf("the run's output: %w", err)
 	}
-	if cfg.Output.Repo.URL == "" && (cfg.Output.Layout != config.LayoutRepoPerEnv || len(cfg.Environments) == 0 || cfg.Environments[0].RepoURL == "") {
-		return errors.New("the migration has no spec.output.repo.url to push to")
+	if len(nonEmpty(layoutDirs(cfg))) == 0 {
+		return fmt.Errorf("%w: the migration has no spec.output.repo.url (or environments[].repoURL)", errNoRemote)
 	}
 	if message == "" {
 		message = fmt.Sprintf("gitopsify: %s from %s (run %s)", firstNonEmpty(r.Name, "migration"), firstNonEmpty(r.Cluster, r.Tool), id)
@@ -509,6 +518,9 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 	var pubs []Publish
 	for _, d := range keys {
 		remote := dirs[d]
+		if remote == "" {
+			continue // an environment with no repository of its own
+		}
 		p := Publish{At: time.Now().UTC(), By: u.Username, Dir: strings.TrimPrefix(strings.TrimPrefix(d, cfg.Output.Dir), "/"),
 			Remote: remote, Branch: firstNonEmpty(cfg.Output.Repo.Revision, "main")}
 		env, err := gitEnv(s.cfg.Git, remote)
@@ -674,4 +686,15 @@ func (k *keyLocks) Unlock(key string) {
 	k.mu.Lock()
 	delete(k.held, key)
 	k.mu.Unlock()
+}
+
+// nonEmpty keeps the directories that have a remote.
+func nonEmpty(dirs map[string]string) map[string]string {
+	out := map[string]string{}
+	for d, r := range dirs {
+		if r != "" {
+			out[d] = r
+		}
+	}
+	return out
 }

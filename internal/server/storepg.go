@@ -108,11 +108,17 @@ func migratePG(ctx context.Context, pool *pgxpool.Pool) error {
 	defer func() {
 		uctx, ucancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer ucancel()
+		_, _ = conn.Exec(uctx, `RESET lock_timeout`)
 		if _, err := conn.Exec(uctx, `SELECT pg_advisory_unlock($1)`, pgLock); err != nil {
 			// The session would keep the lock in the pool: end it.
 			_ = conn.Conn().Close(uctx)
 		}
 	}()
+	// ALTER TABLE waits for every transaction on the table: give up rather
+	// than queue everyone's queries behind it.
+	if _, err := conn.Exec(ctx, `SET lock_timeout = '20s'`); err != nil {
+		return err
+	}
 	for _, stmt := range pgSchema {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("creating the tables (the database user needs to own them, or CREATE on the schema): %w", err)
@@ -305,7 +311,9 @@ func (p *pgStore) getRun(ctx context.Context, id string) (*Run, error) {
 }
 
 func (p *pgStore) listRuns(ctx context.Context, q runQuery) ([]Run, error) {
-	sql := `SELECT data::jsonb - 'spec' FROM gitopsify_runs WHERE true`
+	// data as stored (json): jsonb would refuse a run with a NUL character
+	// anywhere, and every listing reaching it.
+	sql := `SELECT data FROM gitopsify_runs WHERE true`
 	var args []any
 	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
 	// PostgreSQL keeps microseconds; runs are created with no more.
@@ -347,6 +355,7 @@ func (p *pgStore) listRuns(ctx context.Context, q runQuery) ([]Run, error) {
 		}
 		var r Run
 		if json.Unmarshal(b, &r) == nil {
+			r.Spec = nil
 			out = append(out, r)
 		}
 	}
@@ -368,7 +377,9 @@ func (p *pgStore) appendLog(ctx context.Context, id string, seq int, l LogLine) 
 }
 
 func (p *pgStore) readLog(ctx context.Context, id string, from int) ([]LogLine, error) {
-	rows, err := p.pool.Query(ctx, `SELECT line FROM gitopsify_run_logs WHERE run_id = $1 AND seq >= $2 ORDER BY seq`, id, from)
+	// from is a position in the stored log, as with the file store: a line
+	// that failed to store leaves a gap in seq, not in positions.
+	rows, err := p.pool.Query(ctx, `SELECT line FROM gitopsify_run_logs WHERE run_id = $1 ORDER BY seq OFFSET $2`, id, from)
 	if err != nil {
 		return nil, err
 	}

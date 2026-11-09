@@ -145,6 +145,9 @@ type runs struct {
 	stop   chan struct{}
 	// dirs locks a run's directory on this replica (unpacking, removing).
 	dirs dirLocks
+	// unsaved are finished runs whose final state couldn't be stored yet:
+	// the loop retries, or they would stay "running" in the store.
+	unsaved map[string]Run
 }
 
 type runState struct {
@@ -159,6 +162,9 @@ type runState struct {
 	// interrupted is set when the server stopped it (a restart or update).
 	interrupted bool
 }
+
+// errUnfinished refuses to delete a run that is still working.
+var errUnfinished = errors.New("the run hasn't finished; cancel it first")
 
 // errShuttingDown refuses runs once the server is stopping.
 var errShuttingDown = errors.New("the server is shutting down; start the run again in a moment")
@@ -299,6 +305,7 @@ func (rs *runs) loop() {
 				beat = time.Now()
 			}
 		}
+		rs.saveUnsaved(ctx)
 		cancel()
 		if rs.store.shared() && time.Since(reaped) > time.Minute {
 			rs.reap()
@@ -318,9 +325,38 @@ func (rs *runs) beat(ctx context.Context, ids []string) {
 		rs.mu.Lock()
 		st, ok := rs.local[id]
 		rs.mu.Unlock()
-		if ok {
+		if !ok {
+			continue
+		}
+		// A run whose final state is being saved reads as lost (it is
+		// finished in the store): saveFinal tells the two apart.
+		st.mu.Lock()
+		saving := st.run.finished()
+		st.mu.Unlock()
+		if !saving {
 			rs.lose(st)
 		}
+	}
+}
+
+// saveUnsaved retries storing the final state of runs whose last save
+// failed.
+func (rs *runs) saveUnsaved(ctx context.Context) {
+	rs.mu.Lock()
+	pending := make([]Run, 0, len(rs.unsaved))
+	for _, r := range rs.unsaved {
+		pending = append(pending, r)
+	}
+	rs.mu.Unlock()
+	for _, r := range pending {
+		err := rs.store.updateRun(ctx, &r, rs.owner)
+		if err != nil && !errors.Is(err, errFenced) && !errors.Is(err, errNotFound) {
+			continue // still failing: next time
+		}
+		// Saved, or someone else decided (deleted, or failed it).
+		rs.mu.Lock()
+		delete(rs.unsaved, r.ID)
+		rs.mu.Unlock()
 	}
 }
 
@@ -408,7 +444,7 @@ type runContext struct {
 func (rc *runContext) ID() string { return rc.st.run.ID }
 
 func (rc *runContext) logf(level, format string, args ...any) {
-	line := LogLine{Time: time.Now().UTC(), Level: level, Message: fmt.Sprintf(format, args...)}
+	line := LogLine{Time: time.Now().UTC(), Level: level, Message: logText(fmt.Sprintf(format, args...))}
 	st := rc.st
 	st.mu.Lock()
 	seq := len(st.lines)
@@ -427,6 +463,22 @@ func (rc *runContext) logf(level, format string, args ...any) {
 		rc.rs.log.Warn("run log", "run", id, "error", err)
 	}
 }
+
+// maxLogLine caps one line of a run's log (a provider's stderr can be MBs).
+const maxLogLine = 64 << 10
+
+// logText makes a message storable: PostgreSQL's jsonb and text refuse NUL
+// characters, and one huge line would hide the rest of the log.
+func logText(s string) string {
+	s = noNUL(s)
+	if len(s) > maxLogLine {
+		s = strings.ToValidUTF8(s[:maxLogLine], "") + " … (cut)"
+	}
+	return s
+}
+
+// noNUL replaces NUL characters, which PostgreSQL's jsonb and text refuse.
+func noNUL(s string) string { return strings.ReplaceAll(s, "\x00", "\uFFFD") }
 
 // Info logs progress, the way pipeline.Options.Log is called.
 func (rc *runContext) Info(format string, args ...any) { rc.logf("info", format, args...) }
@@ -474,7 +526,13 @@ func (rs *runs) saveFinal(st *runState, fn func(*Run)) {
 			rs.lose(st)
 			return
 		case attempt == 4:
-			rs.log.Error("saving a finished run", "run", r.ID, "error", err)
+			rs.log.Error("saving a finished run; retrying in the background", "run", r.ID, "error", err)
+			rs.mu.Lock()
+			if rs.unsaved == nil {
+				rs.unsaved = map[string]Run{}
+			}
+			rs.unsaved[r.ID] = r
+			rs.mu.Unlock()
 			return
 		}
 		time.Sleep(time.Duration(attempt) * 2 * time.Second)
@@ -537,6 +595,11 @@ func (rs *runs) start(parent context.Context, r Run, work func(context.Context, 
 	err := rs.store.createRun(sctx, &r, rs.owner)
 	scancel()
 	if err != nil {
+		// The insert may have happened with its answer lost: don't leave a
+		// queued run nobody works on (it would be reaped and notified).
+		dctx, dcancel := bg()
+		_ = rs.store.deleteRun(dctx, r.ID)
+		dcancel()
 		_ = os.RemoveAll(rs.runDir(r.ID))
 		return nil, serverError{fmt.Errorf("recording the run: %w", err)}
 	}
@@ -597,6 +660,10 @@ func (rs *runs) start(parent context.Context, r Run, work func(context.Context, 
 			}()
 			return work(ctx, rc)
 		}()
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			// Some step's own deadline, not the run's timeout.
+			err = errors.New(err.Error())
+		}
 		// The work's own result decides: a push that finished just as the
 		// run was canceled still happened.
 		end(rs.finish(rc, err))
@@ -824,7 +891,7 @@ func (rs *runs) remove(id string) error {
 		return os.ErrNotExist
 	}
 	if !r.finished() {
-		return errors.New("the run hasn't finished; cancel it first")
+		return errUnfinished
 	}
 	ctx, cancel := bg()
 	defer cancel()
@@ -897,15 +964,18 @@ func (rs *runs) poll(ctx context.Context, id string, seq int, status string, ch 
 	defer close(ch)
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	failures := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+		// The run first: its lines are stored before its final status, so
+		// a finished run's log read after it is complete.
 		sctx, cancel := bg()
-		lines, err := rs.store.readLog(sctx, id, seq)
 		r, gerr := rs.store.getRun(sctx, id)
+		lines, err := rs.store.readLog(sctx, id, seq)
 		cancel()
 		if err == nil {
 			for i := range lines {
@@ -917,9 +987,18 @@ func (rs *runs) poll(ctx context.Context, id string, seq int, status string, ch 
 			}
 			seq += len(lines)
 		}
-		if gerr != nil {
-			return
+		if errors.Is(gerr, errNotFound) {
+			return // deleted
 		}
+		if gerr != nil {
+			// A database blip doesn't end the stream; half a minute of
+			// them does (the browser reconnects).
+			if failures++; failures > 30 {
+				return
+			}
+			continue
+		}
+		failures = 0
 		if r.Status != status {
 			status = r.Status
 			select {

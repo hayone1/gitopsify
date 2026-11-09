@@ -39,6 +39,11 @@ func (a *auditLog) record(e AuditEvent) {
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
 	}
+	// Some fields come from requests: NUL would make PostgreSQL refuse
+	// the event.
+	for _, f := range []*string{&e.Actor, &e.Via, &e.Action, &e.Outcome, &e.Cluster, &e.Target, &e.Detail, &e.IP, &e.Request} {
+		*f = noNUL(*f)
+	}
 	if a.stdout {
 		a.log.Info("audit", "actor", e.Actor, "via", e.Via, "action", e.Action, "outcome", e.Outcome, "cluster", e.Cluster,
 			"target", e.Target, "detail", e.Detail, "ip", e.IP, "request", e.Request)

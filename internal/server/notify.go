@@ -116,8 +116,11 @@ func (n *notifier) payload(format, event string, r Run) ([]byte, error) {
 	}
 	switch format {
 	case "slack":
+		// Run errors can quote tools' data: no <!channel> or <url|links>
+		// from them.
 		icon := map[string]string{"succeeded": ":white_check_mark:", "failed": ":x:", "canceled": ":no_entry_sign:"}[r.Status]
-		return json.Marshal(map[string]any{"text": fmt.Sprintf("%s %s <%s|view the run>", icon, text, link)})
+		safe := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(text)
+		return json.Marshal(map[string]any{"text": fmt.Sprintf("%s %s <%s|view the run>", icon, safe, link)})
 	case "teams":
 		return json.Marshal(map[string]any{
 			"type": "message",
@@ -125,7 +128,8 @@ func (n *notifier) payload(format, event string, r Run) ([]byte, error) {
 				"contentType": "application/vnd.microsoft.card.adaptive",
 				"content": map[string]any{
 					"type": "AdaptiveCard", "version": "1.4", "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-					"body":    []any{map[string]any{"type": "TextBlock", "text": text, "wrap": true}},
+					// A TextRun is plain text: no markdown links from tools' data.
+					"body":    []any{map[string]any{"type": "RichTextBlock", "inlines": []any{map[string]any{"type": "TextRun", "text": text}}}},
 					"actions": []any{map[string]any{"type": "Action.OpenUrl", "title": "View the run", "url": link}},
 				},
 			}},

@@ -160,3 +160,32 @@ func (s *Server) namespaces(ctx context.Context, name string, u *User) ([]string
 	sort.Strings(out)
 	return out, nil
 }
+
+// sessionGroups are the groups a session keeps when all of them don't fit:
+// those bindings name, and those impersonating clusters pass on by name
+// (impersonateGroups).
+func (s *Server) sessionGroups(groups []string) []string {
+	keep := map[string]bool{}
+	for _, g := range s.policy.relevantGroups(groups) {
+		keep[g] = true
+	}
+	list, _ := s.clusterList()
+	for i := range list {
+		c := &list[i]
+		if !c.Impersonate || len(c.ImpersonateGroups) == 0 {
+			continue
+		}
+		for _, g := range groups {
+			if impersonable(c, g) {
+				keep[g] = true
+			}
+		}
+	}
+	var out []string
+	for _, g := range groups {
+		if keep[g] {
+			out = append(out, g)
+		}
+	}
+	return out
+}

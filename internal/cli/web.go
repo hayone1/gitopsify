@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net"
 	"os"
@@ -10,7 +11,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -74,7 +78,15 @@ run gitopsify server (or the Helm chart) instead.`,
 			u.Success("gitopsify is running at http://%s (Ctrl-C stops it)", ln.Addr())
 			u.Printf("  Open: %s\n", url)
 			if !noBrowser {
-				openBrowser(url)
+				// The browser opens a private page that posts the token: on
+				// its command line, others on the machine could read it.
+				page, cleanup, err := signInPage(ln.Addr().String(), token)
+				if err != nil {
+					u.Warn("couldn't open the browser (%v); open the address above", err)
+				} else {
+					defer cleanup()
+					openBrowser(page)
+				}
 			}
 			return srv.ListenAndServe(ctx, ln)
 		},
@@ -85,6 +97,39 @@ run gitopsify server (or the Helm chart) instead.`,
 	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig whose contexts the UI offers (default: KUBECONFIG or ~/.kube/config)")
 	return cmd
 }
+
+// signInPage writes a page, readable by this user only, that signs the
+// browser in to a gitopsify ui by posting its single-use token. It is
+// removed after a minute, or by cleanup.
+func signInPage(addr, token string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "gitopsify-ui-") // 0700
+	if err != nil {
+		return "", nil, err
+	}
+	var b strings.Builder
+	err = signInTemplate.Execute(&b, map[string]string{"Action": "http://" + addr + "/api/v1/auth/local", "Token": token})
+	page := filepath.Join(dir, "sign-in.html")
+	if err == nil {
+		err = os.WriteFile(page, []byte(b.String()), 0o600)
+	}
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, err
+	}
+	var once sync.Once
+	cleanup := func() { once.Do(func() { _ = os.RemoveAll(dir) }) }
+	time.AfterFunc(time.Minute, cleanup)
+	return page, cleanup, nil
+}
+
+var signInTemplate = template.Must(template.New("sign-in").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>gitopsify</title></head>
+<body style="font-family:system-ui;margin:4rem auto;max-width:30rem">
+<form method="post" action="{{.Action}}"><input type="hidden" name="token" value="{{.Token}}">
+<p>Signing in to gitopsify… <button type="submit">Continue</button></p></form>
+<script>document.forms[0].submit()</script>
+</body></html>
+`))
 
 func openBrowser(url string) {
 	var cmd *exec.Cmd

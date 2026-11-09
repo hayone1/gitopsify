@@ -45,6 +45,9 @@ func (s *Server) routes() http.Handler {
 	s.api(mux, "GET /api/v1/auth/login", "public", s.login)
 	s.api(mux, "GET /api/v1/auth/callback", "public", s.callback)
 	s.api(mux, "GET /api/v1/auth/local", "public", s.localLogin)
+	// gitopsify ui opens a local page that posts the token: a URL with it
+	// would be in the browser opener's command line, which others can read.
+	s.api(mux, "POST /api/v1/auth/local", "public", s.localLogin)
 	s.api(mux, "POST /api/v1/auth/logout", "", s.logout)
 	s.api(mux, "GET /api/v1/me", "", s.getMe)
 
@@ -117,13 +120,15 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 	}
 	full := *u
 	if _, err := s.auth.setSession(w, full); err != nil {
-		// Too many groups for a cookie: keep the ones bindings use.
-		u.Groups = s.policy.relevantGroups(u.Groups)
+		// Too many groups for a cookie: keep the ones bindings use, and
+		// those impersonating clusters pass on by name.
+		u.Groups = s.sessionGroups(u.Groups)
 		if _, err := s.auth.setSession(w, *u); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		s.log.Warn("kept only the groups bindings name in the session", "user", u.Username, "groups", len(full.Groups))
+		s.log.Warn("kept only the groups bindings and impersonateGroups name in the session; clusters that impersonate every group see fewer",
+			"user", u.Username, "groups", len(full.Groups), "kept", len(u.Groups))
 	}
 	role := anyRole(s.policy.grants(u, nil))
 	s.metrics.login("ok")
@@ -133,12 +138,13 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 }
 
 func (s *Server) localLogin(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
-	if s.auth.mode != config.AuthLocal || s.auth.local == "" {
+	if s.auth.mode != config.AuthLocal {
 		writeError(w, http.StatusNotFound, "this server doesn't use local sign-in")
 		return
 	}
 	// The link works once: it may sit in the browser's history.
-	if !s.auth.useLocalToken(r.URL.Query().Get("token")) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	if !s.auth.useLocalToken(r.FormValue("token")) {
 		s.metrics.login("failed")
 		s.audit.record(AuditEvent{Action: "auth.login", Outcome: "denied", Detail: "wrong or used local token", IP: ri.ip, Request: ri.id, Via: "local"})
 		http.Redirect(w, r, "/login?error=link", http.StatusFound)
@@ -290,10 +296,12 @@ func (s *Server) validateMigration(w http.ResponseWriter, r *http.Request, ri *r
 }
 
 // exportTemplate is a starting Export for a tool.
-func (s *Server) exportTemplate(w http.ResponseWriter, r *http.Request, _ *reqInfo) {
-	t, err := s.tool(r.URL.Query().Get("tool"))
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+func (s *Server) exportTemplate(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
+	// No probing for names: tools the caller has no role on are unknown.
+	name := r.URL.Query().Get("tool")
+	t, err := s.tool(name)
+	if err != nil || roleOnTool(ri.grants, name) == "" {
+		writeError(w, http.StatusNotFound, "no tool named "+name)
 		return
 	}
 	x := &config.Export{Spec: config.ExportSpec{Provider: config.ProviderRef{Name: t.Provider}}}
@@ -423,7 +431,15 @@ func (s *Server) deleteRun(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		return
 	}
 	if err := s.runs.remove(run.ID); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			writeError(w, http.StatusNotFound, "no such run")
+		case errors.Is(err, errUnfinished), errors.Is(err, errPushing):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			s.log.ErrorContext(r.Context(), "deleting a run", "run", run.ID, "error", err)
+			writeError(w, http.StatusInternalServerError, "the run couldn't be deleted (request "+ri.id+")")
+		}
 		return
 	}
 	s.event(r, "run.delete", "ok", run.Cluster+run.Tool, run.ID, "")
@@ -453,19 +469,30 @@ func (s *Server) publishRun(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 		return
 	}
 	var req publishRequest
-	if r.ContentLength > 0 {
-		if err := readJSON(r, &req); err != nil {
+	// The body is optional (a chunked one has no length).
+	if r.ContentLength != 0 {
+		if err := readJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
 	// A push isn't stopped halfway by a closed tab: it finishes (or times
-	// out) and stores the output.
+	// out) and stores the output. Shutdown waits for it (s.pushes).
+	if !s.startPush() {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, errShuttingDown.Error())
+		return
+	}
+	defer s.pushes.Done()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
 	defer cancel()
 	if err := s.publish(ctx, run.ID, ri.user, req.Message, nil); err != nil {
+		// 502 only for the remote's answers: clients retry those.
 		code := http.StatusBadGateway
-		if errors.Is(err, errPushing) {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			code = http.StatusNotFound
+		case errors.Is(err, errPushing), errors.Is(err, errNoRemote):
 			code = http.StatusConflict
 		}
 		writeError(w, code, err.Error())
@@ -786,7 +813,10 @@ func (s *Server) runArchive(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 		return err
 	})
 	if err != nil {
+		// Closing the archive would make a partial one look complete:
+		// break the connection instead, so the download fails.
 		s.log.Warn("writing archive", "run", run.ID, "error", err)
+		panic(http.ErrAbortHandler)
 	}
 	_ = tw.Close()
 	_ = gz.Close()
@@ -801,7 +831,7 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		return
 	}
 	q := r.URL.Query()
-	aq := auditQuery{Actor: q.Get("actor"), Action: q.Get("action"), Cluster: q.Get("cluster"), Outcome: q.Get("outcome")}
+	aq := auditQuery{Actor: noNUL(q.Get("actor")), Action: noNUL(q.Get("action")), Cluster: noNUL(q.Get("cluster")), Outcome: noNUL(q.Get("outcome"))}
 	aq.Limit, _ = strconv.Atoi(q.Get("limit"))
 	if b := q.Get("before"); b != "" {
 		t, err := time.Parse(time.RFC3339Nano, b)

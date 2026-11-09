@@ -3,12 +3,42 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 
 const props = defineProps<{ source: string }>()
-const html = computed(() => DOMPurify.sanitize(marked.parse(props.source, { async: false, gfm: true }) as string))
+const emit = defineEmits<{ open: [path: string] }>()
+
+// Reports quote what clusters and tools hold (chart names, object names,
+// messages): text only. No styles, forms or images (the page's CSP stops
+// scripts, not a fake sign-in overlay); external links open elsewhere, and
+// links to other files of the run open them here.
+if (!(globalThis as { gitopsifyPurifyHook?: boolean }).gitopsifyPurifyHook) {
+  (globalThis as { gitopsifyPurifyHook?: boolean }).gitopsifyPurifyHook = true
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.tagName !== 'A') return
+    const href = node.getAttribute('href') || ''
+    if (/^(https?:|mailto:)/i.test(href)) {
+      node.setAttribute('target', '_blank')
+      node.setAttribute('rel', 'noopener noreferrer')
+    } else if (!href.startsWith('#')) {
+      node.setAttribute('data-path', href)
+      node.setAttribute('href', '#')
+    }
+  })
+}
+const html = computed(() => DOMPurify.sanitize(marked.parse(props.source, { async: false, gfm: true }) as string, {
+  FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select', 'img', 'video', 'audio', 'svg', 'math'],
+  FORBID_ATTR: ['style']
+}))
+
+function onClick(e: MouseEvent) {
+  const a = (e.target as HTMLElement).closest('a[data-path]')
+  if (!a) return
+  e.preventDefault()
+  emit('open', a.getAttribute('data-path') || '')
+}
 </script>
 
 <template>
   <!-- eslint-disable-next-line vue/no-v-html -->
-  <div class="markdown text-sm leading-relaxed" v-html="html" />
+  <div class="markdown text-sm leading-relaxed" @click="onClick" v-html="html" />
 </template>
 
 <style>
