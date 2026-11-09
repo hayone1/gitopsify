@@ -397,6 +397,31 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   (`<name>-dark.png`) and tests the color mode across a reload. Reviewed
   (contrast fixed: dimmed text, tinted badges, toggle track). Unbundled:
   Fontsource's .woff fallbacks still ship (a few hundred KB).
+- 2026-11-09, OpenTelemetry (user: "logs metrics and traces", CLI may
+  benefit too): `internal/telemetry` (official SDK, OTLP/HTTP only, standard
+  OTEL_* variables, off unless an endpoint or exporter is set), started in
+  the CLI root's PersistentPreRun (a span per command except server/ui,
+  flushed in Execute, 5 s max). Server: otelhttp on /api/ (spans renamed to
+  the route in the middleware), run spans as children of the starting
+  request, OTel instruments next to the Prometheus text, slog bridged
+  (otelslog) with trace_id/span_id on stderr. pkg/kube wraps client
+  transports. Chart: `opentelemetry.endpoint`/`env`. Docs:
+  docs/observability.md. Zero-code options were tested and rejected: OBI
+  (eBPF) needs a privileged agent; otelc (compile-time, v1.2.0) built with
+  Go 1.27 but named every span "GET" (our middleware hands the mux a copy of
+  the request), sent no HTTP metrics and no logs, printed two init lines on
+  every CLI command and patches the Go runtime. The binary grew ~11 MB
+  (85 to 96 MB): the OTLP collector protos pull in gRPC stubs, as with
+  otelc. Tests: internal/telemetry (otlptest receiver), server
+  TestTelemetry. Reviewed; fixed: a metric View drops server.address/port
+  from http.server.* (from the Host header), traceparent only from
+  trustedProxies (others: new root with a link; no Baggage propagator),
+  client.address set to the audit log's address, one bad signal setting
+  turns only that signal off, pkg/kube takes ConnectOptions.WrapTransport
+  (no internal import), no telemetry for completion/help, chart env merging
+  (GITOPSIFY_POD_NAME/NAMESPACE). Browser e2e passes with OTel on (SSE
+  through otelhttp). Open: runs.start checks rs.closed and calls wg.Add
+  under separate locks (pre-existing, can race shutdown's Wait).
 - devbox.sh: cx33 was unavailable everywhere on 2026-11-09; use
   `SERVER_TYPE=cpx32`. `up` now stops when no location has the type.
 

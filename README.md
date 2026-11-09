@@ -119,6 +119,7 @@ More in [docs/ai-agents.md](docs/ai-agents.md).
 | [Grafana and other tools](docs/providers.md) | Terraform and Crossplane from a tool's live state |
 | [Writing a provider](docs/writing-providers.md) | Support another tool |
 | [Web UI](docs/web-ui.md) | `gitopsify ui`, and the team server: sign-in, roles, audit, Helm, high availability |
+| [Observability](docs/observability.md) | OpenTelemetry traces, metrics and logs from the CLI and the server |
 | [AI agents](docs/ai-agents.md) | Skills and plugins |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and answers |
 | [Configuration reference](docs/configuration.md) | Every field of `gitopsify.yaml` |

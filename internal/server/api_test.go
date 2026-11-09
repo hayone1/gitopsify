@@ -3,6 +3,7 @@ package server
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -18,6 +19,8 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/hayone1/gitopsify/internal/telemetry"
+	"github.com/hayone1/gitopsify/internal/telemetry/otlptest"
 	"github.com/hayone1/gitopsify/pkg/config"
 )
 
@@ -147,7 +150,7 @@ func fakeMigration(t *testing.T, s *Server, cluster string, block chan struct{})
 	t.Helper()
 	spec, _ := json.Marshal(map[string]any{"apiVersion": "gitopsify.io/v1alpha1", "kind": "Migration", "metadata": map[string]string{"name": "shop"},
 		"spec": map[string]any{"output": map[string]any{"tool": "none"}}})
-	r, err := s.runs.start(Run{Type: RunMigrate, Name: "shop", Cluster: cluster, CreatedBy: "ada@acme.io", Spec: spec},
+	r, err := s.runs.start(context.Background(), Run{Type: RunMigrate, Name: "shop", Cluster: cluster, CreatedBy: "ada@acme.io", Spec: spec},
 		func(ctx context.Context, rc *runContext) error {
 			rc.Info("writing files")
 			dir := s.runs.outputDir(rc.ID())
@@ -424,5 +427,55 @@ func TestNotificationURLs(t *testing.T) {
 		if err == nil || strings.Contains(err.Error(), bad) {
 			t.Errorf("%q: %v", bad, err)
 		}
+	}
+}
+
+// With OpenTelemetry on, API requests have spans named after their route and
+// runs have spans in the trace of the request that started them.
+func TestTelemetry(t *testing.T) {
+	rcv := otlptest.New(t)
+	otlptest.ClearEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", rcv.URL)
+	// Export as it happens: the run's span ends and its metrics are
+	// recorded just after the run shows as finished.
+	t.Setenv("OTEL_BSP_SCHEDULE_DELAY", "20")
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "50")
+	if err := telemetry.Setup(context.Background(), "gitopsify-server", "test"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = telemetry.Shutdown(context.Background()) })
+	e := newTestEnv(t, nil)
+	adaC := e.login(ada)
+	var run Run
+	adaC.do(http.MethodPost, "/api/v1/runs", runRequest{Type: RunScan, Cluster: "dev", Migration: migration}, &run)
+	waitRun(t, e.s, run.ID)
+	deadline := time.Now().Add(10 * time.Second)
+	for (rcv.Span("run scan") == nil || !rcv.Metric("gitopsify.runs")) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := telemetry.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	req := rcv.Span("POST /api/v1/runs")
+	scan := rcv.Span("run scan")
+	if req == nil || scan == nil {
+		var names []string
+		for _, s := range rcv.Spans() {
+			names = append(names, s.Name)
+		}
+		t.Fatalf("spans: %v", names)
+	}
+	if !bytes.Equal(scan.TraceId, req.TraceId) || !bytes.Equal(scan.ParentSpanId, req.SpanId) {
+		t.Error("the run's span isn't a child of the request's")
+	}
+	if otlptest.Attr(scan, "gitopsify.run.id") != run.ID || otlptest.Attr(scan, "gitopsify.run.status") != StatusFailed ||
+		scan.Status.GetMessage() == "" {
+		t.Errorf("run span: %v %v", scan.Attributes, scan.Status)
+	}
+	if otlptest.Attr(req, "gitopsify.request.id") == "" || otlptest.Attr(req, "client.address") != "127.0.0.1" {
+		t.Errorf("request span: %v", req.Attributes)
+	}
+	if !rcv.Metric("gitopsify.runs") || !rcv.Metric("gitopsify.logins") || !rcv.Metric("http.server.request.duration") {
+		t.Error("missing metrics")
 	}
 }

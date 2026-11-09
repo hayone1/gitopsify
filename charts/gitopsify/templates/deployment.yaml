@@ -67,6 +67,29 @@ spec:
                   name: {{ default (include "gitopsify.secretName" .) .Values.storage.postgres.existingSecret }}
                   key: {{ if .Values.storage.postgres.existingSecret }}{{ .Values.storage.postgres.secretKey }}{{ else }}postgres-url{{ end }}
             {{- end }}
+            {{- $otel := .Values.opentelemetry }}
+            {{- if or $otel.endpoint $otel.env }}
+            {{- with $otel.endpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: GITOPSIFY_POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: GITOPSIFY_POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            {{- $attrs := printf "service.instance.id=$(GITOPSIFY_POD_NAME),k8s.pod.name=$(GITOPSIFY_POD_NAME),k8s.namespace.name=$(GITOPSIFY_POD_NAMESPACE),k8s.deployment.name=%s" (include "gitopsify.fullname" .) }}
+            {{- with $otel.env.OTEL_RESOURCE_ATTRIBUTES }}
+            {{- $attrs = printf "%s,%s" $attrs . }}
+            {{- end }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ $attrs | quote }}
+            {{- range $name, $value := $otel.env }}
+            {{- if not (or (eq $name "OTEL_RESOURCE_ATTRIBUTES") (and (eq $name "OTEL_EXPORTER_OTLP_ENDPOINT") $otel.endpoint)) }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

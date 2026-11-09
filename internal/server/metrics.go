@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -8,12 +9,22 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/hayone1/gitopsify/internal/telemetry"
 )
 
 // metrics is a small Prometheus text-format registry: request counts and
 // durations, runs started and finished. Enough for dashboards and alerts
-// without the client library's dependencies.
+// without the client library's dependencies. The same counts go to
+// OpenTelemetry when its metrics are on (requests through otelhttp).
 type metrics struct {
+	otelRuns   metric.Int64Counter
+	otelActive metric.Int64UpDownCounter
+	otelLogins metric.Int64Counter
+
 	mu       sync.Mutex
 	requests map[string]float64 // method,route,code
 	duration map[string]*histogram
@@ -32,8 +43,14 @@ type histogram struct {
 }
 
 func newMetrics() *metrics {
-	return &metrics{requests: map[string]float64{}, duration: map[string]*histogram{}, runs: map[string]float64{},
+	m := &metrics{requests: map[string]float64{}, duration: map[string]*histogram{}, runs: map[string]float64{},
 		active: map[string]float64{}, logins: map[string]float64{}, started: time.Now()}
+	meter := telemetry.Meter()
+	// Errors only come from invalid names; the instruments are then no-ops.
+	m.otelRuns, _ = meter.Int64Counter("gitopsify.runs", metric.WithUnit("{run}"), metric.WithDescription("Finished runs by type and status."))
+	m.otelActive, _ = meter.Int64UpDownCounter("gitopsify.runs.active", metric.WithUnit("{run}"), metric.WithDescription("Runs queued or working, by type."))
+	m.otelLogins, _ = meter.Int64Counter("gitopsify.logins", metric.WithUnit("{login}"), metric.WithDescription("Sign-ins by outcome."))
+	return m
 }
 
 func (m *metrics) request(method, route string, code int, d time.Duration) {
@@ -70,6 +87,7 @@ func (m *metrics) runStarted(typ string) {
 	m.mu.Lock()
 	m.active[typ]++
 	m.mu.Unlock()
+	m.otelActive.Add(context.Background(), 1, metric.WithAttributes(attribute.String("gitopsify.run.type", typ)))
 }
 
 func (m *metrics) runFinished(typ, status string) {
@@ -80,6 +98,9 @@ func (m *metrics) runFinished(typ, status string) {
 	m.active[typ]--
 	m.runs[typ+","+status]++
 	m.mu.Unlock()
+	t := attribute.String("gitopsify.run.type", typ)
+	m.otelActive.Add(context.Background(), -1, metric.WithAttributes(t))
+	m.otelRuns.Add(context.Background(), 1, metric.WithAttributes(t, attribute.String("gitopsify.run.status", status)))
 }
 
 func (m *metrics) login(outcome string) {
@@ -89,6 +110,7 @@ func (m *metrics) login(outcome string) {
 	m.mu.Lock()
 	m.logins[outcome]++
 	m.mu.Unlock()
+	m.otelLogins.Add(context.Background(), 1, metric.WithAttributes(attribute.String("gitopsify.login.outcome", outcome)))
 }
 
 func (m *metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {

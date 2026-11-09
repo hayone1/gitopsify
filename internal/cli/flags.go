@@ -9,7 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/hayone1/gitopsify/internal/telemetry"
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/discovery"
 	"github.com/hayone1/gitopsify/pkg/kube"
@@ -28,6 +30,7 @@ const (
 
 // options holds every flag; each command registers the groups it uses.
 type options struct {
+	span       trace.Span // the command's, when telemetry is on
 	configFile string
 	noInput    bool
 	noColor    bool
@@ -573,7 +576,7 @@ func pair(flag, kv string) (string, string, error) {
 
 // connectOptions are the options of every cluster connection.
 func (o *options) connectOptions() kube.ConnectOptions {
-	return kube.ConnectOptions{NoInput: !o.ui().Interactive}
+	return kube.ConnectOptions{NoInput: !o.ui().Interactive, WrapTransport: telemetry.Transport}
 }
 
 // pipelineOptions returns the pipeline options for the source: a cluster, or

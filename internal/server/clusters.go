@@ -9,6 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/hayone1/gitopsify/internal/telemetry"
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/kube"
 	"github.com/hayone1/gitopsify/pkg/match"
@@ -112,7 +113,7 @@ func (s *Server) connect(name string, u *User) (*kube.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return kube.Connect(a, kube.ConnectOptions{NoInput: true})
+	return kube.Connect(a, kube.ConnectOptions{NoInput: true, WrapTransport: telemetry.Transport})
 }
 
 // clusterCheck is the result of checking a cluster connection.

@@ -127,6 +127,17 @@ secrets:
   # A Secret holding session-key and oidc-client-secret instead.
   existingSecret: ""
 
+# OpenTelemetry traces, metrics and logs over OTLP/HTTP (docs/observability.md).
+opentelemetry:
+  # The collector's OTLP/HTTP address, for example
+  # http://opentelemetry-collector.observability:4318. Empty: off.
+  endpoint: ""
+  # More OTEL_* settings, for example
+  # {OTEL_TRACES_SAMPLER: parentbased_traceidratio, OTEL_TRACES_SAMPLER_ARG: "0.1"}
+  # (OTEL_RESOURCE_ATTRIBUTES is added to the pod's own).
+  # Headers with credentials (OTEL_EXPORTER_OTLP_HEADERS) go in extraEnv, from a Secret.
+  env: {}
+
 # Extra environment variables (Git tokens, ...), as in a container spec.
 extraEnv: []
 #  - name: GITHUB_TOKEN

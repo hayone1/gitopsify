@@ -22,8 +22,10 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/time/rate"
 
+	"github.com/hayone1/gitopsify/internal/telemetry"
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/provider"
 	"github.com/hayone1/gitopsify/sdk"
@@ -154,7 +156,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			return nil, fmt.Errorf("spec.metrics.token: %w", err)
 		}
 	}
-	s.handler = s.routes()
+	// API requests get spans and http.server.* metrics when OpenTelemetry
+	// is on (the UI's files and the probes don't); trace headers count from
+	// trusted proxies only.
+	s.handler = telemetry.Handler(s.routes(), "/api/", s.fromProxy)
 	go s.housekeeping()
 	return s, nil
 }
@@ -319,12 +324,16 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			}
 			route := firstNonEmpty(ri.route, "ui")
 			s.metrics.request(r.Method, route, sw.code, time.Since(start))
+			// The client address the audit log uses, not otelhttp's (the
+			// first X-Forwarded-For entry, which the client picks).
+			telemetry.Route(r.Context(), r.Method, ri.route, attribute.String("gitopsify.request.id", ri.id),
+				attribute.String("client.address", ri.ip))
 			if strings.HasPrefix(r.URL.Path, "/api/") {
 				user := ""
 				if ri.user != nil {
 					user = ri.user.Username
 				}
-				s.log.Info("request", "id", ri.id, "method", r.Method, "path", r.URL.Path, "status", sw.code,
+				s.log.InfoContext(r.Context(), "request", "id", ri.id, "method", r.Method, "path", r.URL.Path, "status", sw.code,
 					"duration", time.Since(start).Round(time.Millisecond).String(), "user", user, "ip", ri.ip)
 			}
 		}()
@@ -372,6 +381,15 @@ func (s *Server) clientIP(r *http.Request) string {
 		host = h
 	}
 	return host
+}
+
+// fromProxy reports a request from a trusted proxy.
+func (s *Server) fromProxy(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return s.trusted(host)
 }
 
 func (s *Server) trusted(ip string) bool {

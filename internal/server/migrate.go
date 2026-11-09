@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hayone1/gitopsify/internal/telemetry"
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/gitrepo"
 	"github.com/hayone1/gitopsify/pkg/kube"
@@ -312,7 +313,7 @@ func (s *Server) grantsOf(u *User) []grant {
 }
 
 // startRun starts a scan or a migration for u.
-func (s *Server) startRun(req runRequest, u *User) (*Run, error) {
+func (s *Server) startRun(ctx context.Context, req runRequest, u *User) (*Run, error) {
 	cfg, err := s.prepareMigration(req.Migration, req.Cluster, u)
 	if err != nil {
 		return nil, err
@@ -327,9 +328,9 @@ func (s *Server) startRun(req runRequest, u *User) (*Run, error) {
 	r := Run{Type: req.Type, Name: cfg.Metadata.Name, Cluster: req.Cluster, CreatedBy: u.Username, Spec: spec, From: req.From}
 	switch req.Type {
 	case RunScan:
-		return s.runs.start(r, func(ctx context.Context, rc *runContext) error { return s.scan(ctx, rc, cfg) })
+		return s.runs.start(ctx, r, func(ctx context.Context, rc *runContext) error { return s.scan(ctx, rc, cfg) })
 	case RunMigrate:
-		return s.runs.start(r, func(ctx context.Context, rc *runContext) error {
+		return s.runs.start(ctx, r, func(ctx context.Context, rc *runContext) error {
 			if err := s.migrate(ctx, rc, cfg); err != nil {
 				return err
 			}
@@ -358,7 +359,7 @@ func publicDocument(cfg *config.Config) any {
 }
 
 func (s *Server) pipelineOptions(rc *runContext, cfg *config.Config) pipeline.Options {
-	return pipeline.Options{Config: cfg, Version: s.version, Connect: kube.ConnectOptions{NoInput: true},
+	return pipeline.Options{Config: cfg, Version: s.version, Connect: kube.ConnectOptions{NoInput: true, WrapTransport: telemetry.Transport},
 		ProtectSecrets: !s.cfg.Runs.AllowSecretValues,
 		Log:            func(format string, args ...any) { rc.Info(format, args...) }}
 }

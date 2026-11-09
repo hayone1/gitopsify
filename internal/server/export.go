@@ -305,7 +305,7 @@ func exportDocument(x *config.Export, d *sdk.Description, t *config.ServerTool) 
 	return &c
 }
 
-func (s *Server) startExport(req runRequest, u *User) (*Run, error) {
+func (s *Server) startExport(ctx context.Context, req runRequest, u *User) (*Run, error) {
 	x, t, err := s.prepareExport(req.Export, req.Tool)
 	if err != nil {
 		return nil, err
@@ -325,7 +325,7 @@ func (s *Server) startExport(req runRequest, u *User) (*Run, error) {
 	}
 	spec, _ := json.Marshal(exportDocument(x, d, t))
 	r := Run{Type: RunExport, Name: firstNonEmpty(x.Metadata.Name, t.Name), Tool: t.Name, CreatedBy: u.Username, Spec: spec, Repo: req.Repo}
-	return s.runs.start(r, func(ctx context.Context, rc *runContext) error {
+	return s.runs.start(ctx, r, func(ctx context.Context, rc *runContext) error {
 		if err := s.export(ctx, rc, x, t, in, d, settings, req.AllowPartial); err != nil {
 			return err
 		}

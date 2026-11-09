@@ -447,7 +447,7 @@ func TestReplicaPushes(t *testing.T) {
 		_ = os.MkdirAll(filepath.Join(dir, "apps/web"), 0o755)
 		_ = os.WriteFile(filepath.Join(dir, "apps/web/deployment.yaml"), []byte(content), 0o644)
 	}
-	r, err := a.s.runs.start(Run{Type: RunMigrate, Name: "shop", Cluster: "dev", CreatedBy: "ada@acme.io", Spec: spec},
+	r, err := a.s.runs.start(context.Background(), Run{Type: RunMigrate, Name: "shop", Cluster: "dev", CreatedBy: "ada@acme.io", Spec: spec},
 		func(ctx context.Context, rc *runContext) error {
 			write(a.s.runs.outputDir(rc.ID()), "kind: Deployment\n")
 			return nil
@@ -517,7 +517,7 @@ func TestReplicaCopies(t *testing.T) {
 		_ = os.MkdirAll(dir, 0o755)
 		_ = os.WriteFile(filepath.Join(dir, "a.yaml"), []byte(content), 0o644)
 	}
-	r, err := rs.start(Run{Type: RunMigrate, Name: "x"}, func(ctx context.Context, rc *runContext) error {
+	r, err := rs.start(context.Background(), Run{Type: RunMigrate, Name: "x"}, func(ctx context.Context, rc *runContext) error {
 		write(rs.outputDir(rc.ID()), "v0")
 		return nil
 	})
@@ -575,7 +575,7 @@ func TestReplicaCopies(t *testing.T) {
 	// A run deleted while working stops, and isn't brought back or
 	// notified.
 	block := make(chan struct{})
-	r2, _ := rs.start(Run{Type: RunScan, Name: "y"}, func(ctx context.Context, rc *runContext) error {
+	r2, _ := rs.start(context.Background(), Run{Type: RunScan, Name: "y"}, func(ctx context.Context, rc *runContext) error {
 		select {
 		case <-block:
 		case <-ctx.Done():
@@ -659,7 +659,7 @@ func TestSaveFinalLostAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rs.shutdown(context.Background())
-	r, _ := rs.start(Run{Type: RunScan, Name: "x"}, func(context.Context, *runContext) error { return nil })
+	r, _ := rs.start(context.Background(), Run{Type: RunScan, Name: "x"}, func(context.Context, *runContext) error { return nil })
 	for start := time.Now(); time.Since(start) < 15*time.Second; time.Sleep(20 * time.Millisecond) {
 		nmu.Lock()
 		n := len(notified)

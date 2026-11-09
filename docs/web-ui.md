@@ -423,6 +423,9 @@ replicaCount: 3                      # adds a PodDisruptionBudget
 - Metrics: `gitopsify_http_requests_total`,
   `gitopsify_http_request_duration_seconds`, `gitopsify_runs_total`,
   `gitopsify_runs_active`, `gitopsify_logins_total`.
+- OpenTelemetry traces (a span per API request and per run, Kubernetes
+  calls), metrics and logs go to a collector when `OTEL_*` variables or the
+  chart's `opentelemetry.endpoint` ask for it: [observability](observability.md).
 - Stopping the server (a restart, a rolling update) fails the runs it was
   working on as "interrupted" (start them again); `/readyz` fails while it
   stops, so new requests go to other replicas. Runs whose server died are

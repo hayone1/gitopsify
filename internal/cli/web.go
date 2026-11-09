@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hayone1/gitopsify/internal/server"
+	"github.com/hayone1/gitopsify/internal/telemetry"
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/web"
 )
@@ -59,7 +60,7 @@ run gitopsify server (or the Helm chart) instead.`,
 				Runs: config.ServerRuns{AllowSecretValues: true}}}
 			cfg.Default()
 			token := server.NewToken()
-			log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			log := telemetry.Logger(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			srv, err := server.New(ctx, server.Options{Config: cfg, Local: true, LocalToken: token, Kubeconfig: kubeconfig,
@@ -122,7 +123,7 @@ charts/gitopsify deploys it in a cluster.`,
 			if err != nil {
 				return err
 			}
-			log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+			log := telemetry.Logger(slog.NewJSONHandler(os.Stderr, nil))
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			srv, err := server.New(ctx, server.Options{Config: cfg, Version: Version, Log: log, UI: web.FS()})

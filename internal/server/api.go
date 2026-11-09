@@ -362,12 +362,12 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 			writeError(w, http.StatusForbidden, "you need the operator role on tool "+req.Tool)
 			return
 		}
-		run, err = s.startExport(req, ri.user)
+		run, err = s.startExport(r.Context(), req, ri.user)
 	} else {
 		if !s.can(w, r, ri, config.RoleOperator, req.Cluster, "runs.create") {
 			return
 		}
-		run, err = s.startRun(req, ri.user)
+		run, err = s.startRun(r.Context(), req, ri.user)
 	}
 	where := firstNonEmpty(req.Cluster, req.Tool)
 	if err != nil {

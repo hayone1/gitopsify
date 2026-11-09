@@ -12,6 +12,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/hayone1/gitopsify/internal/telemetry"
 )
 
 // Run types and statuses.
@@ -491,8 +497,10 @@ func (rs *runs) save(st *runState, fn func(*Run)) error {
 }
 
 // start records a run and does work in the background. work's error fails
-// the run; a canceled context cancels it.
-func (rs *runs) start(r Run, work func(context.Context, *runContext) error) (*Run, error) {
+// the run; a canceled context cancels it. parent is the request that asked
+// for it: the run's span joins its trace (runs outlive requests, so only the
+// trace is shared, not the cancellation).
+func (rs *runs) start(parent context.Context, r Run, work func(context.Context, *runContext) error) (*Run, error) {
 	rs.mu.Lock()
 	if rs.closed {
 		rs.mu.Unlock()
@@ -513,6 +521,15 @@ func (rs *runs) start(r Run, work func(context.Context, *runContext) error) (*Ru
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), rs.timeout)
+	attrs := []attribute.KeyValue{attribute.String("gitopsify.run.id", r.ID), attribute.String("gitopsify.run.type", r.Type)}
+	if r.Cluster != "" {
+		attrs = append(attrs, attribute.String("gitopsify.cluster", r.Cluster))
+	}
+	if r.Tool != "" {
+		attrs = append(attrs, attribute.String("gitopsify.tool", r.Tool))
+	}
+	ctx, span := telemetry.Tracer().Start(trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(parent)), "run "+r.Type,
+		trace.WithAttributes(attrs...))
 	st := &runState{run: r, subs: map[chan runEvent]struct{}{}, cancel: cancel}
 	rs.mu.Lock()
 	rs.local[r.ID] = st
@@ -524,19 +541,27 @@ func (rs *runs) start(r Run, work func(context.Context, *runContext) error) (*Ru
 		defer rs.wg.Done()
 		defer cancel()
 		rc := &runContext{rs: rs, st: st}
+		end := func(status, msg string) {
+			span.SetAttributes(attribute.String("gitopsify.run.status", status))
+			if status != StatusSucceeded {
+				span.SetStatus(codes.Error, msg)
+			}
+			span.End()
+		}
 		select {
 		case rs.sem <- struct{}{}:
 		case <-ctx.Done():
-			rs.finish(rc, ctx.Err())
+			end(rs.finish(rc, ctx.Err()))
 			return
 		}
 		defer func() { <-rs.sem }()
+		span.AddEvent("started")
 		now := time.Now().UTC()
 		rc.update(func(r *Run) { r.Status, r.StartedAt = StatusRunning, &now })
 		err := func() (err error) {
 			defer func() {
 				if p := recover(); p != nil {
-					rs.log.Error("run panicked", "run", r.ID, "panic", p)
+					rs.log.ErrorContext(ctx, "run panicked", "run", r.ID, "panic", p)
 					err = fmt.Errorf("internal error: %v", p)
 				}
 			}()
@@ -544,12 +569,13 @@ func (rs *runs) start(r Run, work func(context.Context, *runContext) error) (*Ru
 		}()
 		// The work's own result decides: a push that finished just as the
 		// run was canceled still happened.
-		rs.finish(rc, err)
+		end(rs.finish(rc, err))
 	}()
 	return &r, nil
 }
 
-func (rs *runs) finish(rc *runContext, err error) {
+// finish records how a run ended and returns its status and message.
+func (rs *runs) finish(rc *runContext, err error) (string, string) {
 	now := time.Now().UTC()
 	status := StatusSucceeded
 	msg := ""
@@ -598,12 +624,13 @@ func (rs *runs) finish(rc *runContext, err error) {
 	if lost {
 		// Whoever failed or deleted it has the last word (and notified).
 		rs.metrics.runFinished(r.Type, StatusFailed)
-		return
+		return StatusFailed, "deleted or taken over while working"
 	}
 	rs.metrics.runFinished(r.Type, status)
 	if rs.finished != nil {
 		rs.finished(r)
 	}
+	return status, msg
 }
 
 // saveOutput archives a run's output into a shared store, so every replica

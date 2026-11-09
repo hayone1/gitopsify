@@ -5,6 +5,7 @@ package kube
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"time"
 
@@ -54,6 +55,9 @@ type ConnectOptions struct {
 	// NoInput stops credential plugins from prompting on the terminal; they
 	// fail instead of waiting for input that never comes.
 	NoInput bool
+	// WrapTransport wraps the clients' HTTP transport (OpenTelemetry's
+	// client spans), when set.
+	WrapTransport func(http.RoundTripper) http.RoundTripper
 }
 
 // Connect builds the clients of a cluster from its access settings: the
@@ -139,6 +143,9 @@ func RESTConfig(a config.Access, o ConnectOptions) (*rest.Config, string, error)
 	if cfg.ExecProvider != nil && o.NoInput {
 		cfg.ExecProvider.StdinUnavailable = true
 		cfg.ExecProvider.StdinUnavailableMessage = "gitopsify runs with --no-input; log in first (for example aws sso login, gcloud auth login, az login) or use a non-interactive credential"
+	}
+	if o.WrapTransport != nil {
+		cfg.Wrap(o.WrapTransport)
 	}
 	return cfg, name, nil
 }
