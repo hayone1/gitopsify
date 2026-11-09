@@ -25,9 +25,22 @@ async function shot(page: Page, name: string) {
 }
 
 test('an operator scans, generates and pushes a migration', async ({ page }) => {
+  // Uncaught errors in the page fail the test.
+  const errors: string[] = []
+  page.on('pageerror', err => errors.push(err.message))
   await signIn(page, 'ada')
   await shot(page, '01-overview')
 
+  // From the Clusters page's Migrate button: the cluster is preselected and
+  // its namespaces are asked for (listing them may be forbidden to ada).
+  await page.goto('/clusters')
+  const namespaces = page.waitForResponse(r => /\/api\/v1\/clusters\/[^/]+\/namespaces/.test(r.url()))
+  await page.getByRole('link', { name: 'Migrate' }).first().click()
+  await namespaces
+  await expect(page.getByText('Source cluster')).toBeVisible()
+  expect(errors).toEqual([])
+
+  await page.goto('/')
   await page.getByRole('link', { name: 'New migration' }).first().click()
   await expect(page.getByText('Source cluster')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Scan the cluster' })).toBeEnabled()

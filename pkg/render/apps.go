@@ -2,6 +2,7 @@ package render
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"reflect"
@@ -109,6 +110,26 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 		list = append(list, envObject{ao: ao, u: u, changed: changed})
 	}
 
+	// Patches first: one kustomize can't express makes full copies.
+	type envPatch struct {
+		e     envObject
+		patch map[string]any
+	}
+	var made []envPatch
+	if !full {
+		for _, e := range list {
+			if e.ao.out == nil || !e.changed {
+				continue
+			}
+			patch, err := mergePatch(e.ao.out, e.u)
+			if err != nil {
+				full = true // errNoPatch, or fields the typed object doesn't know
+				break
+			}
+			made = append(made, envPatch{e: e, patch: patch})
+		}
+	}
+
 	var resources []string
 	var patches []any
 	if full {
@@ -127,17 +148,14 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 					return err
 				}
 				resources = append(resources, e.ao.file)
-			case e.changed:
-				patch, err := mergePatch(e.ao.out, e.u)
-				if err != nil {
-					return fmt.Errorf("computing the %s patch of %s: %w", env.Name, e.ao.o.Ref, err)
-				}
-				name := "patch-" + e.ao.file
-				if err := r.tree.AddYAML(l.file(dir, name), patch); err != nil {
-					return err
-				}
-				patches = append(patches, map[string]any{"path": name})
 			}
+		}
+		for _, m := range made {
+			name := "patch-" + m.e.ao.file
+			if err := r.tree.AddYAML(l.file(dir, name), m.patch); err != nil {
+				return err
+			}
+			patches = append(patches, map[string]any{"path": name})
 		}
 	}
 	extra := map[string]any{}
@@ -163,7 +181,8 @@ func mergePatch(base, env *unstructured.Unstructured) (map[string]any, error) {
 		return nil, err
 	}
 	var p []byte
-	if typed, terr := scheme.Scheme.New(base.GroupVersionKind()); terr == nil {
+	typed, terr := scheme.Scheme.New(base.GroupVersionKind())
+	if terr == nil {
 		p, err = strategicpatch.CreateTwoWayMergePatch(b, e, typed)
 	} else {
 		p, err = jsonpatch.CreateMergePatch(b, e)
@@ -174,6 +193,14 @@ func mergePatch(base, env *unstructured.Unstructured) (map[string]any, error) {
 	patch := map[string]any{}
 	if err := json.Unmarshal(p, &patch); err != nil {
 		return nil, err
+	}
+	if terr == nil {
+		// kustomize (kyaml) applies $patch: delete and nulls, not the other
+		// directives: an order hint is dropped (the base's order stays),
+		// and a patch that needs the rest is written as full copies.
+		if !kustomizable(patch) {
+			return nil, errNoPatch
+		}
 	}
 	patch["apiVersion"] = base.GetAPIVersion()
 	patch["kind"] = base.GetKind()
@@ -276,19 +303,7 @@ func (r *renderer) kustomizeHelmApp(l layout, a *model.App) error {
 			// helm test hooks would run as plain Pods.
 			"skipTests": true,
 		}
-		// helmCharts' namespace only sets .Release.Namespace: objects whose
-		// templates set none would go wherever kubectl or Argo CD's
-		// single Application puts them. Set it where it is unset only (a
-		// chart may place objects in other namespaces on purpose).
-		ns := map[string]any{
-			"apiVersion": "builtin", "kind": "NamespaceTransformer",
-			"metadata":  map[string]any{"name": "release-namespace", "namespace": rel.Namespace},
-			"unsetOnly": true, "setRoleBindingSubjects": "none",
-		}
-		if err := r.tree.AddYAML(l.file(dir, "release-namespace.yaml"), ns); err != nil {
-			return err
-		}
-		extra := map[string]any{"helmCharts": []any{chart}, "transformers": []any{"release-namespace.yaml"}}
+		extra := map[string]any{"helmCharts": []any{chart}}
 		if rel.Mode == model.HelmModeVendor {
 			extra["helmGlobals"] = map[string]any{"chartHome": relPath(dir, l.chartHome(a.Name))}
 		} else {
@@ -400,4 +415,33 @@ func (r *renderer) chartRef(l layout, a *model.App) chartRef {
 	c.repoURL = rel.Repo.URL
 	c.oci = rel.Repo.IsOCI()
 	return c
+}
+
+// errNoPatch is an environment change kustomize can't apply as a patch.
+var errNoPatch = errors.New("not expressible as a kustomize patch")
+
+// kustomizable drops $setElementOrder directives from a strategic merge
+// patch (kustomize would copy them into the object) and reports whether
+// the patch uses only what kustomize applies.
+func kustomizable(v any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, c := range t {
+			switch {
+			case strings.HasPrefix(k, "$setElementOrder/"):
+				delete(t, k)
+			case strings.HasPrefix(k, "$deleteFromPrimitiveList/"), k == "$retainKeys":
+				return false
+			case !kustomizable(c):
+				return false
+			}
+		}
+	case []any:
+		for _, c := range t {
+			if !kustomizable(c) {
+				return false
+			}
+		}
+	}
+	return true
 }

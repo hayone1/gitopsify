@@ -160,6 +160,10 @@ func TestMergePatchLists(t *testing.T) {
 	}
 	b, _ := json.Marshal(base.Object)
 	p, _ := json.Marshal(patch)
+	// kustomize would copy these into the object.
+	if strings.Contains(string(p), "$setElementOrder") {
+		t.Errorf("the patch has an order directive: %s", p)
+	}
 	got, err := strategicpatch.StrategicMergePatch(b, p, &appsv1.Deployment{})
 	if err != nil {
 		t.Fatal(err)

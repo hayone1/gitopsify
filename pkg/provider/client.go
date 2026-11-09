@@ -204,13 +204,18 @@ func (c *Client) run(ctx context.Context, method string, req *sdk.Request, read 
 	// hold stderr open after the provider exits: stop reading it then.
 	stderrDone := make(chan struct{})
 	go func() { wg.Wait(); close(stderrDone) }()
+	closedStderr := false
 	select {
 	case <-stderrDone:
 	case <-time.After(5 * time.Second):
 		_ = stderr.Close()
+		closedStderr = true
 		<-stderrDone
 	}
 	waitErr := cmd.Wait()
+	if closedStderr && waitErr != nil && strings.Contains(waitErr.Error(), "broken pipe") {
+		waitErr = nil // our closing stderr killed it, after its answer
+	}
 
 	if ctx.Err() != nil {
 		return fail(ctx.Err(), tail.lines())

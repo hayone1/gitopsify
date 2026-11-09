@@ -548,9 +548,10 @@ func readJSON(r *http.Request, v any) error {
 // limiter limits requests per client address: generous for the API, tight
 // for sign-ins.
 type limiter struct {
-	mu   sync.Mutex
-	api  map[string]*entry
-	auth map[string]*entry
+	mu    sync.Mutex
+	api   map[string]*entry
+	auth  map[string]*entry
+	swept time.Time
 }
 
 type entry struct {
@@ -575,9 +576,14 @@ func (l *limiter) allow(ip string, auth bool) bool {
 	e := m[key]
 	if e == nil {
 		if len(m) >= maxLimited {
-			for k, old := range m {
-				if time.Since(old.seen) > time.Minute {
-					delete(m, k)
+			// Sweep at most every 10s: a flood of new clients can't make
+			// every request scan the table.
+			if time.Since(l.swept) > 10*time.Second {
+				l.swept = time.Now()
+				for k, old := range m {
+					if time.Since(old.seen) > time.Minute {
+						delete(m, k)
+					}
 				}
 			}
 			if len(m) >= maxLimited {

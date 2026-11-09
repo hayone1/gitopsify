@@ -46,7 +46,11 @@ function openLink(href: string) {
   const target = href.split('#')[0]!.split('?')[0]!
   if (!target) return
   const parts = target.startsWith('/') ? [] : selected.value.split('/').slice(0, -1)
-  for (const part of decodeURIComponent(target).split('/')) {
+  let decoded = target
+  try {
+    decoded = decodeURIComponent(target)
+  } catch { /* a stray %: take the link as written */ }
+  for (const part of decoded.split('/')) {
     if (part === '..') parts.pop()
     else if (part && part !== '.') parts.push(part)
   }

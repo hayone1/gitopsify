@@ -57,6 +57,10 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: gitopsify:test
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Smoke test

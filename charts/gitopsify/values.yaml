@@ -119,6 +119,8 @@ serviceAccount:
   name: ""
   annotations: {}
 
+# Pods read these at start: after changing them (or the Secrets they come
+# from), restart them (kubectl rollout restart deployment/<release>).
 secrets:
   # Signs and encrypts session cookies. Generated (and kept across upgrades)
   # by helm install/upgrade when empty and no existingSecret is given. With

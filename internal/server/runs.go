@@ -239,9 +239,12 @@ func (rs *runs) reap() {
 	ctx, cancel := bg()
 	defer cancel()
 	rs.mu.Lock()
-	keep := make([]string, 0, len(rs.local))
+	keep := make([]string, 0, len(rs.local)+len(rs.unsaved))
 	for id := range rs.local {
 		keep = append(keep, id)
+	}
+	for id := range rs.unsaved {
+		keep = append(keep, id) // finished here, still being saved
 	}
 	rs.mu.Unlock()
 	reaped, err := rs.store.reapRuns(ctx, keep, staleAfter, func(r *Run) {
@@ -288,9 +291,12 @@ func (rs *runs) loop() {
 		case <-t.C:
 		}
 		rs.mu.Lock()
-		ids := make([]string, 0, len(rs.local))
+		ids := make([]string, 0, len(rs.local)+len(rs.unsaved))
 		for id := range rs.local {
 			ids = append(ids, id)
+		}
+		for id := range rs.unsaved {
+			ids = append(ids, id) // heartbeat them: no replica reaps them
 		}
 		rs.mu.Unlock()
 		ctx, cancel := bg()
@@ -999,6 +1005,9 @@ func (rs *runs) poll(ctx context.Context, id string, seq int, status string, ch 
 			continue
 		}
 		failures = 0
+		if err != nil {
+			continue // the log next time, before saying the run is over
+		}
 		if r.Status != status {
 			status = r.Status
 			select {
@@ -1070,4 +1079,8 @@ func (rs *runs) shutdown(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+	// A last try for final states that couldn't be saved.
+	sctx, cancel := bg()
+	rs.saveUnsaved(sctx)
+	cancel()
 }

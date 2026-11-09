@@ -23,8 +23,11 @@ export async function api<T>(path: string, opts: { method?: string, body?: unkno
     const status = err.statusCode || err.status || 0
     // Signed in again in another tab: this tab's CSRF token is the old
     // session's. Fetch the new one and try once more.
+    // Only as the same person: another tab may have signed in as someone else.
     if (status === 403 && !retried && method !== 'GET' && (err.data?.error || '').includes('X-Gitopsify-CSRF')) {
-      if (await loadMe()) return api<T>(path, opts, true)
+      const before = me.value?.user.username
+      const now = await loadMe()
+      if (now && now.user.username === before) return api<T>(path, opts, true)
     }
     if (status === 401 && useRoute().path !== '/login') {
       me.value = null

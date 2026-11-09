@@ -128,7 +128,12 @@ func TestGolden(t *testing.T) {
 				}
 				return nil
 			})
-			delete(want, ".gitopsify/generated.txt")
+			// Write's manifests (the output's, and each repository's).
+			for p := range want {
+				if p == ".gitopsify/generated.txt" || strings.HasSuffix(p, "/.gitopsify/generated.txt") {
+					delete(want, p)
+				}
+			}
 			for _, p := range res.Tree.Paths() {
 				got, _ := res.Tree.Get(p)
 				exp, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(p)))

@@ -21,7 +21,6 @@ apps/inhouse/charts/inhouse/templates/serviceaccount.yaml
 apps/inhouse/charts/inhouse/templates/tests/test-connection.yaml
 apps/inhouse/charts/inhouse/values.yaml
 apps/inhouse/envs/uat/kustomization.yaml
-apps/inhouse/envs/uat/release-namespace.yaml
 apps/inhouse/envs/uat/values.yaml
 apps/namespaces/base/kustomization.yaml
 apps/namespaces/base/namespace-payments.yaml
@@ -35,7 +34,6 @@ apps/payments/base/networkpolicy-api-ingress.yaml
 apps/payments/base/service-api.yaml
 apps/payments/envs/uat/kustomization.yaml
 apps/podinfo/envs/uat/kustomization.yaml
-apps/podinfo/envs/uat/release-namespace.yaml
 apps/podinfo/envs/uat/values.yaml
 apps/shop/base/configmap-web-config.yaml
 apps/shop/base/cronjob-cleanup.yaml

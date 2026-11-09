@@ -10,5 +10,3 @@ helmCharts:
     version: 0.1.0
 helmGlobals:
   chartHome: ../../charts
-transformers:
-  - release-namespace.yaml

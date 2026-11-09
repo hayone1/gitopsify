@@ -28,8 +28,6 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ include "gitopsify.serverConfig" . | sha256sum }}
-        # Restart when the values the chart puts in Secrets change.
-        checksum/secrets: {{ print .Values.secrets .Values.storage.postgres | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -44,6 +42,8 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Stopping waits for runs (15s), requests (10s) and pushes (20s).
+      terminationGracePeriodSeconds: 60
       containers:
         - name: gitopsify
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"

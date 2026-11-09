@@ -58,6 +58,12 @@ func TestGoldenKustomizationsBuild(t *testing.T) {
 			return nil
 		}
 		built++
+		// Patch directives kustomize doesn't apply end up in the objects.
+		for _, d := range []string{"$setElementOrder", "$deleteFromPrimitiveList", "$retainKeys", "$patch"} {
+			if bytes.Contains(out, []byte(d)) {
+				t.Errorf("kubectl kustomize %s: the output has %s", dir, d)
+			}
+		}
 		// Flux values ConfigMaps get hashed names; the HelmRelease must
 		// reference the hashed names through the nameReference config.
 		if bytes.Contains(out, []byte("kind: HelmRelease")) {

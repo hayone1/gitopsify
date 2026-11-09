@@ -304,10 +304,20 @@ func DefaultRules() []Rule {
 		},
 		{
 			Name:        "helm-hooks",
-			Description: "Objects left by Helm hooks (jobs and the like the chart runs at install or upgrade)",
-			Match: func(o *model.Object, _ *model.Inventory) (bool, string) {
-				if h := o.Live.GetAnnotations()["helm.sh/hook"]; h != "" {
-					return true, "Helm hook (" + h + "); the chart runs it again"
+			Description: "Objects left by Helm hooks in namespaces whose releases are migrated as charts, which run their hooks again",
+			Match: func(o *model.Object, inv *model.Inventory) (bool, string) {
+				a := o.Live.GetAnnotations()
+				h := a["helm.sh/hook"]
+				// Hooks Helm keeps on purpose (a generated password) stay.
+				if h == "" || a["helm.sh/resource-policy"] == "keep" {
+					return false, ""
+				}
+				// Helm marks no owner on hooks: a release of the namespace
+				// that its chart renders again is taken for theirs.
+				for _, r := range inv.Releases {
+					if r.Namespace == o.Ref.Namespace && !r.Skip && r.Mode != model.HelmModeManifests {
+						return true, "Helm hook (" + h + "); release " + r.Key() + "'s chart runs it again"
+					}
 				}
 				return false, ""
 			},

@@ -40,7 +40,11 @@ func (r *renderer) renderArgoCD(l layout) error {
 	// Applications of every environment usually share one Argo CD:
 	// prod + eu-web and prod-eu + web would both be prod-eu-web.
 	seen := map[string]string{}
-	for _, env := range r.cfg.Environments {
+	envs := r.cfg.Environments
+	if r.cfg.Output.ArgoCD.Pattern == config.PatternSingle {
+		envs = nil // one Application per environment, no per-app ones
+	}
+	for _, env := range envs {
 		for _, a := range r.inv.Apps {
 			name := r.argoName(l, a.Name, env.Name)
 			who := fmt.Sprintf("app %s of environment %s", a.Name, env.Name)

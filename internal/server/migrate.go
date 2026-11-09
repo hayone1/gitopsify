@@ -448,6 +448,23 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 	if err := s.putJSON(rc.ID(), "scan.json", summarize(res)); err != nil {
 		return err
 	}
+	// The repository checked out may hold environments this migration
+	// doesn't list: writing would delete their files, and the push them.
+	if prev, err := config.Load(filepath.Join(dir, "gitopsify.yaml")); err == nil {
+		now := map[string]bool{}
+		for _, e := range cfg.Environments {
+			now[e.Name] = true
+		}
+		var gone []string
+		for _, e := range prev.Environments {
+			if !now[e.Name] {
+				gone = append(gone, e.Name)
+			}
+		}
+		if len(gone) > 0 {
+			return fmt.Errorf("the repository has environment(s) %s that this migration doesn't list: their files would be deleted. List every environment in spec.environments", strings.Join(gone, ", "))
+		}
+	}
 	written, _, err := res.Tree.Write(dir, true)
 	if err != nil {
 		return err

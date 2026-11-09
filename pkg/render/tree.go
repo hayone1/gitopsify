@@ -14,6 +14,10 @@ import (
 // Tree is an in-memory directory of generated files, keyed by slash path.
 type Tree struct {
 	files map[string][]byte
+	// roots are directories that are repositories of their own (one per
+	// environment): each gets the manifest of its files, so a checkout of
+	// that repository alone knows what an earlier run generated.
+	roots []string
 }
 
 // NewTree returns an empty tree.
@@ -76,15 +80,25 @@ func (t *Tree) Write(dir string, force bool) (written, removed []string, err err
 	}
 	defer root.Close()
 	prev := map[string]bool{}
-	if data, err := root.ReadFile(manifestFile); err == nil {
+	readManifest := func(file, prefix string) bool {
+		data, err := root.ReadFile(file)
+		if err != nil {
+			return false
+		}
 		for _, l := range strings.Split(string(data), "\n") {
 			// The manifest comes from the output directory, which may be a
 			// cloned repository: never let it name files outside of it.
 			if l = strings.TrimSpace(l); l != "" && treePath(l) == nil {
-				prev[path.Clean(l)] = true
+				prev[path.Join(prefix, path.Clean(l))] = true
 			}
 		}
-	} else if !force {
+		return true
+	}
+	found := readManifest(manifestFile, "")
+	for _, r := range t.roots {
+		found = readManifest(path.Join(r, manifestFile), r) || found
+	}
+	if !found && !force {
 		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
 			if e.Name() != ".git" {
@@ -124,6 +138,20 @@ func (t *Tree) Write(dir string, force bool) (written, removed []string, err err
 		if err := root.Remove(p); err == nil {
 			removed = append(removed, p)
 			removeEmptyParents(root, path.Dir(p))
+		}
+	}
+	for _, r := range t.roots {
+		var own []string
+		for _, p := range paths {
+			if rel, ok := strings.CutPrefix(p, r+"/"); ok {
+				own = append(own, rel)
+			}
+		}
+		if err := root.MkdirAll(path.Join(r, path.Dir(manifestFile)), 0o755); err != nil {
+			return nil, nil, err
+		}
+		if err := root.WriteFile(path.Join(r, manifestFile), []byte(strings.Join(own, "\n")+"\n"), 0o644); err != nil {
+			return nil, nil, err
 		}
 	}
 	if err := root.MkdirAll(path.Dir(manifestFile), 0o755); err != nil {

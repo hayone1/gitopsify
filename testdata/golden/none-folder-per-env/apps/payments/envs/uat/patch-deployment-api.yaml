@@ -6,12 +6,8 @@ metadata:
 spec:
   template:
     spec:
-      $setElementOrder/containers:
-        - name: api
       containers:
         - name: api
-          $setElementOrder/env:
-            - name: ENDPOINT
           env:
             - name: ENDPOINT
               value: https://api.uat.example.com

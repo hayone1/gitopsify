@@ -19,5 +19,3 @@ patches:
           argocd.argoproj.io/sync-wave: "0"
     target:
       name: .*
-transformers:
-  - release-namespace.yaml

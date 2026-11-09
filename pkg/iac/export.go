@@ -498,7 +498,7 @@ func plan(in Input, st *State) ([]*workspace, map[string]*resource, error) {
 				}
 			}
 			for _, p := range sortedSet(want) {
-				if old, ok := r.state.Files[p]; ok {
+				if old, ok := r.state.Files[p]; ok && !terraformLoaded(old) {
 					if owner, dup := claimed[strings.ToLower(old)]; !dup || owner == r.r.Key {
 						claimed[strings.ToLower(old)] = r.r.Key
 						continue

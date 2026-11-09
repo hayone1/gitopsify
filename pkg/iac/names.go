@@ -262,9 +262,7 @@ func safePath(p, key string) string {
 			base := strings.TrimSuffix(seg, path.Ext(seg))
 			// Terraform loads .tf, .tf.json and .tfvars files next to the
 			// configuration: a provider's file can't be one.
-			lower := strings.ToLower(seg)
-			tf := strings.HasSuffix(lower, ".tf") || strings.HasSuffix(lower, ".tf.json") || strings.Contains(lower, ".tfvars")
-			if !safeExt.MatchString(ext) || tf {
+			if !safeExt.MatchString(ext) || terraformLoaded(seg) {
 				ext, base = "", seg
 			}
 			out = append(out, fileSegment(base, "file-"+shortHash(key))+ext)
@@ -301,4 +299,11 @@ func (n *namer) assign(base, key string) string {
 	}
 	n.reserve(name)
 	return name
+}
+
+// terraformLoaded reports files Terraform reads as configuration or
+// variables when they sit next to a module's .tf files.
+func terraformLoaded(p string) bool {
+	lower := strings.ToLower(path.Base(p))
+	return strings.HasSuffix(lower, ".tf") || strings.HasSuffix(lower, ".tf.json") || strings.Contains(lower, ".tfvars")
 }

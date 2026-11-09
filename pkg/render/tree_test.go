@@ -78,3 +78,29 @@ func TestTreeWriteRemovesStale(t *testing.T) {
 		t.Errorf("x.yaml: %q", b)
 	}
 }
+
+// A repository per environment keeps the list of its files: a checkout of
+// that repository alone (CI, the server) removes what a later run doesn't
+// generate.
+func TestTreeWriteRootManifests(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTree()
+	tr.roots = []string{"uat"}
+	tr.Add("uat/apps/a/x.yaml", []byte("a"))
+	tr.Add("uat/apps/b/y.yaml", []byte("b"))
+	if _, _, err := tr.Write(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	// Only the environment's repository is there now (a fresh checkout).
+	fresh := t.TempDir()
+	if err := os.CopyFS(filepath.Join(fresh, "uat"), os.DirFS(filepath.Join(dir, "uat"))); err != nil {
+		t.Fatal(err)
+	}
+	tr = NewTree()
+	tr.roots = []string{"uat"}
+	tr.Add("uat/apps/a/x.yaml", []byte("a"))
+	_, removed, err := tr.Write(fresh, false)
+	if err != nil || len(removed) != 1 || removed[0] != "uat/apps/b/y.yaml" {
+		t.Fatalf("removed %v (%v)", removed, err)
+	}
+}

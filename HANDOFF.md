@@ -436,6 +436,16 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   PostgreSQL schema errors hung startup; exports never checked out their
   repository; two dashboards could share one file. The bug list with the
   fixes is in the commit messages; tests cover each where a test can.
+  A fresh-context review of the five commits then found: overlay patches
+  carried $setElementOrder directives kustomize copies into objects (now
+  stripped; patches kustomize can't apply become full copies; the golden
+  kustomize builds fail on any directive in the output), a no-op
+  NamespaceTransformer (reverted; the Argo single-Application limit is
+  documented), a TDZ error in the wizard's immediate watcher (the e2e now
+  opens /migrations/new?cluster= and fails on page errors), the server
+  missing the dropped-environments guard, repo-per-env repositories without
+  their own manifest (now written per repository), a too-broad helm-hooks
+  rule, plus smaller items; all fixed (sixth commit).
 - 2026-11-09, the user asked whether the chart should be "gitopsify
   operator" on OperatorHub: it isn't an operator today (no CRDs), so the
   name stays (Argo's charts are argo-cd/argo-workflows too; Artifact Hub
@@ -452,6 +462,13 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   building.
 
 ### Accepted / known limits (web UI)
+- Argo CD's single-Application pattern renders charts with kustomize, which
+  leaves objects without a namespace when the chart's templates set none
+  (documented in docs/gitops-tools.md: use app-of-apps or manifests mode).
+- gitopsify ui's sign-in page is a local file: snap/flatpak browsers can't
+  read it (the terminal says to open the printed address instead).
+- The run list reads each run's spec (json column) and drops it in Go: jsonb
+  would refuse runs with NUL characters.
 - runs.get reports a store error as "not found" (a database blip answers
   404 to that request); live streams retry instead.
 - UI build-time npm advisories (esbuild's Windows dev server, glob,

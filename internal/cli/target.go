@@ -443,7 +443,7 @@ func (o *options) loadForBootstrap(cmd *cobra.Command) (*config.Config, error) {
 		return nil, err
 	}
 	if o.output != "" {
-		cfg.Output.Dir = o.output
+		cfg.Output.Dir = config.ExpandHome(o.output)
 	}
 	return cfg, nil
 }

@@ -75,6 +75,19 @@ onMounted(async () => {
 // resuming is set while a scan's configuration is loaded, so the cluster
 // watcher keeps it instead of starting over.
 let resuming = false
+const lastDefaultName = ref('')
+
+// One scan is followed at a time: a stream of another cluster's scan (the
+// cluster changed meanwhile) must not land in this one.
+let stream: EventSource | null = null
+let followed = ''
+function stopFollowing() {
+  stream?.close()
+  stream = null
+  followed = ''
+}
+onUnmounted(stopFollowing)
+
 watch(cluster, async (c) => {
   if (!c) return
   if (!resuming) {
@@ -102,7 +115,6 @@ watch(cluster, async (c) => {
     lastDefaultName.value = name.value
   }
 }, { immediate: true }) // ?cluster=... (from Clusters and Overview) loads its namespaces too
-const lastDefaultName = ref('')
 function defaultName(c: string) {
   return (c.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'migration') + '-migration'
 }
@@ -208,17 +220,6 @@ async function startScan() {
     notify.error('Starting the scan failed', e)
   }
 }
-
-// One scan is followed at a time: a stream of another cluster's scan (the
-// cluster changed meanwhile) must not land in this one.
-let stream: EventSource | null = null
-let followed = ''
-function stopFollowing() {
-  stream?.close()
-  stream = null
-  followed = ''
-}
-onUnmounted(stopFollowing)
 
 function follow(id: string) {
   stopFollowing()

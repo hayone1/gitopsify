@@ -80,12 +80,15 @@ run gitopsify server (or the Helm chart) instead.`,
 			if !noBrowser {
 				// The browser opens a private page that posts the token: on
 				// its command line, others on the machine could read it.
-				page, cleanup, err := signInPage(ln.Addr().String(), token)
-				if err != nil {
+				// WSL's browser runs on Windows and can't read Linux files.
+				if os.Getenv("WSL_DISTRO_NAME") != "" {
+					openBrowser(url)
+				} else if page, cleanup, err := signInPage(ln.Addr().String(), token); err != nil {
 					u.Warn("couldn't open the browser (%v); open the address above", err)
 				} else {
 					defer cleanup()
 					openBrowser(page)
+					u.Step("if the browser can't open the sign-in page (snap and flatpak browsers can't read it), open the address above")
 				}
 			}
 			return srv.ListenAndServe(ctx, ln)

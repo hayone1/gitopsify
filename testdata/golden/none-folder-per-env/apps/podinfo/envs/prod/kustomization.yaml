@@ -9,5 +9,3 @@ helmCharts:
     skipTests: true
     valuesFile: values.yaml
     version: 6.9.2
-transformers:
-  - release-namespace.yaml

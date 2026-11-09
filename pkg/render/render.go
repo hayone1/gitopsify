@@ -90,6 +90,10 @@ func Render(inv *model.Inventory, opts Options) (*Tree, error) {
 		if err := r.renderLayout(l); err != nil {
 			return nil, err
 		}
+		if l.root != "" {
+			// A repository of its own: it keeps its own list of files.
+			r.tree.roots = append(r.tree.roots, l.root)
+		}
 	}
 	if err := r.rootFiles(); err != nil {
 		return nil, err
