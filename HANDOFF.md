@@ -1,6 +1,6 @@
 # Handoff: gitopsify
 
-State as of 2026-11-08. Repo: https://github.com/hayone1/gitopsify (public
+State as of 2026-11-09. Repo: https://github.com/hayone1/gitopsify (public
 since 2026-11-07; history scanned for credentials first: clean). Latest
 release: v0.2.0 (2026-11-08, not announced: the user announces once the
 registry and web UI are done). The provider system (PR #1) is merged into `main`; the SDK is
@@ -22,7 +22,7 @@ and team server. See the section below; the user reviews it before merging
 ## Web UI (branch `webui`)
 `gitopsify ui` (one person, localhost, single-use link) and `gitopsify
 server` (teams; the Helm chart `charts/gitopsify`). Guide docs/web-ui.md,
-design docs/DESIGN-webui.md (W1-W10).
+design docs/DESIGN-webui.md (W1-W11).
 - `internal/server`: api.go (routes), auth.go (OIDC PKCE/state/nonce, AES-GCM
   cookies, CSRF header, API tokens, local token), rbac.go (viewer/operator/
   admin per cluster and tool), runs.go (background runs, SSE with event IDs,
@@ -385,6 +385,20 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   Basic header in unit_test.go, the chart e2e's throwaway PostgreSQL
   password): not real secrets; both are now computed/generated. Mark the
   incidents as test fixtures in the GitGuardian dashboard, or squash-merge.
+
+- 2026-11-09, the user asked for a less generic look and a light/dark/system
+  switch: the UI follows IBM's Carbon Design System (palettes in
+  `ui/app/assets/css/main.css` as `carbon-*` Tailwind colors; White / Gray
+  100 themes as Nuxt UI variables; `--ui-radius: 0`; IBM Plex via
+  @fontsource, Latin + Latin Extended only; Carbon's primary button, side
+  nav selection, toggle track and darker tinted-badge text as compoundVariants
+  in `ui/app/app.config.ts`). UColorModeSelect in the sidebar footer and on
+  the sign-in page. The e2e saves every screenshot in both themes
+  (`<name>-dark.png`) and tests the color mode across a reload. Reviewed
+  (contrast fixed: dimmed text, tinted badges, toggle track). Unbundled:
+  Fontsource's .woff fallbacks still ship (a few hundred KB).
+- devbox.sh: cx33 was unavailable everywhere on 2026-11-09; use
+  `SERVER_TYPE=cpx32`. `up` now stops when no location has the type.
 
 ### Accepted / known limits (web UI)
 - Sessions can't be revoked one by one (rotate sessionKey).

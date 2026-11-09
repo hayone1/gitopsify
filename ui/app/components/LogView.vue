@@ -24,7 +24,7 @@ const levelClass: Record<string, string> = {
 </script>
 
 <template>
-  <div ref="box" class="font-mono text-xs leading-relaxed bg-(--ui-bg-muted) rounded-md p-3 overflow-auto max-h-[60vh] min-h-48" @scroll="onScroll">
+  <div ref="box" class="font-mono text-xs leading-relaxed bg-(--ui-bg-muted) p-3 overflow-auto max-h-[60vh] min-h-48" @scroll="onScroll">
     <div v-for="(l, i) in lines" :key="i" class="flex gap-3 whitespace-pre-wrap break-words">
       <span class="text-(--ui-text-dimmed) shrink-0 select-none">{{ new Date(l.time).toLocaleTimeString() }}</span>
       <span :class="levelClass[l.level]">{{ l.message }}</span>

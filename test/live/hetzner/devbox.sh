@@ -27,7 +27,7 @@ fi
 : "${TF_VAR_hcloud_token:?set TF_VAR_hcloud_token (or put it in .env)}"
 tf() { terraform -chdir="$state" "$@"; }
 log() { printf '\n\033[1m== %s\033[0m\n' "$*" >&2; }
-ip() { tf output -json ips 2>/dev/null | jq -r .devbox; }
+ip() { tf output -json ips 2>/dev/null | jq -r '.devbox // empty'; }
 ssh_() {
   ssh -i "$state/ssh" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$state/known_hosts" \
     -o ConnectTimeout=30 -o ConnectionAttempts=3 -o BatchMode=yes -o ServerAliveInterval=30 "root@$(ip)" "$@"
@@ -53,6 +53,7 @@ up() {
     grep -q resource_unavailable "$state/apply.log" || { cat "$state/apply.log"; exit 1; }
     echo "${SERVER_TYPE:-cx33} unavailable in $location" >&2
   done
+  [[ -n "$(ip)" ]] || { echo "no location has ${SERVER_TYPE:-cx33}: try SERVER_TYPE=cpx32 or other LOCATIONS" >&2; exit 1; }
   until ssh_ true 2>/dev/null; do sleep 5; done
   log "installing the tools on $(ip)"
   go_version=$(sed -n 's/^go //p' "$root/go.mod")

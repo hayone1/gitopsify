@@ -454,4 +454,14 @@ The UI is a Nuxt app (Vue, Nuxt UI) in `ui/`, built into `web/dist` and
 embedded in the binary by `make ui build`. For development, run
 `gitopsify ui --listen 127.0.0.1:8080` and `make ui-dev` (http://localhost:3000
 proxies the API). The end-to-end test (Keycloak, kind, a Git server and a
-browser) is `test/e2e/webui/run.sh`, run on a throwaway machine.
+browser) is `test/e2e/webui/run.sh`, run on a throwaway machine; it saves
+every screenshot in the light and the dark theme.
+
+The look follows IBM's [Carbon Design System](https://carbondesignsystem.com)
+(Apache-2.0): its palettes as Nuxt UI colors and its White and Gray 100
+themes as Nuxt UI's variables (`ui/app/assets/css/main.css`,
+`ui/app/app.config.ts`), square corners and IBM Plex (SIL OFL 1.1; its
+license travels in the font files), bundled so nothing is fetched. Text keeps
+4.5:1 contrast in both themes, tinted badges included. The color mode (System, Light, Dark) is in the sidebar and on the
+sign-in page; it follows the system until someone picks one, and the browser
+remembers it.

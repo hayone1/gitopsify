@@ -13,7 +13,16 @@ async function signIn(page: Page, user: string) {
 }
 
 const gitURL = process.env.GIT_URL || 'http://localhost:8099/gitops.git'
-const shot = (page: Page, name: string) => page.screenshot({ path: `screenshots/${name}.png`, fullPage: true })
+// shot saves the page in the light and the dark theme (the color mode follows
+// the system until someone picks one).
+async function shot(page: Page, name: string) {
+  await page.screenshot({ path: `screenshots/${name}.png`, fullPage: true, animations: 'disabled' })
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  await page.screenshot({ path: `screenshots/${name}-dark.png`, fullPage: true, animations: 'disabled' })
+  await page.emulateMedia({ colorScheme: 'light' })
+  await expect(page.locator('html')).not.toHaveClass(/dark/)
+}
 
 test('an operator scans, generates and pushes a migration', async ({ page }) => {
   await signIn(page, 'ada')
@@ -80,4 +89,14 @@ test('an admin reads the audit log', async ({ page }) => {
   await page.getByRole('link', { name: 'Clusters' }).first().click()
   await expect(page.getByText(/Reachable, Kubernetes/).first()).toBeVisible()
   await shot(page, '10-clusters')
+
+  // The color mode: picked in the sidebar, kept across reloads.
+  await page.getByRole('button', { name: 'Color mode' }).click()
+  await page.getByRole('option', { name: 'Dark' }).click()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  await page.reload()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  await page.getByRole('button', { name: 'Color mode' }).click()
+  await page.getByRole('option', { name: 'System' }).click()
+  await expect(page.locator('html')).not.toHaveClass(/dark/)
 })

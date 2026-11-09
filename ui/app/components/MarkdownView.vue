@@ -18,8 +18,8 @@ const html = computed(() => DOMPurify.sanitize(marked.parse(props.source, { asyn
 .markdown p, .markdown ul, .markdown ol, .markdown table, .markdown pre { margin: .5rem 0; }
 .markdown ul { list-style: disc; padding-left: 1.4rem; }
 .markdown ol { list-style: decimal; padding-left: 1.4rem; }
-.markdown code { font-size: .85em; background: var(--ui-bg-muted); padding: .1rem .3rem; border-radius: .25rem; }
-.markdown pre { background: var(--ui-bg-muted); padding: .75rem; border-radius: .375rem; overflow: auto; }
+.markdown code { font-size: .85em; background: var(--ui-bg-muted); padding: .1rem .3rem; }
+.markdown pre { background: var(--ui-bg-muted); padding: .75rem; overflow: auto; }
 .markdown pre code { background: none; padding: 0; }
 .markdown table { border-collapse: collapse; display: block; overflow: auto; }
 .markdown th, .markdown td { border: 1px solid var(--ui-border); padding: .3rem .6rem; text-align: left; }

@@ -2,14 +2,15 @@
 import type { DropdownMenuItem, NavigationMenuItem } from '@nuxt/ui'
 
 const me = useMe()
-const colorMode = useColorMode()
+const route = useRoute()
 const notify = useNotify()
 const open = ref(false)
 
 const links = computed<NavigationMenuItem[][]>(() => {
+  // A run's page keeps Runs selected (Carbon keeps the parent selected).
   const main: NavigationMenuItem[] = [
     { label: 'Overview', icon: 'i-lucide-layout-dashboard', to: '/', onSelect: () => { open.value = false } },
-    { label: 'Runs', icon: 'i-lucide-list-checks', to: '/runs', onSelect: () => { open.value = false } },
+    { label: 'Runs', icon: 'i-lucide-list-checks', to: '/runs', active: route.path.startsWith('/runs'), onSelect: () => { open.value = false } },
     { label: 'Clusters', icon: 'i-lucide-server', to: '/clusters', onSelect: () => { open.value = false } },
     { label: 'Tools', icon: 'i-lucide-blocks', to: '/tools', onSelect: () => { open.value = false } }
   ]
@@ -31,14 +32,7 @@ const links = computed<NavigationMenuItem[][]>(() => {
 
 const userItems = computed<DropdownMenuItem[][]>(() => [
   [{ label: me.value?.user.name || me.value?.user.username || '', type: 'label', avatar: { alt: me.value?.user.name || me.value?.user.username } }],
-  [
-    { label: 'Profile', icon: 'i-lucide-user-round', to: '/profile' },
-    {
-      label: colorMode.value === 'dark' ? 'Light mode' : 'Dark mode',
-      icon: colorMode.value === 'dark' ? 'i-lucide-sun' : 'i-lucide-moon',
-      onSelect: (e: Event) => { e.preventDefault(); colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark' }
-    }
-  ],
+  [{ label: 'Profile', icon: 'i-lucide-user-round', to: '/profile' }],
   [{ label: 'Sign out', icon: 'i-lucide-log-out', onSelect: signOut }]
 ])
 
@@ -59,8 +53,7 @@ async function signOut() {
       v-model:open="open"
       collapsible
       resizable
-      class="bg-(--ui-bg-elevated)/25"
-      :ui="{ footer: 'lg:border-t lg:border-(--ui-border)' }"
+      :ui="{ footer: 'lg:border-t lg:border-(--ui-border) flex-col items-stretch gap-1' }"
     >
       <template #header="{ collapsed }">
         <NuxtLink to="/" class="flex items-center gap-2 font-semibold">
@@ -75,6 +68,10 @@ async function signOut() {
       </template>
 
       <template #footer="{ collapsed }">
+        <UTooltip v-if="collapsed" text="Light or dark" :content="{ side: 'right' }">
+          <UColorModeButton color="neutral" variant="ghost" square class="self-center" />
+        </UTooltip>
+        <UColorModeSelect v-else color="neutral" variant="ghost" class="w-full" aria-label="Color mode" />
         <UDropdownMenu :items="userItems" :content="{ align: 'center', collisionPadding: 12 }" :ui="{ content: collapsed ? 'w-48' : 'w-(--reka-dropdown-menu-trigger-width)' }">
           <UButton
             :avatar="{ alt: me?.user.name || me?.user.username }"

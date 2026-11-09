@@ -4,7 +4,13 @@ export default defineNuxtConfig({
   modules: ['@nuxt/ui'],
   ssr: false,
   devtools: { enabled: false },
-  css: ['~/assets/css/main.css'],
+  // IBM Plex, bundled (Latin; Latin Extended for names).
+  css: [
+    ...['400', '500', '600'].flatMap(w => [`@fontsource/ibm-plex-sans/latin-${w}.css`, `@fontsource/ibm-plex-sans/latin-ext-${w}.css`]),
+    '@fontsource/ibm-plex-sans/latin-400-italic.css',
+    '@fontsource/ibm-plex-mono/latin-400.css',
+    '~/assets/css/main.css'
+  ],
   compatibilityDate: '2026-11-01',
   app: {
     head: {
@@ -14,7 +20,7 @@ export default defineNuxtConfig({
       meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }]
     }
   },
-  // Air-gapped and CSP-friendly: icons are bundled, no web fonts are fetched.
+  // Air-gapped and CSP-friendly: icons and fonts are bundled, nothing is fetched.
   ui: { fonts: false },
   icon: {
     provider: 'none',
