@@ -115,3 +115,35 @@ func TestDisabled(t *testing.T) {
 		}
 	}
 }
+
+// Overlapping wave patterns: the most specific decides, every time.
+func TestWavePatternsDeterministic(t *testing.T) {
+	for range 20 {
+		inv := apps()
+		cfg := config.New()
+		cfg.Ordering.Waves = map[string]int{"*": 5, "d*": -1, "db": 3}
+		if err := Run(inv, cfg); err != nil {
+			t.Fatal(err)
+		}
+		if w := waves(inv); w["db"] != 3 {
+			t.Fatalf("db is in wave %d, want 3 (its exact name)", w["db"])
+		}
+	}
+}
+
+// Two apps using each other's custom resources don't fail the scan.
+func TestMutualCRDs(t *testing.T) {
+	inv := &model.Inventory{Apps: []*model.App{
+		{Name: "a", Phase: model.PhaseApps, Objects: []*model.Object{crd("foos.a.io"), cr("b.io", "Bar", "bars", "x", "b")}},
+		{Name: "b", Phase: model.PhaseApps, Objects: []*model.Object{crd("bars.b.io"), cr("a.io", "Foo", "foos", "x", "f")}},
+	}}
+	if err := Run(inv, config.New()); err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Warnings) != 1 || !strings.Contains(inv.Warnings[0], "each other's custom resources") {
+		t.Errorf("warnings: %v", inv.Warnings)
+	}
+	if !inv.App("a").SkipDryRun || !inv.App("b").SkipDryRun {
+		t.Error("both apps need SkipDryRun")
+	}
+}

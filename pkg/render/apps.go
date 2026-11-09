@@ -10,6 +10,8 @@ import (
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/client-go/kubernetes/scheme"
 
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/helm"
@@ -147,8 +149,10 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 
 // mergePatch returns a patch that turns base into env, identified by the
 // object's apiVersion, kind, name and namespace. Kustomize applies it as a
-// strategic merge patch for built-in kinds and as a JSON merge patch for
-// custom resources; both treat this content the same way.
+// strategic merge patch for built-in kinds, which merges lists such as
+// containers and env by key (removals need its directives), and as a JSON
+// merge patch for custom resources (lists replaced whole): the patch is
+// made the same way.
 func mergePatch(base, env *unstructured.Unstructured) (map[string]any, error) {
 	b, err := json.Marshal(base.Object)
 	if err != nil {
@@ -158,7 +162,12 @@ func mergePatch(base, env *unstructured.Unstructured) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, err := jsonpatch.CreateMergePatch(b, e)
+	var p []byte
+	if typed, terr := scheme.Scheme.New(base.GroupVersionKind()); terr == nil {
+		p, err = strategicpatch.CreateTwoWayMergePatch(b, e, typed)
+	} else {
+		p, err = jsonpatch.CreateMergePatch(b, e)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -264,8 +273,22 @@ func (r *renderer) kustomizeHelmApp(l layout, a *model.App) error {
 			"namespace":   rel.Namespace,
 			"valuesFile":  "values.yaml",
 			"includeCRDs": true,
+			// helm test hooks would run as plain Pods.
+			"skipTests": true,
 		}
-		extra := map[string]any{"helmCharts": []any{chart}}
+		// helmCharts' namespace only sets .Release.Namespace: objects whose
+		// templates set none would go wherever kubectl or Argo CD's
+		// single Application puts them. Set it where it is unset only (a
+		// chart may place objects in other namespaces on purpose).
+		ns := map[string]any{
+			"apiVersion": "builtin", "kind": "NamespaceTransformer",
+			"metadata":  map[string]any{"name": "release-namespace", "namespace": rel.Namespace},
+			"unsetOnly": true, "setRoleBindingSubjects": "none",
+		}
+		if err := r.tree.AddYAML(l.file(dir, "release-namespace.yaml"), ns); err != nil {
+			return err
+		}
+		extra := map[string]any{"helmCharts": []any{chart}, "transformers": []any{"release-namespace.yaml"}}
 		if rel.Mode == model.HelmModeVendor {
 			extra["helmGlobals"] = map[string]any{"chartHome": relPath(dir, l.chartHome(a.Name))}
 		} else {

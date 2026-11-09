@@ -6,6 +6,7 @@ package model
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -381,7 +382,12 @@ func (inv *Inventory) Release(key string) *HelmRelease {
 
 // Warn records an inventory-wide warning.
 func (inv *Inventory) Warn(format string, args ...any) {
-	inv.Warnings = append(inv.Warnings, fmt.Sprintf(format, args...))
+	w := fmt.Sprintf(format, args...)
+	// Steps that run again (ordering after a narrowed scan) say it once.
+	if slices.Contains(inv.Warnings, w) {
+		return
+	}
+	inv.Warnings = append(inv.Warnings, w)
 }
 
 // SortObjects sorts objects by namespace, group, kind and name.

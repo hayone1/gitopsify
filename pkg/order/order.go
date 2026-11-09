@@ -46,18 +46,13 @@ func Run(inv *model.Inventory, cfg *config.Config) error {
 		edges[from][to] = true
 	}
 
-	if config.True(cfg.Ordering.InferDependencies, true) {
-		owner := crdOwners(inv)
-		for _, a := range inv.Apps {
-			for _, crd := range customResourceCRDs(a) {
-				if o, ok := owner[crd]; ok && o != a.Name {
-					addEdge(a.Name, o)
-					a.SkipDryRun = true
-				}
-			}
-		}
+	dependers := make([]string, 0, len(cfg.Ordering.DependsOn))
+	for app := range cfg.Ordering.DependsOn {
+		dependers = append(dependers, app)
 	}
-	for app, ds := range cfg.Ordering.DependsOn {
+	sort.Strings(dependers)
+	for _, app := range dependers {
+		ds := cfg.Ordering.DependsOn[app]
 		matched := false
 		for _, a := range inv.Apps {
 			if !match.Glob([]string{app}, a.Name) {
@@ -77,14 +72,52 @@ func Run(inv *model.Inventory, cfg *config.Config) error {
 		}
 	}
 
+	// Inferred after the explicit ones: an inferred edge that would close a
+	// cycle (two apps using each other's custom resources) is left out, so
+	// they sync in the same wave, without a dry run, rather than failing.
+	if config.True(cfg.Ordering.InferDependencies, true) {
+		owner := crdOwners(inv)
+		for _, a := range inv.Apps {
+			for _, crd := range customResourceCRDs(a) {
+				o, ok := owner[crd]
+				if !ok || o == a.Name {
+					continue
+				}
+				a.SkipDryRun = true
+				if reaches(edges, o, a.Name) {
+					inv.Warn("apps %s and %s use each other's custom resources; neither is ordered after the other", a.Name, o)
+					continue
+				}
+				addEdge(a.Name, o)
+			}
+		}
+	}
+
+	// The most specific pattern decides: an exact name, then longer ones
+	// ("db-*" before "*"), then alphabetical; never map order.
+	patterns := make([]string, 0, len(cfg.Ordering.Waves))
+	for p := range cfg.Ordering.Waves {
+		patterns = append(patterns, p)
+	}
+	sort.Slice(patterns, func(i, j int) bool {
+		ei, ej := !strings.ContainsAny(patterns[i], "*?["), !strings.ContainsAny(patterns[j], "*?[")
+		if ei != ej {
+			return ei
+		}
+		if len(patterns[i]) != len(patterns[j]) {
+			return len(patterns[i]) > len(patterns[j])
+		}
+		return patterns[i] < patterns[j]
+	})
 	base := map[string]int{}
 	pinned := map[string]bool{}
 	for _, a := range inv.Apps {
 		base[a.Name] = model.PhaseWave[a.Phase]
-		for pattern, w := range cfg.Ordering.Waves {
+		for _, pattern := range patterns {
 			if match.Glob([]string{pattern}, a.Name) {
-				base[a.Name] = w
+				base[a.Name] = cfg.Ordering.Waves[pattern]
 				pinned[a.Name] = true
+				break
 			}
 		}
 	}
@@ -209,4 +242,26 @@ func customResourceCRDs(a *model.App) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// reaches reports whether from depends on to, directly or through others.
+func reaches(edges map[string]map[string]bool, from, to string) bool {
+	seen := map[string]bool{}
+	var walk func(string) bool
+	walk = func(n string) bool {
+		if n == to {
+			return true
+		}
+		if seen[n] {
+			return false
+		}
+		seen[n] = true
+		for d := range edges[n] {
+			if walk(d) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(from)
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -191,9 +192,11 @@ func apply(u *unstructured.Unstructured, t config.Transform, protected bool) err
 		if u.GroupVersionKind().GroupKind().String() == "Ingress.networking.k8s.io" {
 			mapField(obj, t.Map, "spec", "ingressClassName")
 			a := u.GetAnnotations()
-			if to, ok := t.Map[a["kubernetes.io/ingress.class"]]; ok {
-				a["kubernetes.io/ingress.class"] = to
-				u.SetAnnotations(a)
+			if from, ok := a["kubernetes.io/ingress.class"]; ok {
+				if to, ok := t.Map[from]; ok {
+					a["kubernetes.io/ingress.class"] = to
+					u.SetAnnotations(a)
+				}
 			}
 		}
 	case "namespace":
@@ -284,16 +287,60 @@ func Namespace(u *unstructured.Unstructured, m map[string]string) {
 	if webhooks != nil {
 		_ = unstructured.SetNestedSlice(obj, webhooks, "webhooks")
 	}
-	for from, to := range m {
-		re := regexp.MustCompile(`\.` + regexp.QuoteMeta(from) + `(\.svc(\.cluster\.local)?)\b`)
-		r := func(s string) string { return re.ReplaceAllString(s, "."+to+"$1") }
-		if spec, ok := obj["spec"]; ok {
-			obj["spec"] = replaceStrings(spec, r)
-		}
-		if data, ok := obj["data"]; ok && gk == "ConfigMap" {
-			obj["data"] = replaceStrings(data, r)
+	// One pass for every namespace: swaps (a: b, b: a) and chains don't
+	// depend on map order.
+	if len(m) == 0 {
+		return
+	}
+	froms := make([]string, 0, len(m))
+	for from := range m {
+		if from != "" {
+			froms = append(froms, regexp.QuoteMeta(from))
 		}
 	}
+	if len(froms) == 0 {
+		return
+	}
+	sort.Slice(froms, func(i, j int) bool {
+		return len(froms[i]) > len(froms[j]) || len(froms[i]) == len(froms[j]) && froms[i] < froms[j]
+	})
+	re := regexp.MustCompile(`\.(` + strings.Join(froms, "|") + `)(\.svc(\.cluster\.local)?)\b`)
+	r := func(s string) string {
+		return re.ReplaceAllStringFunc(s, func(hit string) string {
+			sub := re.FindStringSubmatch(hit)
+			return "." + m[sub[1]] + sub[2]
+		})
+	}
+	if spec, ok := obj["spec"]; ok {
+		obj["spec"] = replaceStrings(spec, r)
+	}
+	if data, ok := obj["data"]; ok && gk == "ConfigMap" {
+		obj["data"] = replaceStrings(data, r)
+	}
+}
+
+// valuesTarget reports whether a transform's target covers a release's
+// values: by app, the release's namespace and name. Kinds and label
+// selectors pick objects, not values.
+func valuesTarget(sel *config.Selector, app *model.App) bool {
+	if sel == nil {
+		return true
+	}
+	if len(sel.Kinds) > 0 || sel.LabelSelector != "" {
+		return false
+	}
+	if len(sel.Apps) > 0 && !match.Glob(sel.Apps, app.Name) {
+		return false
+	}
+	if rel := app.Release; rel != nil {
+		if len(sel.Namespaces) > 0 && !match.Glob(sel.Namespaces, rel.Namespace) {
+			return false
+		}
+		if len(sel.Names) > 0 && !match.Glob(sel.Names, rel.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 // Values applies the transforms that affect Helm values to a copy of values.
@@ -306,7 +353,7 @@ func Values(values map[string]any, app *model.App, ts []config.Transform) (map[s
 		if !config.True(t.HelmValues, true) {
 			continue
 		}
-		if t.Target != nil && len(t.Target.Apps) > 0 && !match.Glob(t.Target.Apps, app.Name) {
+		if !valuesTarget(t.Target, app) {
 			continue
 		}
 		switch t.Type {

@@ -39,7 +39,13 @@ var invalidName = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // reserved are app names gitopsify uses itself; namespaces and releases with
 // these names get a suffix.
-var reserved = map[string]bool{AppCRDs: true, AppNamespaces: true, AppCluster: true, "flux-system": true}
+var reserved = map[string]bool{AppCRDs: true, AppNamespaces: true, AppCluster: true, "flux-system": true,
+	// File names next to the apps' in argocd/<env>/apps.
+	"project": true, "all": true, "applicationset": true}
+
+// isReserved reports names an app can't have: gitopsify's own, and those
+// of the files written next to the apps (repository-<name>.yaml).
+func isReserved(name string) bool { return reserved[name] || strings.HasPrefix(name, "repository-") }
 
 // Name turns s into a DNS label usable as an app name. Names longer than 63
 // characters are shortened with a hash of the full name, so different long
@@ -76,7 +82,7 @@ func Run(inv *model.Inventory, cfg *config.Config) error {
 			continue
 		}
 		name := Name(r.Name)
-		if a, taken := apps[name]; taken && a.Release != nil || reserved[name] {
+		if a, taken := apps[name]; taken && a.Release != nil || isReserved(name) {
 			name = Name(r.Name + "-" + r.Namespace)
 		}
 		a := get(name, model.AppHelm, r.Namespace)
@@ -147,14 +153,14 @@ func assign(o *model.Object, cfg *config.Config, releaseApp map[string]string) (
 	case config.GroupByLabel:
 		if v := o.Live.GetLabels()[cfg.Grouping.Label]; v != "" {
 			name := Name(v)
-			if reserved[name] {
+			if isReserved(name) {
 				name = Name(name + "-app")
 			}
 			return name, model.AppManifests, "", nil
 		}
 	}
 	name := Name(o.Ref.Namespace)
-	if reserved[name] {
+	if isReserved(name) {
 		name = Name(name + "-ns")
 	}
 	return name, model.AppManifests, o.Ref.Namespace, nil

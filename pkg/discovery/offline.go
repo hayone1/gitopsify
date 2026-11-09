@@ -69,6 +69,7 @@ func FromObjects(objs []*unstructured.Unstructured) *Result {
 	}
 	res := &Result{}
 	seen := map[schema.GroupVersionResource]bool{}
+	have := map[model.Ref]bool{}
 	for _, u := range objs {
 		gvk := u.GroupVersionKind()
 		gk := gvk.GroupKind().String()
@@ -88,7 +89,14 @@ func FromObjects(objs []*unstructured.Unstructured) *Result {
 		if !in.namespaced {
 			unstructured.RemoveNestedField(u.Object, "metadata", "namespace")
 		}
-		res.Objects = append(res.Objects, &model.Object{Ref: model.RefOf(u), GVR: gvr, Namespaced: in.namespaced, Live: u})
+		ref := model.RefOf(u)
+		if have[ref] {
+			// Concatenated dumps repeat objects: kustomize refuses two.
+			res.Warnings = append(res.Warnings, fmt.Sprintf("%s appears more than once in the input; using the first", ref))
+			continue
+		}
+		have[ref] = true
+		res.Objects = append(res.Objects, &model.Object{Ref: ref, GVR: gvr, Namespaced: in.namespaced, Live: u})
 	}
 	model.SortObjects(res.Objects)
 	sort.Slice(res.Resources, func(i, j int) bool { return res.Resources[i].GVR.String() < res.Resources[j].GVR.String() })

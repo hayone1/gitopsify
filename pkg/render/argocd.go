@@ -37,6 +37,19 @@ func ArgoCDInstallURL(version string) string {
 }
 
 func (r *renderer) renderArgoCD(l layout) error {
+	// Applications of every environment usually share one Argo CD:
+	// prod + eu-web and prod-eu + web would both be prod-eu-web.
+	seen := map[string]string{}
+	for _, env := range r.cfg.Environments {
+		for _, a := range r.inv.Apps {
+			name := r.argoName(l, a.Name, env.Name)
+			who := fmt.Sprintf("app %s of environment %s", a.Name, env.Name)
+			if other, ok := seen[name]; ok {
+				return fmt.Errorf("the Argo CD Application %s would be both %s and %s; rename an environment", name, other, who)
+			}
+			seen[name] = who
+		}
+	}
 	if err := r.argoBootstrap(l); err != nil {
 		return err
 	}

@@ -55,6 +55,7 @@ name, a reason in the report, and can be switched off with `--disable-rule`:
 | `addon-managed`, `system-served-registrations` | Objects the platform's addon manager applies (GKE, EKS, AKS, k3s add-ons), and APIServices and webhooks whose server runs in a system namespace |
 | `default-serviceaccount`, `platform-serviceaccounts`, `legacy-token-secrets` | Accounts and tokens every cluster creates itself |
 | `cert-manager-secrets` | TLS Secrets cert-manager will issue again |
+| `helm-hooks` | Objects left by Helm hooks (`helm.sh/hook`); the chart runs them again |
 | `already-gitops-managed` | Objects Argo CD, Flux or Config Sync already manage |
 
 `gitopsify rules` lists all of them. `scope.rules` adds your own include and

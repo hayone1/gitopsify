@@ -6,6 +6,7 @@ helmCharts:
     namespace: podinfo
     releaseName: podinfo
     repo: https://stefanprodan.github.io/podinfo
+    skipTests: true
     valuesFile: values.yaml
     version: 6.9.2
 patches:
@@ -18,3 +19,5 @@ patches:
           argocd.argoproj.io/sync-wave: "0"
     target:
       name: .*
+transformers:
+  - release-namespace.yaml

@@ -929,9 +929,51 @@ func protectSecrets(inv *model.Inventory, cfg *config.Config) {
 	}
 }
 
+// chartTransformWarnings tells which transforms don't reach objects that
+// Helm charts render (chart and vendor modes): only chart values change.
+func chartTransformWarnings(inv *model.Inventory, cfg *config.Config) {
+	check := func(where string, ts []config.Transform, env bool) {
+		for i, t := range ts {
+			objectOnly := false
+			switch t.Type {
+			case "labels", "annotations", "jsonPatch", "remove":
+				objectOnly = true
+			case "set":
+				objectOnly = !strings.HasPrefix(t.Path, "values.")
+			case "namespace":
+				objectOnly = env // global ones rename releases too
+			}
+			if !objectOnly {
+				continue
+			}
+			var apps []string
+			for _, a := range inv.Apps {
+				if a.Release == nil || a.Release.Mode == model.HelmModeManifests {
+					continue
+				}
+				for _, o := range a.Objects {
+					if ok, _ := match.SelectorOrAll(t.Target, o, o.App); ok {
+						apps = append(apps, a.Name)
+						break
+					}
+				}
+			}
+			if len(apps) > 0 {
+				inv.Warn("%stransform %d (%s) doesn't change the objects of Helm apps %s, which their charts render: set their values instead (values.<path>), or use helm.mode: manifests",
+					where, i, t.Type, strings.Join(apps, ", "))
+			}
+		}
+	}
+	check("", cfg.Transforms, false)
+	for _, e := range cfg.Environments {
+		check("environment "+e.Name+": ", e.Transforms, true)
+	}
+}
+
 // applyGlobalTransforms applies the transforms that hold for every
 // environment to the objects, and namespace renames to Helm releases.
 func applyGlobalTransforms(inv *model.Inventory, cfg *config.Config) error {
+	chartTransformWarnings(inv, cfg)
 	for _, o := range inv.Objects {
 		if o.Excluded || o.Out == nil {
 			continue
@@ -945,12 +987,22 @@ func applyGlobalTransforms(inv *model.Inventory, cfg *config.Config) error {
 			continue
 		}
 		for _, a := range inv.Apps {
+			if t.Target != nil && len(t.Target.Apps) > 0 && !match.Glob(t.Target.Apps, a.Name) {
+				continue
+			}
 			if to, ok := t.Map[a.Namespace]; ok {
 				a.Namespace = to
 			}
 			if a.Release != nil {
 				if to, ok := t.Map[a.Release.Namespace]; ok {
+					// Objects find their release by key (namespace/name).
+					old := a.Release.Key()
 					a.Release.Namespace = to
+					for _, o := range inv.Objects {
+						if o.HelmRelease == old {
+							o.HelmRelease = a.Release.Key()
+						}
+					}
 				}
 			}
 		}

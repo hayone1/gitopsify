@@ -5,7 +5,10 @@ helmCharts:
     includeCRDs: true
     namespace: tools
     releaseName: inhouse
+    skipTests: true
     valuesFile: values.yaml
     version: 0.1.0
 helmGlobals:
   chartHome: ../../charts
+transformers:
+  - release-namespace.yaml

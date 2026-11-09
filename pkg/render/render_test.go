@@ -1,13 +1,16 @@
 package render
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 
 	"github.com/hayone1/gitopsify/pkg/model"
 )
@@ -128,5 +131,44 @@ func TestLongFileNames(t *testing.T) {
 	u2.SetName(strings.Repeat("a", 252) + "b")
 	if fileName(&model.Object{Ref: model.RefOf(u2), Namespaced: true, Out: u2}, &model.App{Name: "shop"}) == name {
 		t.Error("different long names must get different files")
+	}
+}
+
+// An overlay patch, applied the way kustomize applies it (a strategic merge
+// patch for built-in kinds), gives the environment's object: list items the
+// environment removed are removed.
+func TestMergePatchLists(t *testing.T) {
+	base := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1", "kind": "Deployment",
+		"metadata": map[string]any{"name": "web", "namespace": "shop"},
+		"spec": map[string]any{"template": map[string]any{"spec": map[string]any{"containers": []any{
+			map[string]any{"name": "web", "image": "web:1",
+				"env":       []any{map[string]any{"name": "DEBUG", "value": "1"}, map[string]any{"name": "HOST", "value": "test.example.com"}},
+				"ports":     []any{map[string]any{"containerPort": int64(80)}, map[string]any{"containerPort": int64(9090)}},
+				"resources": map[string]any{"limits": map[string]any{"cpu": "1"}},
+			},
+		}}}},
+	}}
+	env := base.DeepCopy()
+	c := env.Object["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+	c["env"] = []any{map[string]any{"name": "HOST", "value": "example.com"}}
+	c["ports"] = []any{map[string]any{"containerPort": int64(80)}}
+	delete(c, "resources")
+	patch, err := mergePatch(base, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(base.Object)
+	p, _ := json.Marshal(patch)
+	got, err := strategicpatch.StrategicMergePatch(b, p, &appsv1.Deployment{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(env.Object)
+	var g, w any
+	_ = json.Unmarshal(got, &g)
+	_ = json.Unmarshal(want, &w)
+	if !reflect.DeepEqual(g, w) {
+		t.Errorf("kustomize would produce\n%s\nwant\n%s", got, want)
 	}
 }

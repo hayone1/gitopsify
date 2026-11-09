@@ -303,6 +303,16 @@ func DefaultRules() []Rule {
 			},
 		},
 		{
+			Name:        "helm-hooks",
+			Description: "Objects left by Helm hooks (jobs and the like the chart runs at install or upgrade)",
+			Match: func(o *model.Object, _ *model.Inventory) (bool, string) {
+				if h := o.Live.GetAnnotations()["helm.sh/hook"]; h != "" {
+					return true, "Helm hook (" + h + "); the chart runs it again"
+				}
+				return false, ""
+			},
+		},
+		{
 			Name:        "kubernetes-service",
 			Description: "The default/kubernetes Service and its Endpoints",
 			Match: func(o *model.Object, _ *model.Inventory) (bool, string) {

@@ -1,0 +1,7 @@
+apiVersion: builtin
+kind: NamespaceTransformer
+metadata:
+  name: release-namespace
+  namespace: tools
+setRoleBindingSubjects: none
+unsetOnly: true

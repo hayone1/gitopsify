@@ -58,9 +58,13 @@ func Check(inv *model.Inventory, cfg *config.Config) {
 				o.Warn("has externalIPs %s of the source environment; change them per environment", strings.Join(ips, ", "))
 			}
 		case "ServiceAccount":
+			how := "an annotations transform per environment"
+			if r := inv.Release(o.HelmRelease); r != nil && r.Mode != model.HelmModeManifests {
+				how = "the chart's value for it, per environment (a set transform on values.<path>)"
+			}
 			for k, what := range identityAnnotations {
 				if v := u.GetAnnotations()[k]; v != "" {
-					o.Warn("is bound to %s, %s, of the source environment; point it at the target's with an annotations transform per environment", what, v)
+					o.Warn("is bound to %s, %s, of the source environment; point it at the target's with %s", what, v, how)
 				}
 			}
 		}

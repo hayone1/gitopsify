@@ -2,6 +2,7 @@ package transform
 
 import (
 	"encoding/base64"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -135,6 +136,19 @@ spec: {ingressClassName: nginx}
 	if c, _, _ := unstructured.NestedString(ing.Object, "spec", "ingressClassName"); c != "traefik" || ing.GetAnnotations()["kubernetes.io/ingress.class"] != "traefik" {
 		t.Errorf("ingress class = %s / %v", c, ing.GetAnnotations())
 	}
+	// No annotations, and a map with an empty key: no panic, nothing added.
+	bare, bo := object(t, `
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: bare, namespace: shop}
+spec: {ingressClassName: nginx}
+`)
+	if _, err := Object(bare, bo, []config.Transform{{Type: "ingressClass", Map: map[string]string{"": "x", "nginx": "traefik"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bare.GetAnnotations()) != 0 {
+		t.Errorf("annotations added: %v", bare.GetAnnotations())
+	}
 }
 
 func TestValues(t *testing.T) {
@@ -168,6 +182,16 @@ func TestValues(t *testing.T) {
 	}
 	if values["replicas"] != 1 {
 		t.Error("Values must not modify its input")
+	}
+	// Targets by namespace and name pick releases; kinds pick objects.
+	rel := &model.App{Name: "web", Release: &model.HelmRelease{Name: "web", Namespace: "shop"}}
+	out, err = Values(map[string]any{"replicas": 1}, rel, []config.Transform{
+		{Type: "set", Path: "values.replicas", Value: 2, Target: &config.Selector{Namespaces: []string{"legacy"}}},
+		{Type: "set", Path: "values.replicas", Value: 3, Target: &config.Selector{Kinds: []string{"Deployment"}}},
+		{Type: "set", Path: "values.replicas", Value: 4, Target: &config.Selector{Namespaces: []string{"shop"}, Names: []string{"w*"}}},
+	})
+	if err != nil || fmt.Sprint(out["replicas"]) != "4" {
+		t.Errorf("targeted values: %v %v", out, err)
 	}
 }
 
@@ -273,5 +297,22 @@ func TestProtectedSecret(t *testing.T) {
 	u, o = object(t, secret)
 	if _, err := Object(u, o, []config.Transform{{Type: "namespace", Map: map[string]string{"shop": "mine"}}, {Type: "replace", From: "sample", To: "x"}}); err != nil || u.GetNamespace() != "mine" {
 		t.Errorf("unprotected: %v %s", err, u.GetNamespace())
+	}
+}
+
+// Swapping namespaces rewrites DNS names in one pass: a.svc and b.svc
+// trade places, whatever the map order.
+func TestNamespaceSwap(t *testing.T) {
+	for range 20 {
+		cm, _ := object(t, `
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: c, namespace: a}
+data: {x: "db.a.svc:5432 cache.b.svc.cluster.local"}
+`)
+		Namespace(cm, map[string]string{"a": "b", "b": "a"})
+		if v, _, _ := unstructured.NestedString(cm.Object, "data", "x"); v != "db.b.svc:5432 cache.a.svc.cluster.local" {
+			t.Fatalf("rewritten: %q", v)
+		}
 	}
 }

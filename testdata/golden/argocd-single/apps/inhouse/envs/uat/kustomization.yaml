@@ -5,6 +5,7 @@ helmCharts:
     includeCRDs: true
     namespace: tools
     releaseName: inhouse
+    skipTests: true
     valuesFile: values.yaml
     version: 0.1.0
 helmGlobals:
@@ -19,3 +20,5 @@ patches:
           argocd.argoproj.io/sync-wave: "0"
     target:
       name: .*
+transformers:
+  - release-namespace.yaml
