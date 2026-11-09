@@ -261,6 +261,12 @@ func (x *Export) Validate() error {
 			return fmt.Errorf("spec.output.formats: %q isn't terraform or crossplane", f)
 		}
 	}
+	// Namespaces are <prefix>-<instance>-<partition>: a prefix that isn't
+	// the start of a DNS label makes names Kubernetes refuses, and the
+	// export's state unusable.
+	if p := e.Output.Crossplane.NamespacePrefix; p != "" && (len(p) > 20 || !dnsLabel.MatchString(p)) {
+		return fmt.Errorf("spec.output.crossplane.namespacePrefix %q: lowercase letters, digits and dashes, at most 20", p)
+	}
 	switch e.Output.SecretValues {
 	case "", SecretValuesSkip, SecretValuesLocal:
 	default:

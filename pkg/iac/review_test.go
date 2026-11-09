@@ -298,6 +298,31 @@ func TestWarningForUnannouncedPartitionKeepsFiles(t *testing.T) {
 	if read(t, filepath.Join(dir, "terraform/default/team-unicode/folders.tf")) != before || res.Report.GoneTotal() != 0 {
 		t.Errorf("an unannounced partition's other kinds were treated as deleted (gone %d)", res.Report.GoneTotal())
 	}
+	// Its provider settings (org_id 2) stay: they're unknown this time.
+	if p := read(t, filepath.Join(dir, "terraform/default/team-unicode/providers.tf")); !strings.Contains(p, "org_id") {
+		t.Errorf("providers.tf lost the partition's settings:\n%s", p)
+	}
+}
+
+// A warning naming a kind the provider doesn't describe, or a partition
+// by its name, makes more look unread, never less: nothing becomes gone.
+func TestMisnamedWarningsKeepObjects(t *testing.T) {
+	for _, w := range []sdk.Warning{{Partition: "1", Kind: "Dashboards"}, {Partition: "Main Org.", Kind: "Dashboard"}} {
+		dir := t.TempDir()
+		export(t, dir, inventory(), Options{Adopt: true})
+		inv := inventory()
+		var kept []sdk.Resource
+		for _, r := range inv.Resources {
+			if r.Kind != "Dashboard" {
+				kept = append(kept, r)
+			}
+		}
+		inv.Resources = kept
+		inv.Warnings = []sdk.Warning{w}
+		if res := exportWith(t, dir, inv, Options{Adopt: true}, nil); res.Report.GoneTotal() != 0 {
+			t.Errorf("%+v: %d objects treated as deleted", w, res.Report.GoneTotal())
+		}
+	}
 }
 
 func TestCrossplaneSecretNamesAreStable(t *testing.T) {
@@ -318,5 +343,30 @@ func TestCrossplaneSecretNamesAreStable(t *testing.T) {
 	st, _ = LoadState(dir)
 	if got := st.Resources["default/b"].Secrets[""]; got != want || got == "" {
 		t.Errorf("b's Secret moved from %q to %q", want, got)
+	}
+}
+
+// Dashboards whose paths become the same file name get their own files:
+// a resource never points at another's content.
+func TestFilePathsDontCollide(t *testing.T) {
+	inv := &sdk.Inventory{Partitions: []sdk.Partition{{ID: "1", Name: "Main"}}, Resources: []sdk.Resource{
+		{Key: "dashboard/1/a", Kind: "Dashboard", Partition: "1", Name: "CPU: Usage", ImportID: "1:a", Attributes: map[string]any{
+			"config_json": sdk.File("dashboards/CPU: Usage.json", sdk.RawJSON(`{"uid":"a"}`))}},
+		{Key: "dashboard/1/b", Kind: "Dashboard", Partition: "1", Name: "CPU Usage", ImportID: "1:b", Attributes: map[string]any{
+			"config_json": sdk.File("dashboards/CPU Usage.json", sdk.RawJSON(`{"uid":"b"}`))}},
+	}}
+	dir := t.TempDir()
+	res := exportWith(t, dir, inv, Options{Adopt: true, Formats: []string{config.FormatTerraform}}, nil)
+	paths := map[string]string{}
+	for key, rs := range res.State.Resources {
+		for _, f := range rs.Files {
+			if other, ok := paths[strings.ToLower(f)]; ok {
+				t.Fatalf("%s and %s both write %s", other, key, f)
+			}
+			paths[strings.ToLower(f)] = key
+		}
+	}
+	if len(paths) != 2 {
+		t.Errorf("files: %v", paths)
 	}
 }

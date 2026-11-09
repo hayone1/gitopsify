@@ -167,6 +167,9 @@ func (s *Server) checkTool(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
 		res.Check, err = (&provider.Client{Name: in.Name, Path: in.Path, Env: s.providerEnv()}).Check(ctx, sdk.Request{Instance: t.Name, Settings: settings})
+		if res.Check != nil && res.Check.Partitions == nil {
+			res.Check.Partitions = []sdk.Partition{} // [] for clients, not null
+		}
 	}
 	if err != nil {
 		res.Error = err.Error()

@@ -213,7 +213,7 @@ spec:
   provider:
     name: grafana
     source: hayone1/grafana
-    version: v0.1.0             # gitopsify refuses another version
+    version: v0.1.0             # another version is refused (at a terminal, a provider of your own on PATH only warns)
     checksums:                  # the release archive per platform, checked on install
       linux_amd64: 3f5c...
   instances:

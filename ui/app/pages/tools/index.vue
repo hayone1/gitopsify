@@ -110,7 +110,7 @@ const columns = computed<TableColumn<ProviderInfo>[]>(() => [
               <div v-if="(checks[t.name] as ToolCheck).check" class="space-y-1">
                 <p class="flex items-center gap-2 text-(--ui-success)"><UIcon name="i-lucide-plug-zap" />{{ (checks[t.name] as ToolCheck).check!.target }}</p>
                 <p class="text-xs text-(--ui-text-muted)">
-                  {{ (checks[t.name] as ToolCheck).check!.partitions.length }} {{ (checks[t.name] as ToolCheck).description?.partition.plural }}
+                  {{ ((checks[t.name] as ToolCheck).check!.partitions?.length ?? 0) }} {{ (checks[t.name] as ToolCheck).description?.partition.plural }}
                   <template v-if="(checks[t.name] as ToolCheck).check!.identity"> · as {{ (checks[t.name] as ToolCheck).check!.identity }}</template>
                 </p>
               </div>

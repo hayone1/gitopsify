@@ -203,7 +203,12 @@ func newProviderInfo(o *options) *cobra.Command {
 			if err != nil {
 				return notInstalled(args[0], err)
 			}
-			d, err := (&provider.Client{Name: p.Name, Path: p.Path}).Describe(cmd.Context())
+			// A file may be renamed: like export, don't expect its name.
+			name := p.Name
+			if strings.ContainsAny(args[0], `/\`) {
+				name = ""
+			}
+			d, err := (&provider.Client{Name: name, Path: p.Path}).Describe(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -219,12 +224,13 @@ func newProviderInfo(o *options) *cobra.Command {
 }
 
 func printDescription(u *ui.UI, p *provider.Installed, d *sdk.Description) {
-	u.Println(u.Bold(d.Title) + " provider " + d.Version + " (" + p.Path + ")")
+	// The provider's words, without terminal control sequences.
+	u.Println(u.Bold(clean(d.Title)) + " provider " + clean(d.Version) + " (" + p.Path + ")")
 	if d.Description != "" {
-		u.Println(d.Description)
+		u.Println(clean(d.Description))
 	}
 	if d.Homepage != "" {
-		u.Println(d.Homepage)
+		u.Println(clean(d.Homepage))
 	}
 	u.Heading("Connection settings")
 	var rows [][]string
@@ -236,7 +242,7 @@ func printDescription(u *ui.UI, p *provider.Installed, d *sdk.Description) {
 		if s.Secret {
 			flags = append(flags, "secret")
 		}
-		rows = append(rows, []string{s.Name, firstNonEmpty(s.Env, "-"), strings.Join(flags, ", "), s.Description})
+		rows = append(rows, []string{clean(s.Name), clean(firstNonEmpty(s.Env, "-")), strings.Join(flags, ", "), clean(s.Description)})
 	}
 	u.Table([]string{"SETTING", "ENVIRONMENT", "", "DESCRIPTION"}, rows)
 	u.Heading("Kinds (one workspace per " + d.Partition.Singular + ")")
@@ -253,7 +259,7 @@ func printDescription(u *ui.UI, p *provider.Installed, d *sdk.Description) {
 		if k.Optional {
 			def = "no"
 		}
-		rows = append(rows, []string{k.Name, def, tf, xp, k.Description})
+		rows = append(rows, []string{clean(k.Name), def, clean(tf), clean(xp), clean(k.Description)})
 	}
 	u.Table([]string{"KIND", "DEFAULT", "TERRAFORM", "CROSSPLANE", "DESCRIPTION"}, rows)
 	u.Heading("Outputs")

@@ -147,7 +147,7 @@ const canNext = computed(() => step.value === 0 ? !!info.value?.check : kinds.va
             <UAlert v-else-if="info?.error" color="error" variant="subtle" icon="i-lucide-unplug" :description="info.error" />
             <div v-else-if="info?.check" class="space-y-2 text-sm">
               <p class="flex items-center gap-2 text-(--ui-success)"><UIcon name="i-lucide-plug-zap" />{{ info.check.target }}<template v-if="info.check.identity"> as {{ info.check.identity }}</template></p>
-              <p class="text-(--ui-text-muted)">{{ info.check.partitions.length }} {{ desc?.partition.plural }} · provider {{ desc?.name }} {{ desc?.version }}</p>
+              <p class="text-(--ui-text-muted)">{{ info.check.partitions?.length ?? 0 }} {{ desc?.partition.plural }} · provider {{ desc?.name }} {{ desc?.version }}</p>
               <UAlert v-for="(w, i) in info.check.warnings || []" :key="i" color="warning" variant="subtle" :description="w" />
             </div>
           </div>
@@ -157,7 +157,7 @@ const canNext = computed(() => step.value === 0 ? !!info.value?.check : kinds.va
           <UCard>
             <template #header><h2 class="font-semibold capitalize">{{ desc.partition.plural }}</h2></template>
             <p class="text-sm text-(--ui-text-muted) mb-2">None checked exports them all. Each gets its own Terraform workspace or Kustomization.</p>
-            <UCheckboxGroup v-model="partitions" :items="info.check.partitions.map(p => ({ label: p.name, value: p.name, description: p.id !== p.name ? p.id : undefined }))" />
+            <UCheckboxGroup v-model="partitions" :items="(info.check.partitions ?? []).map(p => ({ label: p.name, value: p.name, description: p.id !== p.name ? p.id : undefined }))" />
           </UCard>
           <UCard>
             <template #header><h2 class="font-semibold">Kinds</h2></template>

@@ -200,7 +200,16 @@ func (c *Client) run(ctx context.Context, method string, req *sdk.Request, read 
 		_ = stderr.Close()
 		<-drained
 	}
-	wg.Wait()
+	// A child of the provider (a credential helper, a port-forward) can
+	// hold stderr open after the provider exits: stop reading it then.
+	stderrDone := make(chan struct{})
+	go func() { wg.Wait(); close(stderrDone) }()
+	select {
+	case <-stderrDone:
+	case <-time.After(5 * time.Second):
+		_ = stderr.Close()
+		<-stderrDone
+	}
 	waitErr := cmd.Wait()
 
 	if ctx.Err() != nil {

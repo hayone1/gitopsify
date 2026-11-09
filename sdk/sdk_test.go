@@ -56,7 +56,7 @@ func (f fake) Discover(ctx context.Context, req sdk.Request, out sdk.Emitter) er
 			return err
 		}
 	}
-	if err := out.Warn(sdk.Warning{Partition: "1", Kind: "Alert", Message: "forbidden"}); err != nil {
+	if err := out.Warn(sdk.Warning{Partition: "1", Kind: "Dashboard", Message: "forbidden"}); err != nil {
 		return err
 	}
 	return out.Resource(sdk.Resource{Key: "dashboard/1/d", Kind: "Dashboard", Partition: "1", Name: "D <1>", ImportID: "1:d",

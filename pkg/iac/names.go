@@ -260,7 +260,11 @@ func safePath(p, key string) string {
 		if i == len(parts)-1 {
 			ext := strings.ToLower(path.Ext(seg))
 			base := strings.TrimSuffix(seg, path.Ext(seg))
-			if !safeExt.MatchString(ext) {
+			// Terraform loads .tf, .tf.json and .tfvars files next to the
+			// configuration: a provider's file can't be one.
+			lower := strings.ToLower(seg)
+			tf := strings.HasSuffix(lower, ".tf") || strings.HasSuffix(lower, ".tf.json") || strings.Contains(lower, ".tfvars")
+			if !safeExt.MatchString(ext) || tf {
 				ext, base = "", seg
 			}
 			out = append(out, fileSegment(base, "file-"+shortHash(key))+ext)
