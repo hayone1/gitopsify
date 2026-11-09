@@ -156,7 +156,7 @@ func (r *renderer) renderLayout(l layout) error {
 // rootFiles writes the effective configuration and local secret files at the
 // output root.
 func (r *renderer) rootFiles() error {
-	b, err := r.cfg.Marshal()
+	b, err := r.cfg.Portable().Marshal()
 	if err != nil {
 		return err
 	}

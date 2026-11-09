@@ -16,6 +16,7 @@ import (
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/discovery"
 	"github.com/hayone1/gitopsify/pkg/helm"
+	"github.com/hayone1/gitopsify/pkg/render"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files in testdata/golden")
@@ -115,9 +116,16 @@ func TestGolden(t *testing.T) {
 				if err := os.RemoveAll(dir); err != nil {
 					t.Fatal(err)
 				}
-				if _, _, err := res.Tree.Write(dir, true); err != nil {
+				if _, err := res.Tree.Write(dir, render.WriteOptions{Force: true}); err != nil {
 					t.Fatal(err)
 				}
+				// Only the manifests: checksums would change with every file.
+				_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+					if err == nil && filepath.Base(filepath.Dir(p)) == ".gitopsify" && d.Name() != "generated.txt" {
+						_ = os.Remove(p)
+					}
+					return nil
+				})
 				return
 			}
 			want := map[string]bool{}
@@ -128,9 +136,9 @@ func TestGolden(t *testing.T) {
 				}
 				return nil
 			})
-			// Write's manifests (the output's, and each repository's).
+			// Write's state (the output's, and each repository's).
 			for p := range want {
-				if p == ".gitopsify/generated.txt" || strings.HasSuffix(p, "/.gitopsify/generated.txt") {
+				if p == ".gitopsify" || strings.HasPrefix(p, ".gitopsify/") || strings.Contains(p, "/.gitopsify/") {
 					delete(want, p)
 				}
 			}

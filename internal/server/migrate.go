@@ -18,6 +18,7 @@ import (
 	"github.com/hayone1/gitopsify/pkg/gitrepo"
 	"github.com/hayone1/gitopsify/pkg/kube"
 	"github.com/hayone1/gitopsify/pkg/pipeline"
+	"github.com/hayone1/gitopsify/pkg/render"
 )
 
 // runRequest starts a scan or a migration.
@@ -45,6 +46,10 @@ type runRequest struct {
 
 type publishRequest struct {
 	Message string `json:"message,omitempty"`
+	// Branch pushes to this branch instead of the one the output belongs
+	// on, for a pull request: nothing is pushed when the output doesn't
+	// differ, and a branch holding only gitopsify's commits is replaced.
+	Branch string `json:"branch,omitempty"`
 }
 
 // appSummary is an app of a scan, as the UI lists them.
@@ -102,9 +107,11 @@ func (s *Server) prepareMigration(text, cluster string, u *User) (*config.Config
 		return nil, err
 	}
 	var envClusters []string // registered names, in order
+	envNames := make([]string, len(cfg.Environments))
 	for i := range cfg.Environments {
 		e := &cfg.Environments[i]
 		name := e.Cluster.Access.Context
+		envNames[i] = name
 		rest := e.Cluster.Access
 		rest.Context = ""
 		if !reflect.ValueOf(rest).IsZero() {
@@ -175,6 +182,9 @@ func (s *Server) prepareMigration(text, cluster string, u *User) (*config.Config
 		}
 	}
 	cfg.Output.Dir = "" // set per run
+	// What the output keeps, and the run's stored spec, name the clusters
+	// as the server registers them: they run again with run start.
+	cfg.NameClusters(cluster, envNames)
 	return cfg, nil
 }
 
@@ -342,7 +352,7 @@ func (s *Server) startRun(ctx context.Context, req runRequest, u *User) (*Run, e
 			if req.Publish != nil {
 				// A failed push is recorded on the run, which keeps its
 				// output: push again once the cause is fixed.
-				if err := s.publish(ctx, rc.ID(), u, req.Publish.Message, rc); err != nil {
+				if err := s.publish(ctx, rc.ID(), u, *req.Publish, rc); err != nil {
 					rc.Warn("not pushed: %v", err)
 				}
 			}
@@ -353,16 +363,9 @@ func (s *Server) startRun(ctx context.Context, req runRequest, u *User) (*Run, e
 }
 
 // publicDocument is the migration without server-side access settings,
-// with environment clusters named by their registered name.
+// with the clusters named by their registered names (prepareMigration).
 func publicDocument(cfg *config.Config) any {
-	c := *cfg
-	c.Source.Access = config.Access{}
-	c.Environments = append([]config.Environment(nil), cfg.Environments...)
-	for i := range c.Environments {
-		c.Environments[i].Cluster.Access = config.Access{Context: cfg.Environments[i].Cluster.Access.Context}
-	}
-	c.Output.Dir = ""
-	return c.Document()
+	return cfg.Portable().Document()
 }
 
 func (s *Server) pipelineOptions(rc *runContext, cfg *config.Config) pipeline.Options {
@@ -465,12 +468,38 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 			return fmt.Errorf("the repository has environment(s) %s that this migration doesn't list: their files would be deleted. List every environment in spec.environments", strings.Join(gone, ", "))
 		}
 	}
-	written, _, err := res.Tree.Write(dir, true)
+	// The run's directory is a checkout of the repository: files there
+	// that gitopsify didn't write are overwritten, unless the migration's
+	// merge settings say otherwise.
+	wo := render.WriteOptions{Force: true}
+	if m := cfg.Output.Merge; m != nil {
+		wo.Edited, wo.Unmanaged, wo.Keep = m.Edited, m.Unmanaged, m.Keep
+	}
+	wr, err := res.Tree.Write(dir, wo)
 	if err != nil {
 		return err
 	}
-	rc.Info("wrote %d files for %d apps", len(written), len(res.Inventory.Apps))
-	sum := summaryOf(res, len(written))
+	rc.Info("wrote %d files for %d apps; %d differ from the repository", len(wr.Written), len(res.Inventory.Apps), len(wr.Changed))
+	kept := map[string]bool{}
+	for _, p := range wr.Kept {
+		kept[p] = true
+	}
+	for _, p := range wr.Edited {
+		if !kept[p] {
+			rc.Warn("overwrote %s, which was changed by hand since gitopsify wrote it (spec.output.merge.edited: keep keeps such files)", p)
+		}
+	}
+	for _, p := range wr.Overwritten {
+		rc.Warn("overwrote %s, which gitopsify didn't write", p)
+	}
+	for _, p := range wr.Kept {
+		rc.Info("kept %s as it is", p)
+	}
+	if len(wr.Reused) > 0 {
+		rc.Info("%d encrypted Secrets unchanged: kept their ciphertext", len(wr.Reused))
+	}
+	sum := summaryOf(res, len(wr.Written))
+	sum.Changed = len(wr.Changed)
 	if sum.Warnings > 0 {
 		rc.Warn("%d warnings: see MIGRATION_REPORT.md", sum.Warnings)
 	}
@@ -482,7 +511,8 @@ func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config
 // errNoRemote is a push of a run that names no repository.
 var errNoRemote = errors.New("nothing to push to")
 
-func (s *Server) publish(ctx context.Context, id string, u *User, message string, rc *runContext) error {
+func (s *Server) publish(ctx context.Context, id string, u *User, req publishRequest, rc *runContext) error {
+	message := req.Message
 	// One push of a run at a time, across replicas; deleting waits too.
 	lctx, unlock, locked, err := s.store.lockRun(ctx, id)
 	if errors.Is(err, errNotFound) {
@@ -540,6 +570,9 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 		}
 		p := Publish{At: time.Now().UTC(), By: u.Username, Dir: strings.TrimPrefix(strings.TrimPrefix(d, cfg.Output.Dir), "/"),
 			Remote: remote, Branch: firstNonEmpty(cfg.Output.Repo.Revision, "main")}
+		if req.Branch != "" && req.Branch != p.Branch {
+			p.Base, p.Branch = p.Branch, req.Branch
+		}
 		env, err := gitEnv(s.cfg.Git, remote)
 		if err == nil {
 			err = s.checkRepo(remote, p.Branch, r.Cluster, r.Tool)
@@ -552,16 +585,27 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 		}
 		if err == nil {
 			var res *gitrepo.Result
-			res, err = gitrepo.Publish(gitrepo.Options{Dir: d, Remote: remote, Branch: p.Branch, Message: message, Push: true,
-				AuthorName: name, AuthorEmail: email, Env: env, Context: ctx})
+			res, err = gitrepo.Publish(gitrepo.Options{Dir: d, Remote: remote, Branch: firstNonEmpty(p.Base, p.Branch), PushTo: p.Branch,
+				Message: message, Push: true, AuthorName: name, AuthorEmail: email, Env: env, Context: ctx})
 			if err == nil {
-				p.Commit, p.Pushed = res.Commit, res.Pushed
+				p.Commit, p.Pushed, p.Unchanged, p.UpToDate, p.Replaced = res.Commit, res.Pushed, res.Unchanged, res.UpToDate, res.Replaced
 			}
 		}
 		if err != nil && errors.Is(context.Cause(ctx), errLockLost) {
 			err = errLockLost // rather than git's "signal: killed"
 		}
 		outcome, detail := "ok", p.Remote+" "+p.Branch+" "+p.Commit
+		switch {
+		case p.Unchanged:
+			detail += " (unchanged)"
+		case p.UpToDate:
+			detail += " (up to date)"
+		case p.Replaced != "":
+			detail += " (replaced " + p.Replaced + ")"
+		}
+		if p.Base != "" {
+			detail += ", for " + p.Base
+		}
 		if err != nil {
 			p.Error = err.Error()
 			failed = err
@@ -571,9 +615,16 @@ func (s *Server) publish(ctx context.Context, id string, u *User, message string
 		s.audit.record(AuditEvent{Actor: u.Username, Via: u.Via, Action: "run.publish", Outcome: outcome,
 			Cluster: firstNonEmpty(r.Cluster, r.Tool), Target: id, Detail: detail})
 		if rc != nil {
-			if err != nil {
+			switch {
+			case err != nil:
 				rc.Warn("pushing to %s failed: %v", remote, err)
-			} else {
+			case p.Unchanged:
+				rc.Info("%s (%s) already holds this output: nothing to push", remote, firstNonEmpty(p.Base, p.Branch))
+			case p.UpToDate:
+				rc.Info("%s (%s) already holds this output: nothing to push", remote, p.Branch)
+			case p.Replaced != "":
+				rc.Info("pushed %s to %s (%s, replacing gitopsify's earlier %.12s)", p.Commit, remote, p.Branch, p.Replaced)
+			default:
 				rc.Info("pushed %s to %s (%s)", p.Commit, remote, p.Branch)
 			}
 		}

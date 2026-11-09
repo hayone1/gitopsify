@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -48,6 +49,9 @@ func (s *Server) routes() http.Handler {
 	// gitopsify ui opens a local page that posts the token: a URL with it
 	// would be in the browser opener's command line, which others can read.
 	s.api(mux, "POST /api/v1/auth/local", "public", s.localLogin)
+	s.api(mux, "GET /api/v1/auth/cli", "public", s.cliPending)
+	s.api(mux, "POST /api/v1/auth/cli", "public", s.cliConfirm)
+	s.api(mux, "POST /api/v1/auth/token", "public", s.cliToken)
 	s.api(mux, "POST /api/v1/auth/logout", "", s.logout)
 	s.api(mux, "GET /api/v1/me", "", s.getMe)
 
@@ -96,6 +100,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, _ *reqInfo) {
 		writeError(w, http.StatusNotFound, "this server doesn't use OIDC")
 		return
 	}
+	if _, err := cliLoginFrom(r.URL.Query()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := s.auth.startLogin(w, r); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}
@@ -106,7 +114,7 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 		writeError(w, http.StatusNotFound, "this server doesn't use OIDC")
 		return
 	}
-	u, redirect, err := s.auth.finishLogin(w, r)
+	u, st, err := s.auth.finishLogin(w, r)
 	if err != nil {
 		s.metrics.login("failed")
 		s.audit.record(AuditEvent{Action: "auth.login", Outcome: "error", Detail: err.Error(), IP: ri.ip, Request: ri.id, Via: "oidc"})
@@ -116,6 +124,10 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 			code = le.code
 		}
 		http.Redirect(w, r, "/login?error="+code, http.StatusFound)
+		return
+	}
+	if st.CLI != nil {
+		s.cliCallback(w, r, ri, u, st.CLI)
 		return
 	}
 	full := *u
@@ -134,7 +146,104 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
 	s.metrics.login("ok")
 	s.audit.record(AuditEvent{Actor: u.Username, Via: "oidc", Action: "auth.login", Outcome: "ok", Detail: "role " + firstNonEmpty(role, "none"),
 		IP: ri.ip, Request: ri.id})
-	http.Redirect(w, r, redirect, http.StatusFound)
+	http.Redirect(w, r, st.Redirect, http.StatusFound)
+}
+
+// cliCallback finishes the identity provider's part of a command-line
+// sign-in: the browser gets no session, and the code for the command line
+// waits until the person confirms on the /cli-login page that they started
+// it (anyone can send a sign-in link; with single sign-on it completes
+// without a prompt).
+func (s *Server) cliCallback(w http.ResponseWriter, r *http.Request, ri *reqInfo, u *User, c *cliLogin) {
+	u.Via = "cli"
+	err := s.auth.setCLIPending(w, *u, *c)
+	if errors.Is(err, errTooBig) {
+		// Codes must fit a cookie and a terminal's line: keep the groups
+		// bindings use, as sessions do.
+		u.Groups = s.sessionGroups(u.Groups)
+		err = s.auth.setCLIPending(w, *u, *c)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	http.Redirect(w, r, "/cli-login", http.StatusFound)
+}
+
+// cliPending shows the command-line sign-in waiting for confirmation.
+func (s *Server) cliPending(w http.ResponseWriter, r *http.Request, _ *reqInfo) {
+	p, ok := s.auth.cliPendingFrom(r)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no command-line sign-in is waiting; run gitopsify login again")
+		return
+	}
+	writeJSONResponse(w, http.StatusOK, map[string]any{"user": map[string]string{"username": p.User.Username, "name": p.User.Name},
+		"checkCode": CLICheckCode(p.CLI.Challenge), "paste": p.CLI.Port == 0})
+}
+
+// cliConfirm confirms or cancels the waiting command-line sign-in. It
+// needs the SameSite=Strict cookie and a JSON body, so only this site's
+// page can send it. Confirmed, the answer is where the browser hands the
+// code (the command line's listener on 127.0.0.1), or the code to paste.
+func (s *Server) cliConfirm(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
+	var req struct {
+		Confirm bool `json:"confirm"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	p, ok := s.auth.cliPendingFrom(r)
+	s.auth.clearCLIPending(w)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no command-line sign-in is waiting; run gitopsify login again")
+		return
+	}
+	if !req.Confirm {
+		s.audit.record(AuditEvent{Actor: p.User.Username, Via: "cli", Action: "auth.cli-code", Outcome: "denied", Detail: "canceled in the browser", IP: ri.ip, Request: ri.id})
+		writeJSONResponse(w, http.StatusOK, map[string]string{"status": "canceled"})
+		return
+	}
+	code, err := s.auth.cliCodeFor(p.User, p.CLI)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.audit.record(AuditEvent{Actor: p.User.Username, Via: "cli", Action: "auth.cli-code", Outcome: "ok", IP: ri.ip, Request: ri.id})
+	q := url.Values{"code": {code}, "state": {p.CLI.State}}
+	if p.CLI.Port == 0 {
+		writeJSONResponse(w, http.StatusOK, map[string]string{"code": q.Encode()})
+		return
+	}
+	writeJSONResponse(w, http.StatusOK, map[string]string{"redirect": fmt.Sprintf("http://127.0.0.1:%d/callback?%s", p.CLI.Port, q.Encode())})
+}
+
+// cliToken exchanges a command-line sign-in's code for a session token.
+func (s *Server) cliToken(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
+	if s.auth.oidc == nil {
+		writeError(w, http.StatusNotFound, "this server doesn't use OIDC; sign in with an API token")
+		return
+	}
+	var req struct {
+		Code     string `json:"code"`
+		Verifier string `json:"verifier"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	token, sess, err := s.auth.exchangeCLICode(strings.TrimSpace(req.Code), req.Verifier)
+	if err != nil {
+		s.metrics.login("failed")
+		s.audit.record(AuditEvent{Action: "auth.login", Outcome: "denied", Detail: err.Error(), IP: ri.ip, Request: ri.id, Via: "cli"})
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	role := anyRole(s.policy.grants(&sess.User, nil))
+	s.metrics.login("ok")
+	s.audit.record(AuditEvent{Actor: sess.User.Username, Via: "cli", Action: "auth.login", Outcome: "ok", Detail: "role " + firstNonEmpty(role, "none"),
+		IP: ri.ip, Request: ri.id})
+	writeJSONResponse(w, http.StatusOK, map[string]any{"token": token, "expires": time.Unix(sess.Expires, 0).UTC(), "user": sess.User})
 }
 
 func (s *Server) localLogin(w http.ResponseWriter, r *http.Request, ri *reqInfo) {
@@ -191,7 +300,9 @@ func (s *Server) getMe(w http.ResponseWriter, _ *http.Request, ri *reqInfo) {
 		}
 	}
 	if ri.session != nil {
-		m.CSRF = ri.session.CSRF
+		if !ri.session.bearer {
+			m.CSRF = ri.session.CSRF
+		}
 		t := time.Unix(ri.session.Expires, 0).UTC()
 		m.Expires = &t
 	}
@@ -357,6 +468,12 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.Publish != nil && req.Publish.Branch != "" {
+		if err := checkBranch(req.Publish.Branch); err != nil {
+			writeError(w, http.StatusBadRequest, "publish.branch: "+err.Error())
+			return
+		}
+	}
 	busy := s.runs.list(runQuery{CreatedBy: ri.user.Username, Active: true, Limit: s.cfg.Runs.MaxQueuedPerUser}, func(*Run) bool { return true })
 	if len(busy) >= s.cfg.Runs.MaxQueuedPerUser {
 		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("you have %d runs queued or working; wait for them or cancel some", len(busy)))
@@ -476,6 +593,12 @@ func (s *Server) publishRun(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 			return
 		}
 	}
+	if req.Branch != "" {
+		if err := checkBranch(req.Branch); err != nil {
+			writeError(w, http.StatusBadRequest, "branch: "+err.Error())
+			return
+		}
+	}
 	// A push isn't stopped halfway by a closed tab: it finishes (or times
 	// out) and stores the output. Shutdown waits for it (s.pushes).
 	if !s.startPush() {
@@ -486,7 +609,7 @@ func (s *Server) publishRun(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 	defer s.pushes.Done()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
 	defer cancel()
-	if err := s.publish(ctx, run.ID, ri.user, req.Message, nil); err != nil {
+	if err := s.publish(ctx, run.ID, ri.user, req, nil); err != nil {
 		// 502 only for the remote's answers: clients retry those.
 		code := http.StatusBadGateway
 		switch {

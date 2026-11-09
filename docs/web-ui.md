@@ -248,6 +248,53 @@ gitopsify server token --name ci --role operator --cluster 'staging-*'
 prints a token and the `spec.auth.tokens` entry that admits it (only its
 SHA-256 is stored). Send it as `Authorization: Bearer <token>`.
 
+## From the command line
+
+The same `gitopsify` binary talks to a server: what you'd run locally runs on
+the server, with its credentials, your role checks and its audit log.
+
+```sh
+gitopsify login gitopsify.acme.io            # single sign-on in your browser
+gitopsify whoami                              # who you are, your roles per cluster and tool
+gitopsify run start -c gitopsify.yaml --follow
+gitopsify run list --status failed
+gitopsify run logs -f <id>
+gitopsify run download <id> -o ./out          # the files it wrote
+gitopsify run publish <id> --branch gitopsify/update   # push, for a pull request
+```
+
+`run start` sends the Migration (or Export) of `-c` (default
+`./gitopsify.yaml`). The source cluster is `--cluster`, or the file's
+`spec.source.context`, by the name the server registers it under.
+Environments name registered clusters in `cluster.context`. The file's other
+access settings (kubeconfig, tokens) are local, so they're left out. `--wait`
+exits 1 when the run or its push failed; `-q` prints only the run's ID. See
+[scheduled sync](scheduled-sync.md) for jobs that open pull requests.
+
+How the sign-in works:
+
+- **No change to the identity provider.** The command line uses the server's
+  OIDC client and callback.
+- **You confirm it in the browser.** After single sign-on, a page asks you to
+  confirm that you started `gitopsify login`, showing the check code your
+  terminal shows too. (Anyone can send a sign-in link, and single sign-on
+  often completes without a prompt.)
+- **The browser holds no session.** On confirmation the server gives the
+  browser a code that only the waiting `gitopsify login` can use: it is bound
+  to a secret only that process holds (PKCE), and lasts 5 minutes. The browser
+  passes it to a listener on 127.0.0.1.
+- **`--no-browser`**, for SSH sessions and containers, prints the address
+  instead; the page shows the code to paste back.
+- **The session** lasts `sessionTTL`, like a browser's. It is saved in
+  `servers.yaml` in your configuration directory, readable by you only.
+  `gitopsify logout` forgets it. Like browser sessions, it can't be revoked
+  one by one: rotate `sessionKey` to sign everyone out.
+- **API tokens.** `gitopsify login <address> --token-stdin` signs in with one.
+  In CI, skip `login`: set `GITOPSIFY_REMOTE` to the address and
+  `GITOPSIFY_REMOTE_TOKEN` to the token, which is sent to that server only.
+- **Several servers.** `--remote <name>` picks one for a single command;
+  `gitopsify login <name>` switches to it; `gitopsify whoami --all` lists them.
+
 ## API
 
 Everything the UI does goes through `/api/v1`, with the session cookie (and an
@@ -258,11 +305,13 @@ Everything the UI does goes through `/api/v1`, with the session cookie (and an
 | `GET /api/v1/me` | who you are, your roles |
 | `GET /api/v1/clusters`, `GET /api/v1/clusters/{name}/check`, `.../namespaces` | clusters |
 | `GET /api/v1/tools`, `GET /api/v1/tools/{name}/check`, `GET/POST /api/v1/providers` | tools and providers |
-| `POST /api/v1/runs` | start a run: `{"type": "scan"\|"migrate", "cluster": "...", "migration": "<yaml>"}` or `{"type": "export", "tool": "...", "export": "<yaml>", "repo": {...}}`, optionally `"publish": {}` |
+| `POST /api/v1/runs` | start a run: `{"type": "scan"\|"migrate", "cluster": "...", "migration": "<yaml>"}` or `{"type": "export", "tool": "...", "export": "<yaml>", "repo": {...}}`, optionally `"publish": {"branch": "..."}` |
 | `GET /api/v1/runs`, `GET /api/v1/runs/{id}` | runs |
 | `GET /api/v1/runs/{id}/events` | the log and status, live (server-sent events) |
 | `GET /api/v1/runs/{id}/files`, `.../files/{path}`, `.../archive` | the output |
-| `POST /api/v1/runs/{id}/publish`, `.../cancel`, `DELETE /api/v1/runs/{id}` | actions |
+| `POST /api/v1/runs/{id}/publish` | push the output: `{"message": "...", "branch": "..."}` (both optional; a branch is for a pull request: nothing is pushed when the output doesn't differ, and a branch holding only gitopsify's commits is replaced) |
+| `POST /api/v1/runs/{id}/cancel`, `DELETE /api/v1/runs/{id}` | actions |
+| `GET /api/v1/auth/login?cli_challenge=...&cli_state=...[&cli_port=...]`, `GET/POST /api/v1/auth/cli`, `POST /api/v1/auth/token` | the command line's sign-in (`gitopsify login`): start, confirm in the browser, exchange the code |
 | `GET /api/v1/audit` | the audit log (admins) |
 
 `/healthz`, `/readyz` and `/metrics` (Prometheus) need no sign-in.

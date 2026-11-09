@@ -96,6 +96,31 @@ log "API with a token"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer gtk_e2e_ci_token' http://localhost:8080/api/v1/clusters)
 [[ $code == 200 ]] || { echo "token: HTTP $code"; exit 1; }
 
+log "the command line, with a token"
+gitopsify=$root/bin/gitopsify
+export GITOPSIFY_REMOTE=http://localhost:8080 GITOPSIFY_REMOTE_TOKEN=gtk_e2e_ci_token GITOPSIFY_REMOTE_CONFIG=$work/servers.yaml
+cat >"$work/cli.yaml" <<YAML
+apiVersion: gitopsify.io/v1alpha1
+kind: Migration
+metadata: {name: cli}
+spec:
+  source: {context: kind, kubeconfig: /nowhere}   # local settings: left out
+  scope: {namespaces: [shop]}
+  secrets: {strategy: skip}
+  output: {tool: none, repo: {url: "http://localhost:8099/gitops.git"}}
+YAML
+"$gitopsify" whoami
+id=$("$gitopsify" run start -c "$work/cli.yaml" --publish --branch gitopsify/sync --wait -q)
+"$gitopsify" run get "$id" --format json | jq -e '.status == "succeeded" and .publishes[0].pushed and .publishes[0].branch == "gitopsify/sync"' >/dev/null
+git --git-dir="$work/git/gitops.git" rev-parse --verify -q gitopsify/sync >/dev/null || { echo "no gitopsify/sync branch"; exit 1; }
+# The same output again: the branch already has it.
+"$gitopsify" run publish "$id" --branch gitopsify/sync --format json | jq -e '.publishes[-1].upToDate' >/dev/null
+rm -rf "$work/cli-out"
+"$gitopsify" run download "$id" -o "$work/cli-out" >/dev/null
+[[ -f $work/cli-out/MIGRATION_REPORT.md ]] || { echo "download: no report"; exit 1; }
+"$gitopsify" run logs "$id" | tail -3
+unset GITOPSIFY_REMOTE GITOPSIFY_REMOTE_TOKEN
+
 log "browser"
 cd "$here"
 if [[ ! -d node_modules ]]; then

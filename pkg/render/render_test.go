@@ -108,10 +108,11 @@ func TestTreeWriteStaysInside(t *testing.T) {
 	}
 	tr := NewTree()
 	tr.Add("new.yaml", []byte("y"))
-	_, removed, err := tr.Write(dir, false)
+	wr, err := tr.Write(dir, WriteOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	removed := wr.Removed
 	if !reflect.DeepEqual(removed, []string{"old.yaml"}) {
 		t.Errorf("removed %v", removed)
 	}

@@ -41,7 +41,6 @@ spec:
       propertyPerKey: true
       refreshInterval: 1h
   output:
-    dir: gitops
     tool: none
     layout: folder-per-env
     repo:

@@ -16,6 +16,7 @@ const notFound = ref(false)
 const pushing = ref(false)
 const pushOpen = ref(false)
 const pushMessage = ref('')
+const pushBranch = ref('')
 const tab = ref('log')
 let source: EventSource | null = null
 
@@ -112,9 +113,14 @@ async function cancel() {
 async function push() {
   pushing.value = true
   try {
-    run.value = await api<Run>(`/runs/${id.value}/publish`, { method: 'POST', body: pushMessage.value ? { message: pushMessage.value } : {} })
+    const body: { message?: string, branch?: string } = {}
+    if (pushMessage.value) body.message = pushMessage.value
+    if (pushBranch.value.trim()) body.branch = pushBranch.value.trim()
+    run.value = await api<Run>(`/runs/${id.value}/publish`, { method: 'POST', body })
     pushOpen.value = false
-    notify.ok('Pushed', repoURL.value)
+    const last = run.value.publishes?.[run.value.publishes.length - 1]
+    if (last?.unchanged || last?.upToDate) notify.ok('Nothing to push', `${last.branch} already has these files`)
+    else notify.ok(last?.base ? `Pushed to ${last.branch}` : 'Pushed', last?.base ? `Open a pull request into ${last.base}` : repoURL.value)
     tab.value = 'pushes'
   } catch (e) {
     notify.error('Pushing failed', e)
@@ -285,7 +291,12 @@ async function copy(text: string) {
             <li v-for="(p, i) in run.publishes" :key="i" class="py-3 flex items-start gap-3">
               <UIcon :name="p.error ? 'i-lucide-circle-x' : 'i-lucide-git-commit-horizontal'" :class="['size-5 mt-0.5', p.error ? 'text-(--ui-error)' : 'text-(--ui-success)']" />
               <div class="text-sm min-w-0">
-                <p><span class="font-mono">{{ p.commit || '—' }}</span> to <span class="font-medium break-all">{{ p.remote }}</span> ({{ p.branch }})</p>
+                <p v-if="p.unchanged || p.upToDate">
+                  Nothing to push: <span class="font-medium break-all">{{ p.remote }}</span> ({{ p.unchanged ? (p.base || p.branch) : p.branch }}) already has these files
+                </p>
+                <p v-else>
+                  <span class="font-mono">{{ p.commit || '—' }}</span> to <span class="font-medium break-all">{{ p.remote }}</span> ({{ p.branch }}<template v-if="p.base">, for a pull request into {{ p.base }}</template>)
+                </p>
                 <p class="text-(--ui-text-muted) text-xs">{{ p.by }} · {{ formatTime(p.at) }}<template v-if="p.dir"> · {{ p.dir }}</template></p>
                 <p v-if="p.error" class="text-(--ui-error) text-xs break-words">{{ p.error }}</p>
               </div>
@@ -297,9 +308,18 @@ async function copy(text: string) {
 
       <UModal v-model:open="pushOpen" title="Push to Git" :description="repoURL">
         <template #body>
-          <UFormField label="Commit message" hint="optional">
-            <UInput v-model="pushMessage" class="w-full" placeholder="gitopsify: migration from the cluster" />
-          </UFormField>
+          <div class="flex flex-col gap-4">
+            <UFormField label="Commit message" hint="optional">
+              <UInput v-model="pushMessage" class="w-full" placeholder="gitopsify: migration from the cluster" />
+            </UFormField>
+            <UFormField
+              label="Branch"
+              hint="optional"
+              description="Push to this branch instead, to open a pull request. A branch holding only gitopsify's commits is replaced."
+            >
+              <UInput v-model="pushBranch" class="w-full font-mono" placeholder="gitopsify/update" />
+            </UFormField>
+          </div>
         </template>
         <template #footer>
           <div class="flex justify-end gap-2 w-full">

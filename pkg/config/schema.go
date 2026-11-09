@@ -32,6 +32,9 @@ var enums = map[string][]string{
 	"output.tool":                       {ToolNone, ToolArgoCD, ToolFlux},
 	"output.layout":                     {LayoutFolderPerEnv, LayoutRepoPerEnv},
 	"output.argocd.pattern":             {PatternAppOfApps, PatternApplicationSet, PatternSingle},
+	"output.merge.edited":               {MergeOverwrite, MergeKeep, MergeFail},
+	"adopt.existing":                    {ExistingInclude, ExistingSkipOwned, ExistingSkip},
+	"output.merge.unmanaged":            {MergeOverwrite, MergeKeep, MergeFail},
 }
 
 // ExportSchemaURL is where the JSON Schema of export files is published.

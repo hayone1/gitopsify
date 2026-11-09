@@ -69,6 +69,13 @@ type Object struct {
 	// environment, such as SealedSecrets sealed for each cluster. When set,
 	// the object is written to the environment overlays instead of the base.
 	EnvOut map[string]*unstructured.Unstructured
+	// Fingerprints describe what each environment's EnvOut encrypts,
+	// without the values (secrets.Fingerprint): when it is the same as last
+	// run, the earlier ciphertext is kept.
+	Fingerprints map[string]string
+	// Skip holds the environments the object is left out of, with why:
+	// it already exists in their cluster (config adopt.existing).
+	Skip map[string]string
 	// Encrypt marks Secrets that must be encrypted with SOPS when written.
 	Encrypt bool
 	// Protected marks Secrets written encrypted while their values must
@@ -282,6 +289,11 @@ type ClusterInfo struct {
 	Context string `json:"context,omitempty"`
 	Server  string `json:"server,omitempty"`
 	Version string `json:"version,omitempty"`
+	// Offline: the objects were read from files, not a cluster.
+	Offline bool `json:"offline,omitempty"`
+	// ID identifies the cluster whatever address reaches it: the UID of
+	// its kube-system namespace (empty when it couldn't be read).
+	ID string `json:"id,omitempty"`
 }
 
 // String describes the cluster for people: "context (server, Kubernetes v)".

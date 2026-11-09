@@ -36,7 +36,7 @@ func (r *renderer) renderApp(l layout, a *model.App) error {
 		if ao.out == nil {
 			continue // differs per environment; lives in the overlays
 		}
-		if err := r.writeObject(l.file(baseDir, ao.file), ao.o, ao.out); err != nil {
+		if err := r.writeObject(l.file(baseDir, ao.file), ao.o, ao.out, ""); err != nil {
 			return err
 		}
 		resources = append(resources, ao.file)
@@ -58,6 +58,9 @@ func (r *renderer) renderFlatApp(l layout, a *model.App, objs []*appObject, env 
 	dir := l.appEnv(a.Name, env.Name)
 	var resources []string
 	for _, ao := range objs {
+		if _, skip := ao.o.Skip[env.Name]; skip {
+			continue
+		}
 		u := ao.out
 		if e, ok := ao.o.EnvOut[env.Name]; ok {
 			u = r.decorate(e.DeepCopy(), a)
@@ -70,7 +73,7 @@ func (r *renderer) renderFlatApp(l layout, a *model.App, objs []*appObject, env 
 		if u == nil {
 			continue
 		}
-		if err := r.writeObject(l.file(dir, ao.file), ao.o, u); err != nil {
+		if err := r.writeObject(l.file(dir, ao.file), ao.o, u, env.Name); err != nil {
 			return err
 		}
 		resources = append(resources, ao.file)
@@ -90,8 +93,15 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 		changed bool
 	}
 	var list []envObject
+	var gone []*appObject // in the base, left out of this environment
 	full := false
 	for _, ao := range objs {
+		if _, skip := ao.o.Skip[env.Name]; skip {
+			if ao.out != nil {
+				gone = append(gone, ao)
+			}
+			continue
+		}
 		if e, ok := ao.o.EnvOut[env.Name]; ok {
 			list = append(list, envObject{ao: ao, u: r.decorate(e.DeepCopy(), a)})
 			continue
@@ -134,7 +144,7 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 	var patches []any
 	if full {
 		for _, e := range list {
-			if err := r.writeObject(l.file(dir, e.ao.file), e.ao.o, e.u); err != nil {
+			if err := r.writeObject(l.file(dir, e.ao.file), e.ao.o, e.u, env.Name); err != nil {
 				return err
 			}
 			resources = append(resources, e.ao.file)
@@ -144,7 +154,7 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 		for _, e := range list {
 			switch {
 			case e.ao.out == nil:
-				if err := r.writeObject(l.file(dir, e.ao.file), e.ao.o, e.u); err != nil {
+				if err := r.writeObject(l.file(dir, e.ao.file), e.ao.o, e.u, env.Name); err != nil {
 					return err
 				}
 				resources = append(resources, e.ao.file)
@@ -157,12 +167,30 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 			}
 			patches = append(patches, map[string]any{"path": name})
 		}
+		// Objects of the base left out here: kustomize deletes them.
+		for _, ao := range gone {
+			name := "delete-" + ao.file
+			del := map[string]any{"$patch": "delete", "apiVersion": ao.out.GetAPIVersion(), "kind": ao.out.GetKind(),
+				"metadata": deleteMeta(ao.out)}
+			if err := r.tree.AddYAML(l.file(dir, name), del); err != nil {
+				return err
+			}
+			patches = append(patches, map[string]any{"path": name})
+		}
 	}
 	extra := map[string]any{}
 	if len(patches) > 0 {
 		extra["patches"] = patches
 	}
 	return r.tree.AddYAML(l.file(dir, "kustomization.yaml"), kustomization(resources, extra))
+}
+
+func deleteMeta(u *unstructured.Unstructured) map[string]any {
+	m := map[string]any{"name": u.GetName()}
+	if ns := u.GetNamespace(); ns != "" {
+		m["namespace"] = ns
+	}
+	return m
 }
 
 // mergePatch returns a patch that turns base into env, identified by the
@@ -216,15 +244,29 @@ func mergePatch(base, env *unstructured.Unstructured) (map[string]any, error) {
 	return patch, nil
 }
 
-// writeObject writes one object, encrypting it with SOPS when required.
-func (r *renderer) writeObject(p string, o *model.Object, u *unstructured.Unstructured) error {
+// writeObject writes one object (env's, or the base's when env is empty),
+// encrypting it with SOPS when required. Encrypted objects get a
+// fingerprint, so an unchanged Secret keeps its ciphertext.
+func (r *renderer) writeObject(p string, o *model.Object, u *unstructured.Unstructured, env string) error {
 	b, err := yamlutil.Marshal(u.Object)
 	if err != nil {
 		return err
 	}
+	if _, sealed := o.EnvOut[env]; sealed && env != "" && o.Fingerprints[env] != "" {
+		// What was sealed, and what is around it (sync options, waves).
+		r.tree.Fingerprint(p, o.Fingerprints[env]+"-"+secrets.Shape(u))
+	}
 	if o.Encrypt && u.GetKind() == "Secret" {
+		transforms := []any{r.cfg.Transforms}
+		for _, e := range r.cfg.Environments {
+			transforms = append(transforms, e.Transforms)
+		}
+		fp := secrets.Fingerprint(r.inv, o, u, "sops", transforms, r.cfg.Secrets.SOPS)
 		if b, err = secrets.Encrypt(r.cfg.Secrets.SOPS, b); err != nil {
 			return fmt.Errorf("encrypting %s: %w", o.Ref, err)
+		}
+		if fp != "" {
+			r.tree.Fingerprint(p, fp)
 		}
 	}
 	r.tree.Add(p, b)

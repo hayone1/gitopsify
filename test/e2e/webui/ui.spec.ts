@@ -1,4 +1,7 @@
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync, spawn } from 'node:child_process'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 
 // signIn goes through Keycloak's login form.
@@ -112,4 +115,78 @@ test('an admin reads the audit log', async ({ page }) => {
   await page.getByRole('button', { name: 'Color mode' }).click()
   await page.getByRole('option', { name: 'System' }).click()
   await expect(page.locator('html')).not.toHaveClass(/dark/)
+})
+
+// gitopsify login: the command line waits while the browser signs in.
+const bin = join(__dirname, '../../../bin/gitopsify')
+const server = process.env.BASE_URL || 'http://localhost:8080'
+
+function startLogin(args: string[], env: NodeJS.ProcessEnv) {
+  const p = spawn(bin, ['login', server, ...args], { env })
+  let out = ''
+  p.stdout.on('data', d => { out += d })
+  p.stderr.on('data', d => { out += d })
+  const done = new Promise<number>(resolve => p.on('exit', code => resolve(code ?? -1)))
+  const url = new Promise<string>((resolve, reject) => {
+    const timer = setInterval(() => {
+      const m = out.match(/(https?:\/\/\S+\/api\/v1\/auth\/login\?\S+)/)
+      if (m) {
+        clearInterval(timer)
+        resolve(m[1])
+      }
+    }, 100)
+    void done.then(() => {
+      clearInterval(timer)
+      reject(new Error('gitopsify login ended early: ' + out))
+    })
+  })
+  return { p, url, done, output: () => out }
+}
+
+test('gitopsify login signs the command line in through the browser', async ({ page }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'gitopsify-cli-'))
+  const base = { ...process.env, GITOPSIFY_REMOTE_CONFIG: join(dir, 'servers.yaml'), GITOPSIFY_REMOTE: '', GITOPSIFY_REMOTE_TOKEN: '' }
+
+  // Over SSH: the page shows a code to paste.
+  const paste = startLogin(['--no-browser'], { ...base, DISPLAY: '', WAYLAND_DISPLAY: '' })
+  await page.goto(await paste.url)
+  await page.locator('#username').fill('ada')
+  await page.locator('#password').fill('ada')
+  await page.locator('#kc-login').click()
+  // The page asks to confirm, with the check code the terminal shows.
+  await expect(page.getByRole('heading', { name: 'Sign in on the command line' })).toBeVisible()
+  const check = paste.output().match(/check code ([A-Z2-7]{4}-[A-Z2-7]{4})/)?.[1]
+  expect(check, paste.output()).toBeTruthy()
+  await expect(page.getByText(check!)).toBeVisible()
+  await shot(page, '11-cli-confirm')
+  await page.getByRole('button', { name: 'Sign in the command line' }).click()
+  await expect(page.locator('code')).toBeVisible()
+  await shot(page, '12-cli-code')
+  const code = (await page.locator('code').textContent())?.trim() || ''
+  expect(code.length).toBeGreaterThan(40)
+  paste.p.stdin.write(code + '\n')
+  expect(await paste.done, paste.output()).toBe(0)
+  const me = JSON.parse(execFileSync(bin, ['whoami', '--format', 'json'], { env: base }).toString())
+  expect(me.user.via).toBe('cli')
+  expect(me.clusters.kind).toBe('operator')
+  // The browser itself got no session.
+  await page.goto('/')
+  await expect(page).toHaveURL(/\/login/)
+
+  // With a browser on this machine: it hands the code to the command line
+  // on 127.0.0.1 (Keycloak remembers ada, so no form this time).
+  const loop = startLogin(['--renew'], { ...base, DISPLAY: ':99' })
+  await page.goto(await loop.url)
+  await page.getByRole('button', { name: 'Sign in the command line' }).click()
+  await expect(page.getByText('Signed in. You can close this tab')).toBeVisible()
+  expect(await loop.done, loop.output()).toBe(0)
+  execFileSync(bin, ['run', 'list'], { env: base })
+  execFileSync(bin, ['logout'], { env: base })
+
+  // A link someone else sent: canceling hands nothing over.
+  const other = startLogin(['--no-browser'], { ...base, DISPLAY: '' })
+  await page.goto(await other.url)
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.getByText('Canceled')).toBeVisible()
+  other.p.kill()
 })

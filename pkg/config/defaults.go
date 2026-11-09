@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -279,6 +280,28 @@ func (c *Config) Validate() error {
 	oneOf("output.tool", c.Output.Tool, ToolNone, ToolArgoCD, ToolFlux)
 	oneOf("output.layout", c.Output.Layout, LayoutFolderPerEnv, LayoutRepoPerEnv)
 	oneOf("output.argocd.pattern", c.Output.ArgoCD.Pattern, PatternAppOfApps, PatternApplicationSet, PatternSingle)
+	if c.Adopt.Existing != "" {
+		oneOf("adopt.existing", c.Adopt.Existing, ExistingInclude, ExistingSkipOwned, ExistingSkip)
+		// A later run tells the objects it generated from those that were
+		// there by the GitOps tool's tracking; plain manifests have none.
+		if c.Adopt.Existing == ExistingSkip && c.Output.Tool == ToolNone {
+			add("adopt.existing: skip needs --tool argocd or flux: with plain manifests a later run can't tell the objects it generated from those that were already there (skip-owned works)")
+		}
+	}
+	if m := c.Output.Merge; m != nil {
+		if m.Edited != "" {
+			oneOf("output.merge.edited", m.Edited, MergeOverwrite, MergeKeep, MergeFail)
+		}
+		if m.Unmanaged != "" {
+			oneOf("output.merge.unmanaged", m.Unmanaged, MergeOverwrite, MergeKeep, MergeFail)
+		}
+		for i, k := range m.Keep {
+			k = strings.Trim(path.Clean(strings.TrimSpace(k)), "/")
+			if k == "" || k == "." || !filepath.IsLocal(filepath.FromSlash(k)) {
+				add("output.merge.keep[%d]: %q isn't a path inside the output directory", i, m.Keep[i])
+			}
+		}
+	}
 	if c.Output.Tool != ToolNone && c.Output.Repo.URL == "" && c.Output.Layout == LayoutFolderPerEnv {
 		add("output.repo.url (or --repo-url) is required for --tool %s: the generated %s objects point at it", c.Output.Tool, c.Output.Tool)
 	}
@@ -514,6 +537,31 @@ func (c *Config) Document() any {
 		spec.Output.ArgoCD.CreateProject = nil
 	}
 	return migrationDocument{APIVersion: c.APIVersion, Kind: c.Kind, Metadata: c.Metadata, Spec: spec}
+}
+
+// Portable is the migration without what belongs to one machine: access
+// settings other than kubeconfig contexts (kubeconfig paths, token files,
+// in-cluster) and the output directory. The output keeps this copy, so the
+// next run, on any machine or in a CronJob, starts from the same settings
+// and an unchanged cluster gives an unchanged repository.
+func (c *Config) Portable() *Config {
+	p := *c
+	p.Source.Access = Access{Context: c.Source.Access.Context}
+	p.Environments = append([]Environment(nil), c.Environments...)
+	for i := range p.Environments {
+		cl := c.Environments[i].Cluster
+		p.Environments[i].Cluster = Cluster{Server: cl.Server, Name: cl.Name, Access: Access{Context: cl.Access.Context}}
+	}
+	if n := c.names; n != nil {
+		p.Source.Access.Context = n.source
+		for i := range p.Environments {
+			if i < len(n.envs) {
+				p.Environments[i].Cluster.Access.Context = n.envs[i]
+			}
+		}
+	}
+	p.Output.Dir = ""
+	return &p
 }
 
 // Marshal renders the Migration resource as YAML, with the fields in their

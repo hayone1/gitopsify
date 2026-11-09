@@ -189,3 +189,37 @@ func TestSchemaIsCurrent(t *testing.T) {
 		t.Error("docs/gitopsify.schema.json is out of date: run make docs")
 	}
 }
+
+func TestPortable(t *testing.T) {
+	c := New()
+	c.Source.Access = Access{Context: "test", Kubeconfig: "/home/me/.kube/config", InCluster: true, TokenFile: "/run/token"}
+	c.Environments = []Environment{{Name: "uat", Cluster: Cluster{Server: "https://kubernetes.default.svc", Access: Access{Context: "uat", Kubeconfig: "/x"}}}}
+	c.Output.Dir = "/work/gitops"
+	c.Default()
+	b, err := c.Portable().Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"/home/me", "inCluster", "/run/token", "/x", "/work/gitops"} {
+		if strings.Contains(string(b), gone) {
+			t.Errorf("%s kept:\n%s", gone, b)
+		}
+	}
+	for _, kept := range []string{"context: test", "context: uat", "kubernetes.default.svc"} {
+		if !strings.Contains(string(b), kept) {
+			t.Errorf("%s lost:\n%s", kept, b)
+		}
+	}
+	if c.Source.Access.Kubeconfig == "" || c.Output.Dir == "" {
+		t.Error("Portable changed the configuration itself")
+	}
+	// A server fills access in from its registered clusters: their names
+	// are what the copy keeps.
+	c.Source.Access = Access{Context: "kind-test-admin", Kubeconfig: "/etc/kube"}
+	c.Environments[0].Cluster.Access = Access{Context: "kind-uat-admin"}
+	c.NameClusters("test", []string{"uat"})
+	b, _ = c.Portable().Marshal()
+	if strings.Contains(string(b), "admin") || !strings.Contains(string(b), "context: test") || !strings.Contains(string(b), "context: uat") {
+		t.Errorf("registered names:\n%s", b)
+	}
+}

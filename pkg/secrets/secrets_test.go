@@ -234,3 +234,55 @@ func TestExternalSecretsBinaryAndEmpty(t *testing.T) {
 		}
 	}
 }
+
+// TestFingerprints: a sealed Secret's fingerprint is stable while the
+// source Secret, the settings and the key don't change, changes with each
+// of them, never holds the value, and is empty for Secrets read from files.
+func TestFingerprints(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	other, _ := rsa.GenerateKey(rand.Reader, 2048)
+	cfg := config.New()
+	cfg.Secrets.Strategy = config.SecretsSealedSecrets
+	cfg.Environments = []config.Environment{{Name: "uat"}}
+	run := func(mutate func(inv *model.Inventory), pub *rsa.PublicKey) string {
+		t.Helper()
+		inv := inventory()
+		inv.Objects[0].Live.SetUID("uid-1")
+		inv.Objects[0].Live.SetResourceVersion("41")
+		if mutate != nil {
+			mutate(inv)
+		}
+		if _, err := Run(inv, Options{Config: cfg, Cert: func(string) (*rsa.PublicKey, error) { return pub, nil }}); err != nil {
+			t.Fatal(err)
+		}
+		return inv.Objects[0].Fingerprints["uat"]
+	}
+	base := run(nil, &key.PublicKey)
+	if base == "" || run(nil, &key.PublicKey) != base {
+		t.Fatalf("not stable: %q", base)
+	}
+	for name, fp := range map[string]string{
+		"new resourceVersion": run(func(inv *model.Inventory) { inv.Objects[0].Live.SetResourceVersion("42") }, &key.PublicKey),
+		"another key":         run(nil, &other.PublicKey),
+		"a label":             run(func(inv *model.Inventory) { inv.Objects[0].Out.SetLabels(map[string]string{"x": "y"}) }, &key.PublicKey),
+	} {
+		if fp == base || fp == "" {
+			t.Errorf("%s: fingerprint %q", name, fp)
+		}
+	}
+	cfg.Environments[0].Transforms = []config.Transform{{Type: "replace", From: "s3cr3t", To: "other"}}
+	if run(nil, &key.PublicKey) == base {
+		t.Error("a transform didn't change the fingerprint")
+	}
+	cfg.Environments[0].Transforms = nil
+	if fp := run(func(inv *model.Inventory) { inv.Source.Offline = true }, &key.PublicKey); fp != "" {
+		t.Errorf("read from files: %q", fp)
+	}
+	// The value doesn't go in: changing it without a new resourceVersion
+	// (impossible in a cluster) keeps the fingerprint.
+	if fp := run(func(inv *model.Inventory) {
+		_ = unstructured.SetNestedField(inv.Objects[0].Out.Object, base64.StdEncoding.EncodeToString([]byte("changed")), "data", "password")
+	}, &key.PublicKey); fp != base {
+		t.Error("the value is part of the fingerprint")
+	}
+}

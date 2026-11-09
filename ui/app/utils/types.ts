@@ -61,8 +61,16 @@ export interface Publish {
   dir?: string
   remote: string
   branch: string
+  /** The branch the output belongs on, when pushed to another one for a pull request. */
+  base?: string
   commit?: string
   pushed: boolean
+  /** The base branch already held the output: nothing was pushed. */
+  unchanged?: boolean
+  /** The pull request branch already held the output: nothing was pushed. */
+  upToDate?: boolean
+  /** The commit the pull request branch pointed to before this push replaced it. */
+  replaced?: string
   error?: string
 }
 

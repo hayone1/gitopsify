@@ -1,6 +1,7 @@
-// Every page but /login needs someone signed in.
+// Every page but /login and /cli-login needs someone signed in.
 export default defineNuxtRouteMiddleware(async (to) => {
-  if (to.path === '/login') return
+  // The command-line sign-in's page needs no session: the browser gets none.
+  if (to.path === '/login' || to.path === '/cli-login') return
   const me = useMe()
   if (!me.value) await loadMe()
   if (!me.value) return navigateTo({ path: '/login', query: to.fullPath !== '/' ? { redirect: to.fullPath } : {} })

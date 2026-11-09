@@ -39,7 +39,6 @@ spec:
       propertyPerKey: true
       refreshInterval: 1h
   output:
-    dir: gitops
     tool: argocd
     layout: folder-per-env
     repo:

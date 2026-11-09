@@ -232,6 +232,14 @@
             "enabled": {
               "type": "boolean"
             },
+            "existing": {
+              "enum": [
+                "include",
+                "skip-owned",
+                "skip"
+              ],
+              "type": "string"
+            },
             "protectKinds": {
               "items": {
                 "type": "string"
@@ -680,6 +688,34 @@
                 "repo-per-env"
               ],
               "type": "string"
+            },
+            "merge": {
+              "additionalProperties": false,
+              "properties": {
+                "edited": {
+                  "enum": [
+                    "overwrite",
+                    "keep",
+                    "fail"
+                  ],
+                  "type": "string"
+                },
+                "keep": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "unmanaged": {
+                  "enum": [
+                    "overwrite",
+                    "keep",
+                    "fail"
+                  ],
+                  "type": "string"
+                }
+              },
+              "type": "object"
             },
             "repo": {
               "additionalProperties": false,
@@ -1229,6 +1265,14 @@
                 "enabled": {
                   "type": "boolean"
                 },
+                "existing": {
+                  "enum": [
+                    "include",
+                    "skip-owned",
+                    "skip"
+                  ],
+                  "type": "string"
+                },
                 "protectKinds": {
                   "items": {
                     "type": "string"
@@ -1665,6 +1709,34 @@
                     "repo-per-env"
                   ],
                   "type": "string"
+                },
+                "merge": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "edited": {
+                      "enum": [
+                        "overwrite",
+                        "keep",
+                        "fail"
+                      ],
+                      "type": "string"
+                    },
+                    "keep": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "unmanaged": {
+                      "enum": [
+                        "overwrite",
+                        "keep",
+                        "fail"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
                 },
                 "repo": {
                   "additionalProperties": false,

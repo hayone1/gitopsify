@@ -134,6 +134,12 @@ func Run(inv *model.Inventory, opts Options) (*Result, error) {
 					return nil, err
 				}
 				sealedFor[e.Name] = sealed
+				if fp := Fingerprint(inv, o, plain, e.Transforms, cfg.Transforms, cfg.Secrets.SealedSecrets.Scope, keyID(pub)); fp != "" {
+					if o.Fingerprints == nil {
+						o.Fingerprints = map[string]string{}
+					}
+					o.Fingerprints[e.Name] = fp
+				}
 			}
 			// Each cluster has its own sealing key; renders take these as
 			// they are, without transforms.

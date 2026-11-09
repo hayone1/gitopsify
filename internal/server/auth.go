@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,11 +48,44 @@ const (
 	csrfHeader    = "X-Gitopsify-CSRF"
 )
 
-// session is what the session cookie holds, encrypted.
+// session is what the session cookie holds, encrypted. Command-line
+// sessions are the same, sent as bearer tokens (cliTokenPrefix).
 type session struct {
 	User    User   `json:"u"`
 	Expires int64  `json:"e"`
-	CSRF    string `json:"c"`
+	CSRF    string `json:"c,omitempty"`
+	// bearer marks a command-line session: sent in a header, never by a
+	// browser on its own, so it needs no CSRF header.
+	bearer bool
+}
+
+const (
+	// cliTokenPrefix starts command-line session tokens; API tokens
+	// start with gtk_.
+	cliTokenPrefix = "gts_"
+	// Sealing purposes of the command-line sign-in's code and session.
+	cliCodePurpose    = "gitopsify-cli-code"
+	cliSessionPurpose = "gitopsify-cli-session"
+	// cliCodeTTL is how long the code a browser sign-in hands to the
+	// command line can be exchanged for a session.
+	cliCodeTTL = 5 * time.Minute
+)
+
+// cliLogin is a command-line sign-in in progress: where the browser hands
+// the code to (a loopback port, or 0 for a page that shows it) and the
+// PKCE challenge only that command line can answer.
+type cliLogin struct {
+	Port      int    `json:"p,omitempty"`
+	Challenge string `json:"c"`
+	State     string `json:"s"`
+}
+
+// cliCode is what the code handed to the command line holds, sealed: it
+// is worth nothing without the verifier of its challenge.
+type cliCode struct {
+	User      User   `json:"u"`
+	Challenge string `json:"c"`
+	Expires   int64  `json:"e"`
 }
 
 // loginState is what the short-lived login cookie holds during an OIDC
@@ -61,6 +96,8 @@ type loginState struct {
 	Verifier string `json:"v"`
 	Redirect string `json:"r"`
 	Expires  int64  `json:"e"`
+	// CLI is set when the sign-in is for the command line.
+	CLI *cliLogin `json:"cli,omitempty"`
 }
 
 // sealer encrypts and authenticates cookie values (AES-256-GCM).
@@ -226,6 +263,14 @@ func (a *authenticator) fromRequest(r *http.Request) (*User, *session, []config.
 	// The scheme is case-insensitive (RFC 9110).
 	if scheme, rest, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
 		tok := strings.TrimSpace(rest)
+		if sealed, ok := strings.CutPrefix(tok, cliTokenPrefix); ok {
+			var s session
+			if err := a.sealer.open(cliSessionPurpose, sealed, &s); err != nil || time.Now().Unix() > s.Expires {
+				return nil, nil, nil
+			}
+			s.bearer = true
+			return &s.User, &s, nil
+		}
 		hash := TokenHash(tok)
 		for _, t := range a.tokens {
 			if subtle.ConstantTimeCompare([]byte(hash), []byte(strings.ToLower(t.SHA256))) == 1 {
@@ -283,6 +328,11 @@ func safeRedirect(p string) string {
 func (a *authenticator) startLogin(w http.ResponseWriter, r *http.Request) error {
 	st := loginState{State: randomString(24), Nonce: randomString(24), Verifier: oauth2.GenerateVerifier(),
 		Redirect: safeRedirect(r.URL.Query().Get("redirect")), Expires: time.Now().Add(10 * time.Minute).Unix()}
+	cli, err := cliLoginFrom(r.URL.Query())
+	if err != nil {
+		return err
+	}
+	st.CLI = cli
 	v, err := a.sealer.seal(loginCookie, st)
 	if err != nil {
 		return err
@@ -309,50 +359,164 @@ func loginFailed(code string, format string, args ...any) error {
 }
 
 // finishLogin handles the provider's redirect back and returns the user and
-// where to send them.
-func (a *authenticator) finishLogin(w http.ResponseWriter, r *http.Request) (*User, string, error) {
+// the sign-in's state (where to send them, or the command line waiting).
+func (a *authenticator) finishLogin(w http.ResponseWriter, r *http.Request) (*User, *loginState, error) {
 	c, err := r.Cookie(loginCookie)
 	if err != nil {
-		return nil, "", loginFailed("expired", "the sign-in expired or cookies are blocked")
+		return nil, nil, loginFailed("expired", "the sign-in expired or cookies are blocked")
 	}
 	http.SetCookie(w, &http.Cookie{Name: loginCookie, Value: "", Path: "/api/v1/auth", MaxAge: -1, HttpOnly: true, Secure: a.secure})
 	var st loginState
 	if err := a.sealer.open(loginCookie, c.Value, &st); err != nil || time.Now().Unix() > st.Expires {
-		return nil, "", loginFailed("expired", "the sign-in expired")
+		return nil, nil, loginFailed("expired", "the sign-in expired")
 	}
 	q := r.URL.Query()
 	// State first: any page can send a browser here with an error.
 	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(st.State)) != 1 {
-		return nil, "", loginFailed("expired", "the sign-in state doesn't match")
+		return nil, nil, loginFailed("expired", "the sign-in state doesn't match")
 	}
 	if e := q.Get("error"); e != "" {
-		return nil, "", loginFailed("refused", "the identity provider refused the sign-in: %.100s %.300s", e, q.Get("error_description"))
+		return nil, nil, loginFailed("refused", "the identity provider refused the sign-in: %.100s %.300s", e, q.Get("error_description"))
 	}
 	ctx := oidc.ClientContext(r.Context(), a.oidc.client)
 	tok, err := a.oidc.oauth.Exchange(ctx, q.Get("code"), oauth2.VerifierOption(st.Verifier))
 	if err != nil {
-		return nil, "", loginFailed("token", "exchanging the code: %w", err)
+		return nil, nil, loginFailed("token", "exchanging the code: %w", err)
 	}
 	raw, ok := tok.Extra("id_token").(string)
 	if !ok {
-		return nil, "", loginFailed("token", "the identity provider returned no ID token")
+		return nil, nil, loginFailed("token", "the identity provider returned no ID token")
 	}
 	idt, err := a.oidc.verifier.Verify(ctx, raw)
 	if err != nil {
-		return nil, "", loginFailed("token", "verifying the ID token: %w", err)
+		return nil, nil, loginFailed("token", "verifying the ID token: %w", err)
 	}
 	if subtle.ConstantTimeCompare([]byte(idt.Nonce), []byte(st.Nonce)) != 1 {
-		return nil, "", loginFailed("token", "the ID token's nonce doesn't match")
+		return nil, nil, loginFailed("token", "the ID token's nonce doesn't match")
 	}
 	var claims map[string]any
 	if err := idt.Claims(&claims); err != nil {
-		return nil, "", loginFailed("token", "reading the ID token: %w", err)
+		return nil, nil, loginFailed("token", "reading the ID token: %w", err)
 	}
 	u, err := userFromClaims(a.oidc.cfg, claims)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	return u, st.Redirect, nil
+	return u, &st, nil
+}
+
+// cliLoginFrom reads a command-line sign-in from the login URL's query:
+// cli_challenge (S256 PKCE), cli_state, and cli_port (the loopback port the
+// browser hands the code to; none for a page that shows it). Nil when the
+// sign-in is for the browser.
+func cliLoginFrom(q url.Values) (*cliLogin, error) {
+	challenge := q.Get("cli_challenge")
+	if challenge == "" {
+		return nil, nil
+	}
+	state := q.Get("cli_state")
+	// An S256 challenge is 43 base64url characters; states are ours.
+	if len(challenge) != 43 || !urlSafe(challenge) || state == "" || len(state) > 64 || !urlSafe(state) {
+		return nil, errors.New("malformed command-line sign-in")
+	}
+	c := &cliLogin{Challenge: challenge, State: state}
+	if p := q.Get("cli_port"); p != "" {
+		port, err := strconv.Atoi(p)
+		if err != nil || port < 1024 || port > 65535 || strconv.Itoa(port) != p {
+			return nil, errors.New("malformed command-line sign-in port")
+		}
+		c.Port = port
+	}
+	return c, nil
+}
+
+func urlSafe(s string) bool {
+	return !strings.ContainsFunc(s, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_'
+	})
+}
+
+// cliPending is a command-line sign-in waiting for the person to confirm
+// it in the browser (cliPendingCookie): a sign-in link anyone can send
+// must not hand out a session silently.
+type cliPending struct {
+	User    User     `json:"u"`
+	CLI     cliLogin `json:"c"`
+	Expires int64    `json:"e"`
+}
+
+const (
+	cliPendingCookie  = "gitopsify_cli"
+	cliPendingPurpose = "gitopsify-cli-pending"
+)
+
+// CLICheckCode is the short code the browser and the waiting gitopsify
+// login both show for a sign-in, so people can tell it is theirs.
+func CLICheckCode(challenge string) string {
+	h := sha256.Sum256([]byte("gitopsify-check:" + challenge))
+	c := base32.StdEncoding.EncodeToString(h[:5])
+	return c[:4] + "-" + c[4:8]
+}
+
+// setCLIPending keeps a command-line sign-in until the person confirms it.
+// The cookie is SameSite=Strict: no other site can confirm it.
+func (a *authenticator) setCLIPending(w http.ResponseWriter, u User, c cliLogin) error {
+	v, err := a.sealer.seal(cliPendingPurpose, cliPending{User: u, CLI: c, Expires: time.Now().Add(cliCodeTTL).Unix()})
+	if err != nil {
+		return err
+	}
+	if len(v) > 3800 {
+		return errTooBig
+	}
+	http.SetCookie(w, &http.Cookie{Name: cliPendingCookie, Value: v, Path: "/api/v1/auth/cli", HttpOnly: true, Secure: a.secure,
+		SameSite: http.SameSiteStrictMode, MaxAge: int(cliCodeTTL.Seconds())})
+	return nil
+}
+
+var errTooBig = errors.New("too large for a cookie")
+
+func (a *authenticator) cliPendingFrom(r *http.Request) (*cliPending, bool) {
+	c, err := r.Cookie(cliPendingCookie)
+	if err != nil {
+		return nil, false
+	}
+	var p cliPending
+	if a.sealer.open(cliPendingPurpose, c.Value, &p) != nil || time.Now().Unix() > p.Expires {
+		return nil, false
+	}
+	return &p, true
+}
+
+func (a *authenticator) clearCLIPending(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: cliPendingCookie, Value: "", Path: "/api/v1/auth/cli", MaxAge: -1, HttpOnly: true, Secure: a.secure,
+		SameSite: http.SameSiteStrictMode})
+}
+
+// cliCodeFor makes the code of a confirmed command-line sign-in: worth
+// nothing without the verifier only that command line holds.
+func (a *authenticator) cliCodeFor(u User, c cliLogin) (string, error) {
+	return a.sealer.seal(cliCodePurpose, cliCode{User: u, Challenge: c.Challenge, Expires: time.Now().Add(cliCodeTTL).Unix()})
+}
+
+// exchangeCLICode turns the code of a command-line sign-in into a session
+// token, given the verifier of the code's challenge.
+func (a *authenticator) exchangeCLICode(code, verifier string) (string, *session, error) {
+	var c cliCode
+	if err := a.sealer.open(cliCodePurpose, code, &c); err != nil {
+		return "", nil, errors.New("the code is wrong; sign in again")
+	}
+	if time.Now().Unix() > c.Expires {
+		return "", nil, errors.New("the code expired; sign in again")
+	}
+	if subtle.ConstantTimeCompare([]byte(oauth2.S256ChallengeFromVerifier(verifier)), []byte(c.Challenge)) != 1 {
+		return "", nil, errors.New("the code belongs to another sign-in; sign in again")
+	}
+	s := &session{User: c.User, Expires: time.Now().Add(a.ttl).Unix(), bearer: true}
+	v, err := a.sealer.seal(cliSessionPurpose, s)
+	if err != nil {
+		return "", nil, err
+	}
+	return cliTokenPrefix + v, s, nil
 }
 
 // userFromClaims maps ID token claims to a user.
@@ -416,7 +580,7 @@ func userFromClaims(c *config.ServerOIDC, claims map[string]any) (*User, error) 
 // changes something. API tokens aren't sent automatically by browsers, so
 // they need none.
 func checkCSRF(r *http.Request, s *session) bool {
-	if s == nil {
+	if s == nil || s.bearer {
 		return true
 	}
 	switch r.Method {

@@ -458,8 +458,79 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   for an operator design after Argo CD/Workflows (CRDs, a CLI that talks to
   the server, UI): evaluated in the conversation (CLI remote mode: worth it;
   CRDs + controller: only with scheduled drift capture; split CLI: no);
-  research notes in docs/DESIGN-operator-research.md; waiting for the user's decision before
-  building.
+  research notes in docs/DESIGN-operator-research.md.
+- 2026-11-09, the user decided: one CLI (no split), no CRDs, but scripts must
+  be able to run a periodic sync (e.g. a CronJob opening a PR); then "close
+  the feature gaps" of: generate-only manifests (existed), merging into an
+  existing repo with rules (was one fixed policy), and target-aware
+  generation (was check/diff/--adopt only). Built (commit "Remote CLI,
+  scheduled sync, merge rules, target-aware generation"):
+  - Remote CLI (W12): `gitopsify login|logout|whoami`, `gitopsify run
+    start|list|get|logs|wait|cancel|delete|download|publish`, `--remote`,
+    GITOPSIFY_REMOTE/GITOPSIFY_REMOTE_TOKEN (token only to that server),
+    saved sign-ins in <UserConfigDir>/gitopsify/servers.yaml (0600).
+    internal/remote (client, SSE follow with resume, browser login),
+    internal/cli/remote*.go. Server: CLI sign-in reuses the OIDC client and
+    callback; after SSO the browser lands on /cli-login (SameSite=Strict
+    pending cookie, `GET/POST /api/v1/auth/cli`) where the person confirms
+    with a check code the terminal also prints (server.CLICheckCode); then
+    a PKCE-bound code (sealed, 5 min) goes to 127.0.0.1 or is shown for
+    pasting (`--no-browser`), exchanged at `POST /api/v1/auth/token` for a
+    `gts_` bearer session (cookie contents, another sealing purpose, no
+    CSRF). Via "cli". No IdP change needed.
+  - Publishing to a PR branch: gitrepo.Options.PushTo (CLI `generate --push
+    --push-branch`, server `publish.branch`, UI push dialog). Nothing pushed
+    when the output equals the base (Unchanged) or the branch already has
+    it (UpToDate). Only `gitopsify/*` branches are ever replaced, and only
+    when every commit not in HEAD has the `Generated-by: gitopsify` trailer
+    (now on every gitopsify commit) with author == committer; other branches
+    only fast-forward. Replacements are audited with the old SHA.
+    `generate --exit-code` (2 = changed), `--dry-run` plan (+ ~ - =),
+    GITOPSIFY_PUSH_TOKEN for HTTPS pushes (bootstrap keeps GITOPSIFY_GIT_TOKEN).
+    gitrepo.SameRemote tolerates CI origins without .git.
+  - Merge rules: render.Tree.Write(dir, WriteOptions) plans then applies;
+    `.gitopsify/checksums.txt` (no .secrets/ hashes) and `encrypted.txt`;
+    `output.merge.edited` overwrite|keep|fail, `unmanaged` fail|overwrite
+    (= --force)|keep, `keep` globs (gitignore-like ** ); per-repository
+    state wins over the output's; gitopsify.yaml is never a hand edit; with
+    repo-per-env only the repositories' files count as changes. The written
+    gitopsify.yaml is config.Portable() (contexts only, no output.dir; on
+    the server the registered cluster names, config.NameClusters, also in
+    the run's stored spec); a config loaded from inside an output writes
+    into its folder. `.gitopsify/source.txt` holds the source's kube-system
+    UID: the CLI refuses to regenerate an output from another cluster
+    without --force (the server always writes with Force, so it doesn't
+    check).
+  - Stable ciphertext: secrets.Fingerprint (source UID + resourceVersion +
+    Secret with values blanked + settings + Protected; empty offline) per
+    env for SealedSecrets (plus secrets.Shape of the written object) and for
+    SOPS; Tree reuses the old file when the fingerprint matches and it wasn't
+    hand-edited. Key rotation (30 days) reseals once.
+  - Target-aware generation: `adopt.existing` include|skip-owned|skip
+    (`--existing`; skip needs argocd/flux), target.MarkExisting in
+    pipeline.Finish: per-env model.Object.Skip; overlays drop them with
+    `$patch: delete` patches (kubectl kustomize verified, CRs too); check and
+    diff see the same. Own apps (Argo tracking-id incl. ns_app, Argo label
+    tracking, Flux, migrated Helm releases) are never skipped; unserved kinds
+    count as absent; a Secret already there counts for the SealedSecret or
+    ExternalSecret that would make it. Chart objects are reported, not
+    skipped.
+  - Docs: docs/scheduled-sync.md (CronJob, GitHub Actions, server), web-ui.md
+    "From the command line", concepts.md (regenerating; existing objects),
+    configuration.md, README, DESIGN-webui W12. The docs pin GITOPSIFY_VERSION
+    v0.3.0 in the CI example: change it if the next release is named
+    otherwise.
+  - Reviewed by three fresh-context reviewers (security, merge logic,
+    UX/docs); all findings fixed except those under "Accepted" below.
+  - Skipped as not worth it now: gitopsify opening pull requests itself (git
+    host APIs; scripts use gh/curl), three-way merge of hand edits (needs the
+    previous generated content; `edited: keep` and `keep` globs cover the
+    common cases), an additive mode that keeps apps an earlier run generated
+    (would need re-reading the previous output's objects; widen the scope
+    or use separate output directories), auto-mapping missing
+    StorageClasses/IngressClasses to the target's defaults (silent
+    performance surprises; `check` names the transforms to add), output to
+    stdout (`kubectl apply -k` on the generated overlays does it).
 
 ### Accepted / known limits (web UI)
 - Argo CD's single-Application pattern renders charts with kustomize, which
@@ -491,6 +562,19 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
 - `session: {secret: <random hex>}` looks like a Secret name and stays;
   a Secret named in `runners.secret`-style keys may be redacted. The run
   warns about every redaction, so mistakes show.
+- CLI sessions (`gts_`) last sessionTTL and can't be revoked one by one,
+  like cookies; the sign-in code can be exchanged more than once within its
+  5 minutes (it is useless without the CLI's PKCE verifier).
+- Merge state: a write that fails halfway (disk error) leaves the old
+  checksums, so the files it did write look hand-edited next run; checkouts
+  with core.autocrlf look edited everywhere; a kept file that gitopsify no
+  longer generates becomes the user's, so generating it again later stops on
+  `unmanaged: fail`; an environment removed with --force leaves its
+  `<env>/.gitopsify/`.
+- `--dry-run` compares with the output directory as it is: with `--push` in
+  an empty directory everything is new (it doesn't clone).
+- GITOPSIFY_PUSH_TOKEN goes to the host of the configured repository:
+  whoever can change the configuration can point it elsewhere.
 - Helm value redaction is by names and shapes (keys, containers, env
   pairs, URL passwords): reviewed against bitnami, grafana, argo-cd,
   kube-prometheus-stack, velero, airflow and gitlab values over rounds

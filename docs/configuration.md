@@ -170,6 +170,10 @@ spec:
       version: v2.9.6       #                                          (--flux-version)
       prune: true
       secretName: flux-system   # Git credentials of the GitRepository
+    merge:                  # files already in the output directory
+      edited: overwrite     # generated files changed by hand: overwrite | keep | fail (--edited)
+      unmanaged: fail       # files gitopsify didn't write, where it writes: fail | overwrite | keep (--unmanaged; --force: overwrite)
+      keep: []              # paths never written or removed; * within a directory, ** across (--keep)
 
   environments:             # default: one environment named "default"
     - name: uat             #                                          (--env uat=context)
@@ -189,6 +193,10 @@ spec:
   adopt:
     enabled: false          # the target already runs these objects    (--adopt)
     protectKinds: [PersistentVolumeClaim, PersistentVolume, Namespace, CustomResourceDefinition.apiextensions.k8s.io]
+    existing: include       # objects already in an environment's cluster (--existing):
+                            #   include     generate them; the first sync takes them over
+                            #   skip-owned  leave out those another tool manages there
+                            #   skip        leave them all out (--tool argocd or flux only)
 ```
 
 ## Transforms

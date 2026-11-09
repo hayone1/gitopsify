@@ -336,7 +336,7 @@ func (s *Server) startExport(ctx context.Context, req runRequest, u *User) (*Run
 			return err
 		}
 		if req.Publish != nil {
-			if err := s.publish(ctx, rc.ID(), u, req.Publish.Message, rc); err != nil {
+			if err := s.publish(ctx, rc.ID(), u, *req.Publish, rc); err != nil {
 				rc.Warn("not pushed: %v", err)
 			}
 		}

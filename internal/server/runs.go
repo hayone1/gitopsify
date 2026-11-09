@@ -68,10 +68,13 @@ type RunRepo struct {
 
 // RunSummary is what a run found or wrote.
 type RunSummary struct {
-	Apps          int `json:"apps"`
-	Objects       int `json:"objects"`
-	Excluded      int `json:"excluded"`
-	Files         int `json:"files,omitempty"`
+	Apps     int `json:"apps"`
+	Objects  int `json:"objects"`
+	Excluded int `json:"excluded"`
+	Files    int `json:"files,omitempty"`
+	// Changed counts the files that differ from the repository the run
+	// checked out (or from nothing, without one).
+	Changed       int `json:"changed,omitempty"`
 	Warnings      int `json:"warnings"`
 	SecretActions int `json:"secretActions"`
 }
@@ -83,9 +86,19 @@ type Publish struct {
 	Dir    string    `json:"dir,omitempty"`
 	Remote string    `json:"remote"`
 	Branch string    `json:"branch"`
-	Commit string    `json:"commit,omitempty"`
-	Pushed bool      `json:"pushed"`
-	Error  string    `json:"error,omitempty"`
+	// Base is the branch the output belongs on, when it was pushed to
+	// another branch (Branch) for a pull request.
+	Base   string `json:"base,omitempty"`
+	Commit string `json:"commit,omitempty"`
+	Pushed bool   `json:"pushed"`
+	// Unchanged: the base branch already held the output; UpToDate: the
+	// pull request branch did. Nothing was pushed then.
+	Unchanged bool `json:"unchanged,omitempty"`
+	UpToDate  bool `json:"upToDate,omitempty"`
+	// Replaced is the commit the pull request branch pointed to before
+	// this push replaced it.
+	Replaced string `json:"replaced,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 // LogLine is one line of a run's log.

@@ -141,10 +141,11 @@ func registerCompletions(root *cobra.Command, o *options) {
 	_ = root.RegisterFlagCompletionFunc("context", contexts("kubeconfig"))
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
-		for name, values := range completions {
-			if c.LocalNonPersistentFlags().Lookup(name) != nil {
-				vals := values
-				_ = c.RegisterFlagCompletionFunc(name, cobra.FixedCompletions(vals, cobra.ShellCompDirectiveNoFileComp))
+		for _, fs := range []*pflag.FlagSet{c.Flags(), c.PersistentFlags()} {
+			for name, values := range completions[fs] {
+				if fs.Lookup(name) != nil {
+					_ = c.RegisterFlagCompletionFunc(name, cobra.FixedCompletions(values, cobra.ShellCompDirectiveNoFileComp))
+				}
 			}
 		}
 		if c.LocalNonPersistentFlags().Lookup("target-context") != nil {

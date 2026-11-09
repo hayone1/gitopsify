@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/hayone1/gitopsify/pkg/clean"
@@ -30,6 +31,7 @@ import (
 	"github.com/hayone1/gitopsify/pkg/portability"
 	"github.com/hayone1/gitopsify/pkg/render"
 	"github.com/hayone1/gitopsify/pkg/secrets"
+	"github.com/hayone1/gitopsify/pkg/target"
 	"github.com/hayone1/gitopsify/pkg/transform"
 )
 
@@ -155,11 +157,15 @@ func Finish(ctx context.Context, opts Options, res *Result) error {
 	if err := order.Run(res.Inventory, cfg); err != nil {
 		return err
 	}
+	if err := markExisting(ctx, &opts, res.Inventory); err != nil {
+		return err
+	}
 	opts.log("rendering %d apps for %s", len(res.Inventory.Apps), cfg.Output.Tool)
 	tree, err := render.Render(res.Inventory, render.Options{Config: cfg, Secrets: sres, Version: opts.Version})
 	if err != nil {
 		return err
 	}
+	tree.SourceID = res.Inventory.Source.ID
 	res.Tree = tree
 	return nil
 }
@@ -168,7 +174,7 @@ func discover(ctx context.Context, opts *Options) (*model.Inventory, *discovery.
 	cfg := opts.Config
 	if opts.Offline != nil {
 		opts.log("reading %d objects from %s", len(opts.Offline), opts.OfflineName)
-		inv := &model.Inventory{Source: model.ClusterInfo{Context: "offline", Server: opts.OfflineName}}
+		inv := &model.Inventory{Source: model.ClusterInfo{Context: "offline", Server: opts.OfflineName, Offline: true}}
 		return inv, discovery.FromObjects(opts.Offline), nil
 	}
 	src := opts.Source
@@ -183,6 +189,12 @@ func discover(ctx context.Context, opts *Options) (*model.Inventory, *discovery.
 		return nil, nil, fmt.Errorf("connecting to the source cluster %s: %w", src.Server, err)
 	}
 	inv := &model.Inventory{Source: model.ClusterInfo{Context: src.Context, Server: src.Server, Version: version}}
+	// The cluster's identity, whatever address reaches it: kube-system's UID.
+	if src.Kubernetes != nil {
+		if ns, err := src.Kubernetes.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{}); err == nil {
+			inv.Source.ID = string(ns.UID)
+		}
+	}
 	dopts, err := discoveryOptions(cfg)
 	if err != nil {
 		return nil, nil, err
@@ -1043,6 +1055,29 @@ func certSource(ctx context.Context, opts *Options) func(env string) (*rsa.Publi
 		cache[env] = key
 		return key, nil
 	}
+}
+
+// markExisting leaves out of each environment the objects its cluster
+// already has, as adopt.existing says.
+func markExisting(ctx context.Context, opts *Options, inv *model.Inventory) error {
+	cfg := opts.Config
+	if cfg.Adopt.Existing == "" || cfg.Adopt.Existing == config.ExistingInclude {
+		return nil
+	}
+	for i := range cfg.Environments {
+		env := &cfg.Environments[i]
+		c, err := envClient(opts, env.Name)
+		if err != nil {
+			return fmt.Errorf("adopt.existing: %s needs to read each environment's cluster: %w", cfg.Adopt.Existing, err)
+		}
+		opts.log("looking for objects that already exist in %s", env.Name)
+		notes, err := target.MarkExisting(ctx, inv, cfg, env, c)
+		if err != nil {
+			return err
+		}
+		inv.Warnings = append(inv.Warnings, notes...)
+	}
+	return nil
 }
 
 // ErrNoEnvCluster is returned when an environment has no cluster to connect to.
