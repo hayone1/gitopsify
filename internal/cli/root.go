@@ -20,6 +20,7 @@ import (
 
 	"github.com/hayone1/gitopsify/internal/telemetry"
 	"github.com/hayone1/gitopsify/internal/ui"
+	"github.com/hayone1/gitopsify/pkg/gitrepo"
 )
 
 // Version, Commit and Date are set at build time with -ldflags
@@ -104,9 +105,11 @@ func (o *options) ui() *ui.UI { return ui.New(o.noInput, o.noColor, o.quiet) }
 // (docs/observability.md), with a span for the command. The server and the
 // local UI run until stopped: their requests and runs have spans instead.
 func (o *options) startTelemetry(cmd *cobra.Command) {
-	switch name := cmd.Name(); {
-	case strings.HasPrefix(name, "__complete"), name == "completion", name == "help":
-		return // shell completion runs on every Tab
+	// Shell completion runs on every Tab and shell start (completion bash).
+	for c := cmd; c != nil; c = c.Parent() {
+		if name := c.Name(); strings.HasPrefix(name, "__complete") || name == "completion" || name == "help" {
+			return
+		}
 	}
 	path := cmd.CommandPath()
 	service := "gitopsify"
@@ -143,7 +146,7 @@ func (o *options) endTelemetry(err error) {
 		case err.Error() == "":
 			o.span.SetStatus(codes.Error, "failed")
 		default:
-			o.span.SetStatus(codes.Error, err.Error())
+			o.span.SetStatus(codes.Error, gitrepo.RedactURLs(err.Error()))
 		}
 		o.span.End()
 	}

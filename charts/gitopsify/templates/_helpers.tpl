@@ -65,6 +65,13 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $_ := set $pg "maxConnections" .Values.storage.postgres.maxConnections -}}
 {{- end -}}
 {{- $_ := set $spec "storage" (dict "type" "postgres" "postgres" $pg) -}}
+{{- if gt (int .Values.replicaCount) 1 -}}
+{{- $providers := default dict $spec.providers -}}
+{{- if not (hasKey $providers "disableInstall") -}}
+{{- $_ := set $providers "disableInstall" true -}}
+{{- end -}}
+{{- $_ := set $spec "providers" $providers -}}
+{{- end -}}
 {{- else if gt (int .Values.replicaCount) 1 -}}
 {{- fail "replicaCount > 1 needs storage.type: postgres (with file storage the data directory belongs to one pod)" -}}
 {{- end -}}

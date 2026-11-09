@@ -119,46 +119,45 @@ func Setup(ctx context.Context, service, version string) error {
 	if err != nil {
 		return err
 	}
+	// An exporter that can't be built leaves its signal off, like settings
+	// gitopsify can't follow; the others start.
 	var stop []func(context.Context) error
-	fail := func(err error) error {
-		for _, f := range stop {
-			_ = f(ctx)
-		}
-		return err
-	}
 	var tp *sdktrace.TracerProvider
 	var mp *sdkmetric.MeterProvider
 	var lp *sdklog.LoggerProvider
 	if on[0] {
-		exp, err := otlptracehttp.New(ctx)
-		if err != nil {
-			return fail(fmt.Errorf("traces: %w", err))
+		if exp, err := otlptracehttp.New(ctx); err != nil {
+			skipped = append(skipped, fmt.Errorf("traces off: %w", err))
+		} else {
+			tp = sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res))
+			stop = append(stop, tp.Shutdown)
 		}
-		tp = sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res))
-		stop = append(stop, tp.Shutdown)
 	}
 	if on[1] {
-		exp, err := otlpmetrichttp.New(ctx)
-		if err != nil {
-			return fail(fmt.Errorf("metrics: %w", err))
-		}
-		mp = sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)), sdkmetric.WithResource(res),
-			// otelhttp takes server.address and server.port from the
-			// request's Host header: clients would pick the series.
-			sdkmetric.WithView(sdkmetric.NewView(sdkmetric.Instrument{Name: "http.server.*"},
-				sdkmetric.Stream{AttributeFilter: attribute.NewDenyKeysFilter(semconv.ServerAddressKey, semconv.ServerPortKey)})))
-		stop = append(stop, mp.Shutdown)
-		if err := runtime.Start(runtime.WithMeterProvider(mp)); err != nil {
-			return fail(fmt.Errorf("runtime metrics: %w", err))
+		if exp, err := otlpmetrichttp.New(ctx); err != nil {
+			skipped = append(skipped, fmt.Errorf("metrics off: %w", err))
+		} else {
+			mp = sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)), sdkmetric.WithResource(res),
+				// otelhttp takes server.address and server.port from the
+				// request's Host header: clients would pick the series.
+				sdkmetric.WithView(sdkmetric.NewView(sdkmetric.Instrument{Name: "http.server.*"},
+					sdkmetric.Stream{AttributeFilter: attribute.NewDenyKeysFilter(semconv.ServerAddressKey, semconv.ServerPortKey)})))
+			stop = append(stop, mp.Shutdown)
+			if err := runtime.Start(runtime.WithMeterProvider(mp)); err != nil {
+				skipped = append(skipped, fmt.Errorf("runtime metrics off: %w", err))
+			}
 		}
 	}
 	if on[2] {
-		exp, err := otlploghttp.New(ctx)
-		if err != nil {
-			return fail(fmt.Errorf("logs: %w", err))
+		if exp, err := otlploghttp.New(ctx); err != nil {
+			skipped = append(skipped, fmt.Errorf("logs off: %w", err))
+		} else {
+			lp = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewBatchProcessor(exp)), sdklog.WithResource(res))
+			stop = append(stop, lp.Shutdown)
 		}
-		lp = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewBatchProcessor(exp)), sdklog.WithResource(res))
-		stop = append(stop, lp.Shutdown)
+	}
+	if len(stop) == 0 {
+		return errors.Join(skipped...)
 	}
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { errorLogger().Warn("opentelemetry", "error", err) }))
 	// W3C trace context only: baggage from clients would travel on to the

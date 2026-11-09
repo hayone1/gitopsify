@@ -1023,7 +1023,7 @@ func certSource(ctx context.Context, opts *Options) func(env string) (*rsa.Publi
 		}
 		var key *rsa.PublicKey
 		if f := cfg.Secrets.SealedSecrets.CertFile; f != "" {
-			data, err := os.ReadFile(f)
+			data, err := os.ReadFile(config.ExpandHome(f))
 			if err != nil {
 				return nil, err
 			}

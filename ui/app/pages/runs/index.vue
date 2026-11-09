@@ -28,19 +28,25 @@ function filters(): Record<string, string | number> {
   return query
 }
 
+// gen counts filter changes: answers to requests made before one are dropped.
+let gen = 0
+
 // load refreshes the newest page, keeping older pages already loaded.
 async function load(reset = false) {
+  if (reset) gen++
+  const mine = gen
   try {
     const page = await api<Run[]>('/runs', { query: filters() })
+    if (mine !== gen) return
     const oldest = page.at(-1)?.createdAt
     const ids = new Set(page.map(r => r.id))
     const older = reset || !oldest ? [] : runs.value.filter(r => !ids.has(r.id) && Date.parse(r.createdAt) <= Date.parse(oldest))
     runs.value = [...page, ...older]
     if (reset || !older.length) more.value = page.length === pageSize
   } catch (e) {
-    notify.error('Loading runs failed', e)
+    if (mine === gen) notify.error('Loading runs failed', e)
   } finally {
-    loading.value = false
+    if (mine === gen) loading.value = false
   }
 }
 
@@ -48,8 +54,10 @@ async function loadMore() {
   const last = runs.value.at(-1)
   if (!last) return
   loadingMore.value = true
+  const mine = gen
   try {
     const page = await api<Run[]>('/runs', { query: { ...filters(), before: last.createdAt, beforeID: last.id } })
+    if (mine !== gen) return
     const ids = new Set(runs.value.map(r => r.id))
     runs.value = [...runs.value, ...page.filter(r => !ids.has(r.id))]
     more.value = page.length === pageSize
@@ -66,13 +74,25 @@ watch([type, status, cluster], () => {
   load(true)
 })
 
+// The sidebar's Runs link reuses this page: follow the address's filters.
+watch(() => route.query, (q) => {
+  type.value = (q.type as string) || 'all'
+  status.value = (q.status as string) || 'all'
+  cluster.value = (q.cluster as string) || 'all'
+})
+
 let timer: ReturnType<typeof setInterval> | undefined
+let mounted = true
 onMounted(async () => {
   load(true)
   clusters.value = await api<Cluster[]>('/clusters').catch(() => [])
+  if (!mounted) return // left before the clusters came
   timer = setInterval(() => { if (runs.value.some(r => r.status === 'running' || r.status === 'queued')) load() }, 4000)
 })
-onUnmounted(() => clearInterval(timer))
+onUnmounted(() => {
+  mounted = false
+  clearInterval(timer)
+})
 
 const shown = computed(() => {
   const q = search.value.toLowerCase()

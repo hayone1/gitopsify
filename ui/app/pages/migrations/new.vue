@@ -79,6 +79,8 @@ watch(cluster, async (c) => {
   if (!c) return
   if (!resuming) {
     // Another cluster: what was scanned and chosen belongs to the old one.
+    stopFollowing()
+    scanning.value = false
     namespaces.value = []
     scan.value = null
     scanRun.value = null
@@ -99,7 +101,7 @@ watch(cluster, async (c) => {
     name.value = defaultName(c)
     lastDefaultName.value = name.value
   }
-})
+}, { immediate: true }) // ?cluster=... (from Clusters and Overview) loads its namespaces too
 const lastDefaultName = ref('')
 function defaultName(c: string) {
   return (c.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'migration') + '-migration'
@@ -141,6 +143,11 @@ function readTarget(sp: Record<string, any>) {
     envs.value = sp.environments.map((e: any) => ({ name: e.name, cluster: e.cluster?.context || '', repoURL: e.repoURL || '' }))
   }
   adopt.value = !!sp.adopt?.enabled
+  // What applyTarget writes, so going back keeps edits made in the YAML.
+  if (sp.secrets?.sealedSecrets?.scope) sealedScope.value = sp.secrets.sealedSecrets.scope
+  if (Array.isArray(sp.secrets?.sops?.age)) ageRecipients.value = sp.secrets.sops.age.join('\n')
+  if (sp.secrets?.externalSecrets?.storeKind) esStoreKind.value = sp.secrets.externalSecrets.storeKind
+  if (sp.secrets?.externalSecrets?.storeName) esStoreName.value = sp.secrets.externalSecrets.storeName
 }
 
 async function template(): Promise<Record<string, any>> {
@@ -202,23 +209,51 @@ async function startScan() {
   }
 }
 
+// One scan is followed at a time: a stream of another cluster's scan (the
+// cluster changed meanwhile) must not land in this one.
+let stream: EventSource | null = null
+let followed = ''
+function stopFollowing() {
+  stream?.close()
+  stream = null
+  followed = ''
+}
+onUnmounted(stopFollowing)
+
 function follow(id: string) {
+  stopFollowing()
   const es = new EventSource(`/api/v1/runs/${id}/events`)
-  es.addEventListener('log', e => scanLines.value.push(JSON.parse((e as MessageEvent).data)))
-  es.addEventListener('run', e => { scanRun.value = JSON.parse((e as MessageEvent).data) })
+  stream = es
+  followed = id
+  const mine = () => followed === id
+  es.addEventListener('log', (e) => { if (mine()) scanLines.value.push(JSON.parse((e as MessageEvent).data)) })
+  es.addEventListener('run', (e) => { if (mine()) scanRun.value = JSON.parse((e as MessageEvent).data) })
   es.addEventListener('end', async () => {
     es.close()
+    if (!mine()) return
+    stream = null
     scanning.value = false
-    if (scanRun.value?.status === 'succeeded') {
-      scan.value = await api<ScanResult>(`/runs/${id}/scan`)
-      excludeApps.value = excludeApps.value.filter(a => scan.value!.apps.some(x => x.name === a))
-      step.value = 1
+    try {
+      // The stream can end before the run does (the server stopping):
+      // ask for the run itself.
+      if (!['succeeded', 'failed', 'canceled'].includes(scanRun.value?.status || '')) {
+        scanRun.value = await api<Run>(`/runs/${id}`)
+      }
+      if (mine() && scanRun.value?.status === 'succeeded' && scanRun.value.id === id) {
+        const result = await api<ScanResult>(`/runs/${id}/scan`)
+        if (!mine()) return // the cluster changed meanwhile
+        scan.value = result
+        excludeApps.value = excludeApps.value.filter(a => result.apps.some(x => x.name === a))
+        step.value = 1
+      }
+    } catch (e) {
+      notify.error('Loading the scan failed', e)
     }
   })
   es.onerror = () => {
     // The browser reconnects by itself (and the server resumes after the
     // last line); give up only when it can't.
-    if (es.readyState === EventSource.CLOSED) scanning.value = false
+    if (es.readyState === EventSource.CLOSED && mine()) scanning.value = false
   }
 }
 
@@ -379,7 +414,7 @@ const toolItems = [
     </template>
 
     <template #body>
-      <UAlert v-if="me && !atLeast(me.role, 'operator')" color="warning" variant="subtle" icon="i-lucide-lock" title="You can't start migrations" description="Starting scans and migrations needs the operator role on a cluster." />
+      <UAlert v-if="me && !Object.values(me.clusters || {}).some(r => atLeast(r, 'operator'))" color="warning" variant="subtle" icon="i-lucide-lock" title="You can't start migrations" description="Starting scans and migrations needs the operator role on a cluster." />
       <template v-else>
         <UStepper v-model="step" :items="steps" class="w-full" :linear="false" disabled />
 
@@ -387,13 +422,15 @@ const toolItems = [
         <UCard v-if="step === 0">
           <div class="grid gap-4 md:grid-cols-2">
             <UFormField label="Source cluster" description="The cluster whose apps go into Git." required>
-              <USelectMenu v-model="cluster" :items="clusterItems" value-key="value" class="w-full" placeholder="Pick a cluster" />
+              <USelectMenu v-model="cluster" :items="clusterItems" value-key="value" class="w-full" placeholder="Pick a cluster" :disabled="scanning" />
             </UFormField>
             <UFormField label="Name" description="Names the migration and its runs.">
               <UInput v-model="name" class="w-full" />
             </UFormField>
             <UFormField label="Namespaces" description="Empty means every namespace (system ones are left out by the built-in rules).">
-              <USelectMenu v-model="namespaces" :items="allNamespaces" multiple :loading="nsLoading" class="w-full" placeholder="All namespaces" />
+              <!-- create-item: people who may not list namespaces can type theirs. -->
+              <USelectMenu v-model="namespaces" :items="allNamespaces" multiple :loading="nsLoading" class="w-full" placeholder="All namespaces"
+                create-item @create="(ns: string) => { if (ns && !namespaces.includes(ns)) namespaces.push(ns) }" />
             </UFormField>
             <UFormField label="Label selector" description="Only objects with these labels, such as team=shop." hint="optional">
               <UInput v-model="selector" class="w-full" placeholder="app.kubernetes.io/part-of=shop" />

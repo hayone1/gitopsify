@@ -417,10 +417,21 @@ storage:
 replicaCount: 3                      # adds a PodDisruptionBudget
 ```
 
+With more than one replica, providers installed from the UI would land on
+one pod only, so the chart sets `server.providers.disableInstall: true`
+unless you set it: bring providers in the image, or on a shared volume
+(`server.providers.dir`). Without `existingSecret`, the chart keeps
+`storage.postgres.url` in a Secret of its own (`<release>-postgres`), which
+also works next to `secrets.existingSecret`.
+
 ## Operating it
 
 - Back up `dataDir` with file storage, or the database with PostgreSQL; the
   configuration and its Secrets come from Git and your secret store.
+- Behind an ingress, set `server.trustedProxies` (otherwise every client
+  shares the ingress controller's rate limits) and `server.metrics.token`
+  (the ingress serves `/metrics` too); `metrics.serviceMonitor.tokenSecret`
+  names the Secret Prometheus reads the token from.
 - Metrics: `gitopsify_http_requests_total`,
   `gitopsify_http_request_duration_seconds`, `gitopsify_runs_total`,
   `gitopsify_runs_active`, `gitopsify_logins_total`.

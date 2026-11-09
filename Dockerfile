@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -ldflags "-s -w -X github.com/hayone1/gitopsify/internal/cli.Version=$VERSION -X github.com/hayone1/gitopsify/internal/cli.Commit=$COMMIT -X github.com/hayone1/gitopsify/internal/cli.Date=$DATE" \
       -o /out/gitopsify ./cmd/gitopsify
 
-FROM --platform=$BUILDPLATFORM alpine:3.20 AS tools
+FROM --platform=$BUILDPLATFORM alpine:3.24 AS tools
 ARG TARGETARCH HELM_VERSION=v3.19.0 KUBECTL_VERSION=v1.34.1
 # sops, pinned by checksum (from the release's checksums); SOPS_VERSION=""
 # builds without it. The asset IDs are a second way to the same files
@@ -51,7 +51,7 @@ RUN apk add --no-cache curl \
       && echo "$sum  /usr/local/bin/sops" | sha256sum -c - && chmod +x /usr/local/bin/sops; \
     else printf '#!/bin/sh\necho "this image was built without sops" >&2; exit 1\n' > /usr/local/bin/sops && chmod +x /usr/local/bin/sops; fi
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates git openssh-client \
  && adduser -D -u 10001 gitopsify \
  && mkdir -p /var/lib/gitopsify /etc/gitopsify && chown gitopsify /var/lib/gitopsify

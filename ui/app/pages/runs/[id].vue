@@ -55,7 +55,19 @@ function connect() {
     run.value = r
     if (!wasFinished && ['succeeded', 'failed', 'canceled'].includes(r.status)) loadScan()
   })
-  source.addEventListener('end', () => { live.value = false; source?.close() })
+  source.addEventListener('end', async () => {
+    live.value = false
+    source?.close()
+    // The stream can end before the run does (a server stopping): ask for
+    // the run itself, and its whole log.
+    if (run.value && !finished.value) {
+      try {
+        run.value = await api<Run>(`/runs/${id.value}`)
+        lines.value = await api<LogLine[]>(`/runs/${id.value}/log`)
+        if (finished.value) loadScan()
+      } catch { /* the page shows what it has */ }
+    }
+  })
   source.onerror = () => {
     // The browser reconnects by itself and the server carries on after the
     // last line it sent; give up only when it closed for good.
@@ -162,8 +174,14 @@ const appColumns = [
 ]
 
 async function copy(text: string) {
-  await navigator.clipboard.writeText(text)
-  notify.ok('Copied')
+  try {
+    // Only on HTTPS or localhost.
+    if (!navigator.clipboard) throw new Error('the browser allows copying only on HTTPS pages')
+    await navigator.clipboard.writeText(text)
+    notify.ok('Copied')
+  } catch (e) {
+    notify.error('Copying failed', e)
+  }
 }
 </script>
 

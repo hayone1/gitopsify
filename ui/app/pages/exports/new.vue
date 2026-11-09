@@ -56,7 +56,10 @@ watch(tool, async (t) => {
     info.value = await api<ToolCheck>(`/tools/${encodeURIComponent(t)}/check`)
     const d = info.value.description
     if (d) {
-      kinds.value = d.kinds.filter(k => !k.optional).map(k => k.name)
+      // Kinds the check says can't be read start unchecked (and can't be
+      // checked): kept selected, they would fail the export.
+      const unreadable = new Set((info.value.check?.kinds || []).filter(c => !c.ok).map(c => c.kind))
+      kinds.value = d.kinds.filter(k => !k.optional && !unreadable.has(k.name)).map(k => k.name)
       formats.value = supportedFormats.value.map(f => f.value)
     }
     partitions.value = []

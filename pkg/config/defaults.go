@@ -144,6 +144,7 @@ func (c *Config) defaultSecrets() {
 
 func (c *Config) defaultOutput() {
 	o := &c.Output
+	o.Dir = ExpandHome(o.Dir) // ~/gitops, as other paths
 	if o.Dir == "" {
 		o.Dir = "gitops"
 	}

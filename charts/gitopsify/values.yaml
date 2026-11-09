@@ -83,7 +83,10 @@ storage:
     url: ""
     maxConnections: 0
 
-# More than one needs storage.type: postgres.
+# More than one needs storage.type: postgres. Providers installed from the
+# UI then land on one replica only: the chart turns installing off (set
+# server.providers.disableInstall: false to keep it) and providers come with
+# the image or a shared volume (server.providers.dir).
 replicaCount: 1
 
 # This cluster, as a source and target, through the pod's ServiceAccount.
@@ -180,6 +183,9 @@ metrics:
     enabled: false
     interval: 30s
     labels: {}
+    # With server.metrics.token: the Secret Prometheus reads it from, such
+    # as {name: gitopsify-metrics, key: token}.
+    tokenSecret: {}
 
 networkPolicy:
   # Allow ingress only from these namespaces' pods (the ingress controller,

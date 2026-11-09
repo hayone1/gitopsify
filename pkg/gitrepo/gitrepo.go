@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -160,7 +161,13 @@ func gitEnv(ctx context.Context, dir string, env []string, args ...string) (stri
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("git %s: %w: %s", RedactURLs(strings.Join(args, " ")), err, RedactURLs(strings.TrimSpace(stderr.String())))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+var urlUserinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@`)
+
+// RedactURLs hides credentials in URLs (https://user:token@host/...):
+// errors are printed, and may reach a telemetry collector.
+func RedactURLs(s string) string { return urlUserinfo.ReplaceAllString(s, "${1}<redacted>@") }

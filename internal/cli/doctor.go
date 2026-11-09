@@ -14,6 +14,7 @@ import (
 
 	"github.com/hayone1/gitopsify/internal/ui"
 	"github.com/hayone1/gitopsify/pkg/config"
+	"github.com/hayone1/gitopsify/pkg/gitrepo"
 	"github.com/hayone1/gitopsify/pkg/kube"
 )
 
@@ -52,6 +53,9 @@ Exits with status 1 when a check fails.`,
 		Example: "  gitopsify doctor\n  gitopsify doctor --env uat --target-kubeconfig ~/.kube/uat.yaml",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := checkFormat(format); err != nil {
+				return err
+			}
 			u := o.ui()
 			d := &doctor{o: o}
 			cfg, err := o.load(cmd)
@@ -327,7 +331,7 @@ func (d *doctor) git(ctx context.Context, envs []config.Environment) {
 	}
 	for u := range urls {
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		cmd := exec.CommandContext(cctx, "git", "ls-remote", "--heads", u)
+		cmd := exec.CommandContext(cctx, "git", "ls-remote", "--heads", "--", u)
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		if os.Getenv("GIT_SSH_COMMAND") == "" {
 			// Fail instead of asking for a passphrase or a host key.
@@ -343,11 +347,11 @@ func (d *doctor) git(ctx context.Context, envs []config.Environment) {
 			if msg == "" {
 				msg = err.Error()
 			}
-			d.add("warning", "git", "repository", "%s: %s (generate --push and the GitOps tool need access; the tool uses bootstrap's --git-token or --ssh-key)", u, firstLine(msg))
+			d.add("warning", "git", "repository", "%s: %s (generate --push and the GitOps tool need access; the tool uses bootstrap's --git-token or --ssh-key)", gitrepo.RedactURLs(u), gitrepo.RedactURLs(firstLine(msg)))
 		case strings.TrimSpace(string(out)) == "":
-			d.add("ok", "git", "repository", "%s is reachable and empty", u)
+			d.add("ok", "git", "repository", "%s is reachable and empty", gitrepo.RedactURLs(u))
 		default:
-			d.add("ok", "git", "repository", "%s is reachable", u)
+			d.add("ok", "git", "repository", "%s is reachable", gitrepo.RedactURLs(u))
 		}
 	}
 }

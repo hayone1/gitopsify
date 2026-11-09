@@ -201,11 +201,29 @@ func (a *accessFlags) applyTo(fs *pflag.FlagSet, acc *config.Access) {
 	if set("in-cluster") {
 		acc.InCluster = a.inCluster
 	}
+	// A flag overrides the configuration, including the setting it can't
+	// be combined with (the configuration's other half goes).
+	if set("certificate-authority") {
+		acc.InsecureSkipTLSVerify = false
+	}
+	if set("insecure-skip-tls-verify") && a.insecure {
+		acc.CertificateAuthority = ""
+	}
+	if set("in-cluster") && a.inCluster {
+		acc.Kubeconfig, acc.Context = "", ""
+	}
+	if (set("context") || set("kubeconfig")) && !set("in-cluster") {
+		acc.InCluster = false
+	}
+	if set("token-file") {
+		acc.Token = ""
+	}
+	// Flag, then environment, then configuration.
 	switch {
 	case set("token"):
-		acc.Token = a.token
-	case acc.Token == "" && acc.TokenFile == "" && os.Getenv(a.tokenEnv) != "":
-		acc.Token = os.Getenv(a.tokenEnv)
+		acc.Token, acc.TokenFile = a.token, ""
+	case !set("token-file") && os.Getenv(a.tokenEnv) != "":
+		acc.Token, acc.TokenFile = os.Getenv(a.tokenEnv), ""
 	}
 }
 
@@ -455,7 +473,7 @@ func (o *options) apply(fs *pflag.FlagSet, cfg *config.Config) error {
 	}
 	out := &cfg.Output
 	if set("output") {
-		out.Dir = o.output
+		out.Dir = config.ExpandHome(o.output)
 	}
 	if set("tool") {
 		out.Tool = o.tool

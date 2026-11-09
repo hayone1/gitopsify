@@ -34,7 +34,8 @@ const stats = computed(() => [
   { label: 'Clusters', value: clusters.value.length, icon: 'i-lucide-server' }
 ])
 const recent = computed(() => runs.value.slice(0, 8))
-const canOperate = computed(() => atLeast(me.value?.role, 'operator'))
+// Migrations need the operator role on a cluster (tool grants don't count).
+const canOperate = computed(() => Object.values(me.value?.clusters || {}).some(r => atLeast(r, 'operator')))
 </script>
 
 <template>

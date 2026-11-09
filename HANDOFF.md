@@ -420,12 +420,43 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   turns only that signal off, pkg/kube takes ConnectOptions.WrapTransport
   (no internal import), no telemetry for completion/help, chart env merging
   (GITOPSIFY_POD_NAME/NAMESPACE). Browser e2e passes with OTel on (SSE
-  through otelhttp). Open: runs.start checks rs.closed and calls wg.Add
-  under separate locks (pre-existing, can race shutdown's Wait).
+  through otelhttp). The runs.start/shutdown race is fixed (below).
 - devbox.sh: cx33 was unavailable everywhere on 2026-11-09; use
   `SERVER_TYPE=cpx32`. `up` now stops when no location has the type.
+- 2026-11-09, full bug hunt (user: "identify all current bugs and fix
+  them"): six fresh-context reviewers over server HTTP, runs/storage,
+  pipeline, CLI/config/target, providers/IaC, UI/chart/CI; ~120 findings,
+  all fixed except the limits below; plus race detector over every package
+  (clean), staticcheck and govulncheck (now in CI; x/net bumped). Commits
+  "Fix bugs found by a full review" (five batches). Notable: a forged Helm
+  release could write outside the output or into .git (tree paths checked,
+  os.Root); usernameClaim: email took unverified addresses; migrate --env
+  deleted other environments' files and pushed; overlays lost list
+  removals (now strategic merge patches); runs.start raced shutdown;
+  PostgreSQL schema errors hung startup; exports never checked out their
+  repository; two dashboards could share one file. The bug list with the
+  fixes is in the commit messages; tests cover each where a test can.
+- 2026-11-09, the user asked whether the chart should be "gitopsify
+  operator" on OperatorHub: it isn't an operator today (no CRDs), so the
+  name stays (Argo's charts are argo-cd/argo-workflows too; Artifact Hub
+  marks charts with "operator" in the name as operators). Artifact Hub
+  listing prepared: Chart.yaml annotations, charts/gitopsify/README.md,
+  artifacthub-repo.yml (fill in repositoryID and owners after adding the
+  repository on artifacthub.io: kind Helm charts, URL
+  oci://ghcr.io/hayone1/charts/gitopsify), and the release pushes it with
+  oras (tag artifacthub.io) after waiting for the image. The user then asked
+  for an operator design after Argo CD/Workflows (CRDs, a CLI that talks to
+  the server, UI): evaluated in the conversation (CLI remote mode: worth it;
+  CRDs + controller: only with scheduled drift capture; split CLI: no);
+  research notes in docs/DESIGN-operator-research.md; waiting for the user's decision before
+  building.
 
 ### Accepted / known limits (web UI)
+- runs.get reports a store error as "not found" (a database blip answers
+  404 to that request); live streams retry instead.
+- UI build-time npm advisories (esbuild's Windows dev server, glob,
+  minimatch, deepmerge in nitropack): pinned by Nuxt's build tools, not in
+  the embedded UI; revisit when Nuxt updates them.
 - Sessions can't be revoked one by one (rotate sessionKey).
 - Helm values are redacted by key name only (documented); release values
   under other names reach the output.

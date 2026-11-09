@@ -7,13 +7,20 @@
 #   GITOPSIFY_INSTALL_DIR  where to put gitopsify.exe (default: %LOCALAPPDATA%\gitopsify\bin)
 #   GITHUB_TOKEN           token for private repositories or to avoid API rate limits
 #   GITOPSIFY_NO_MODIFY_PATH  set to 1 to leave your PATH alone
+# A script block of its own: run through iex, settings stay out of the
+# caller's session.
+& {
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell's progress bar makes downloads many times slower.
+$ProgressPreference = 'SilentlyContinue'
 $repo = 'hayone1/gitopsify'
 
-$arch = switch ($env:PROCESSOR_ARCHITECTURE) {
+# A 32-bit PowerShell on 64-bit Windows reports x86; the machine's is here.
+$machine = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$arch = switch ($machine) {
     'AMD64' { 'amd64' }
     'ARM64' { 'arm64' }
-    default { throw "unsupported architecture $($env:PROCESSOR_ARCHITECTURE)" }
+    default { throw "unsupported architecture $machine" }
 }
 $headers = @{ Accept = 'application/vnd.github+json' }
 if ($env:GITHUB_TOKEN) { $headers.Authorization = "Bearer $($env:GITHUB_TOKEN)" }
@@ -66,4 +73,5 @@ try {
     Write-Host "Next: gitopsify doctor    (and gitopsify skills install, for AI coding agents)"
 } finally {
     Remove-Item -Recurse -Force $tmp
+}
 }

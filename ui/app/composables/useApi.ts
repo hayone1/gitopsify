@@ -11,7 +11,7 @@ export class ApiError extends Error {
 
 // api calls gitopsify's API: same origin, the session cookie, and the CSRF
 // header on anything that changes state.
-export async function api<T>(path: string, opts: { method?: string, body?: unknown, query?: Record<string, unknown> } = {}): Promise<T> {
+export async function api<T>(path: string, opts: { method?: string, body?: unknown, query?: Record<string, unknown> } = {}, retried = false): Promise<T> {
   const me = useMe()
   const headers: Record<string, string> = {}
   const method = opts.method || 'GET'
@@ -21,6 +21,11 @@ export async function api<T>(path: string, opts: { method?: string, body?: unkno
   } catch (e: unknown) {
     const err = e as { data?: { error?: string }, statusCode?: number, status?: number, message?: string }
     const status = err.statusCode || err.status || 0
+    // Signed in again in another tab: this tab's CSRF token is the old
+    // session's. Fetch the new one and try once more.
+    if (status === 403 && !retried && method !== 'GET' && (err.data?.error || '').includes('X-Gitopsify-CSRF')) {
+      if (await loadMe()) return api<T>(path, opts, true)
+    }
     if (status === 401 && useRoute().path !== '/login') {
       me.value = null
       await navigateTo({ path: '/login', query: { redirect: useRoute().fullPath } })

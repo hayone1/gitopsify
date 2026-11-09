@@ -56,6 +56,9 @@ Exits with status 1 when a check fails.`,
 		Example: "  gitopsify check --env uat\n  gitopsify check --env uat=kind-uat --format json",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := checkFormat(format); err != nil {
+				return err
+			}
 			cfg, err := o.load(cmd)
 			if err != nil {
 				return err
@@ -128,6 +131,9 @@ no-op. Helm apps are rendered with helm template when helm is installed.`,
 		Example: "  gitopsify diff --env prod\n  gitopsify diff --env prod --exit-code   # fail CI on changes",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := checkFormat(format); err != nil {
+				return err
+			}
 			cfg, err := o.load(cmd)
 			if err != nil {
 				return err
@@ -217,6 +223,7 @@ no-op. Helm apps are rendered with helm template when helm is installed.`,
 	cmd.Flags().BoolVar(&showUnchanged, "show-unchanged", false, "also list unchanged objects")
 	cmd.Flags().BoolVar(&noHelmTemplate, "no-helm-template", false, "compare Helm apps using their recorded release manifests")
 	cmd.Flags().StringVar(&format, "format", "table", "output format: table, json or yaml")
+	complete(cmd.Flags(), "format", "table", "json", "yaml")
 	return cmd
 }
 
@@ -361,8 +368,9 @@ func runBootstrap(cmd *cobra.Command, o *options, u *ui.UI, cfg *config.Config, 
 	}
 	err = bootstrap.Run(cmd.Context(), bootstrap.Options{
 		Config: cfg, Env: env, Client: c, Dir: envDir(cfg, env.Name),
-		Git:            bootstrap.GitCredentials{Username: b.gitUser, Password: token, SSHKeyFile: b.sshKey, KnownHostsFile: b.knownHosts},
-		SOPSAgeKeyFile: b.sopsAgeKey,
+		Git: bootstrap.GitCredentials{Username: b.gitUser, Password: token, SSHKeyFile: config.ExpandHome(b.sshKey),
+			KnownHostsFile: config.ExpandHome(b.knownHosts)},
+		SOPSAgeKeyFile: config.ExpandHome(b.sopsAgeKey),
 		Timeout:        b.timeout,
 		Log:            u.Step,
 	})
@@ -438,4 +446,13 @@ func (o *options) loadForBootstrap(cmd *cobra.Command) (*config.Config, error) {
 		cfg.Output.Dir = o.output
 	}
 	return cfg, nil
+}
+
+// checkFormat validates --format before any work.
+func checkFormat(format string) error {
+	switch format {
+	case "table", "json", "yaml":
+		return nil
+	}
+	return fmt.Errorf("--format must be table, json or yaml, not %q", format)
 }

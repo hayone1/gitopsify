@@ -16,4 +16,10 @@ spec:
     - port: http
       path: /metrics
       interval: {{ .Values.metrics.serviceMonitor.interval }}
+      {{- with .Values.metrics.serviceMonitor.tokenSecret }}
+      # server.metrics.token: Prometheus sends it as a bearer token.
+      authorization:
+        type: Bearer
+        credentials: {name: {{ .name }}, key: {{ .key }}}
+      {{- end }}
 {{- end }}

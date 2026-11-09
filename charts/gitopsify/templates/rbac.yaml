@@ -1,3 +1,6 @@
+{{- if and .Values.rbac.create .Values.inCluster.enabled .Values.inCluster.impersonate (not .Values.rbac.impersonate) }}
+{{- fail "inCluster.impersonate needs rbac.impersonate: true (the ServiceAccount then reads as each person, and loses its own read access)" }}
+{{- end }}
 {{- $reader := and .Values.rbac.clusterReader (not .Values.inCluster.impersonate) }}
 {{- if and .Values.rbac.create (or $reader .Values.rbac.impersonate) }}
 apiVersion: rbac.authorization.k8s.io/v1

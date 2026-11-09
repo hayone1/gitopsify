@@ -60,6 +60,13 @@ jobs:
       - uses: oras-project/setup-oras@v1
       - run: |
           v=${GITHUB_REF_NAME#v}
+          # The chart points at the image of this version, which the Docker
+          # workflow publishes: wait for it (up to 45 minutes).
+          for i in $(seq 1 90); do
+            docker manifest inspect "docker.io/hayone/gitopsify:$v" >/dev/null 2>&1 && break
+            sleep 30
+          done
+          docker manifest inspect "docker.io/hayone/gitopsify:$v" >/dev/null
           # Artifact Hub lists the image this version runs.
           sed -i "s|image: docker.io/hayone/gitopsify:.*|image: docker.io/hayone/gitopsify:$v|" charts/gitopsify/Chart.yaml
           helm package charts/gitopsify --version "$v" --app-version "$v"

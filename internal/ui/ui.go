@@ -24,18 +24,23 @@ var ErrAborted = errors.New("aborted")
 type UI struct {
 	Out, Err    io.Writer
 	Interactive bool
-	Color       bool
-	Quiet       bool
+	// Color styles what goes to Err, OutColor what goes to Out: each only
+	// on a terminal (diff > file must hold no escape codes).
+	Color    bool
+	OutColor bool
+	Quiet    bool
 }
 
 // New returns a UI for the process's standard streams.
 func New(noInput, noColor, quiet bool) *UI {
 	tty := term.IsTerminal(int(os.Stdout.Fd()))
+	colors := !noColor && os.Getenv("NO_COLOR") == ""
 	return &UI{
 		Out:         os.Stdout,
 		Err:         os.Stderr,
 		Interactive: !noInput && tty && term.IsTerminal(int(os.Stdin.Fd())),
-		Color:       !noColor && os.Getenv("NO_COLOR") == "" && term.IsTerminal(int(os.Stderr.Fd())),
+		Color:       colors && term.IsTerminal(int(os.Stderr.Fd())),
+		OutColor:    colors && tty,
 		Quiet:       quiet,
 	}
 }
@@ -51,6 +56,14 @@ var (
 
 func (u *UI) style(s lipgloss.Style, text string) string {
 	if !u.Color {
+		return text
+	}
+	return s.Render(text)
+}
+
+// outStyle styles text for stdout.
+func (u *UI) outStyle(s lipgloss.Style, text string) string {
+	if !u.OutColor {
 		return text
 	}
 	return s.Render(text)
@@ -82,7 +95,7 @@ func (u *UI) Errorf(format string, args ...any) {
 // Heading prints a section heading on stdout.
 func (u *UI) Heading(s string) {
 	fmt.Fprintln(u.Out)
-	fmt.Fprintln(u.Out, u.style(styleHeading, s))
+	fmt.Fprintln(u.Out, u.outStyle(styleHeading, s))
 }
 
 // Println prints a line on stdout.
@@ -92,20 +105,20 @@ func (u *UI) Println(a ...any) { fmt.Fprintln(u.Out, a...) }
 func (u *UI) Printf(format string, a ...any) { fmt.Fprintf(u.Out, format, a...) }
 
 // Bold renders text in bold when colors are on.
-func (u *UI) Bold(s string) string { return u.style(styleBold, s) }
+func (u *UI) Bold(s string) string { return u.outStyle(styleBold, s) }
 
 // Dim renders text faint when colors are on.
-func (u *UI) Dim(s string) string { return u.style(styleDim, s) }
+func (u *UI) Dim(s string) string { return u.outStyle(styleDim, s) }
 
 // Colorize renders text by severity: "error", "warning", "ok".
 func (u *UI) Colorize(severity, s string) string {
 	switch severity {
 	case "error":
-		return u.style(styleErr, s)
+		return u.outStyle(styleErr, s)
 	case "warning":
-		return u.style(styleWarn, s)
+		return u.outStyle(styleWarn, s)
 	case "ok":
-		return u.style(styleOK, s)
+		return u.outStyle(styleOK, s)
 	}
 	return s
 }
@@ -116,7 +129,7 @@ func (u *UI) Table(headers []string, rows [][]string) {
 	if len(rows) == 0 {
 		return
 	}
-	if !u.Color {
+	if !u.OutColor {
 		w := tabwriter.NewWriter(u.Out, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, strings.Join(headers, "\t"))
 		for _, r := range rows {
