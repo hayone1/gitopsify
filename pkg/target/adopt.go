@@ -77,6 +77,13 @@ func Adopt(ctx context.Context, inv *model.Inventory, cfg *config.Config, env *c
 					return res, err
 				}
 				obj["apiVersion"], obj["kind"] = "v1", "Secret"
+				// What the API server sets: kubectl apply can then create
+				// the record again from the backup.
+				if md, ok := obj["metadata"].(map[string]any); ok {
+					for _, k := range []string{"resourceVersion", "uid", "creationTimestamp", "managedFields", "selfLink", "generation"} {
+						delete(md, k)
+					}
+				}
 				b, err := yaml.Marshal(obj)
 				if err != nil {
 					return res, err

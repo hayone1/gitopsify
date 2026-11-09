@@ -1,6 +1,6 @@
 # Handoff: gitopsify
 
-State as of 2026-11-08. Repo: https://github.com/hayone1/gitopsify (public
+State as of 2026-11-09. Repo: https://github.com/hayone1/gitopsify (public
 since 2026-11-07; history scanned for credentials first: clean). Latest
 release: v0.2.0 (2026-11-08, not announced: the user announces once the
 registry and web UI are done). The provider system (PR #1) is merged into `main`; the SDK is
@@ -12,6 +12,67 @@ holds the first provider; `../gitopsify-provider-template`
 (github.com/hayone1/gitopsify-provider-template, marked as a GitHub template)
 is the starting point for new providers. Both require sdk v0.1.0.
 Longer-term list: [TODO.md](TODO.md).
+
+**Branch `webui`** (pushed, draft PR #2, not merged; written 2026-11-08
+while the user was away, as asked: "fully implement and make production
+ready the webui with cluster, multi-user mode even oidc etc"): the web UI
+and team server. See the section below; the user reviews it before merging
+(squash-merge keeps the GitGuardian false positives below out of main).
+
+## Web UI (branch `webui`)
+`gitopsify ui` (one person, localhost, single-use link) and `gitopsify
+server` (teams; the Helm chart `charts/gitopsify`). Guide docs/web-ui.md,
+design docs/DESIGN-webui.md (W1-W11).
+- `internal/server`: api.go (routes), auth.go (OIDC PKCE/state/nonce, AES-GCM
+  cookies, CSRF header, API tokens, local token), rbac.go (viewer/operator/
+  admin per cluster and tool), runs.go (background runs, SSE with event IDs,
+  cancel, multi-replica), store.go (file store, tar.gz pack/unpack),
+  storepg.go (PostgreSQL), migrate.go (Migration runs; the request is made
+  safe: clusters by name, no paths, Git checks), export.go (provider exports
+  of admin-registered tools), git.go (remote/branch checks, repository
+  allowlist, git env: protocol allowlist, no symlinks/hooks, timeouts),
+  clusters.go (impersonation without system: identities), audit.go,
+  notify.go (Slack/Teams/JSON webhooks), metrics.go, static.go (embedded UI,
+  CSP with hashes of index.html's inline scripts).
+- `pkg/config/server.go`: the `Server` resource; its JSON Schema
+  `docs/gitopsify-server.schema.json` (`make docs`, TestServerSchemaIsCurrent).
+- Secret values (W8): `checkSecretLeaks`/`pinSealedSecrets` in migrate.go,
+  the Secret-kind guard in pkg/transform, `pipeline.Options.ProtectSecrets`
+  (Protected Secrets, Helm value redaction: redactCredentials/redactURL);
+  all lifted by `runs.allowSecretValues`.
+- Secret files in archives: packDir never archives gitopsify's own
+  plaintext files (`ownSecretFile`: `.secrets/`, `*.secrets.auto.tfvars`);
+  other `*.secrets.*` files come from checkouts and are kept. Repositories
+  tracking the former are refused (`refuseTrackedSecrets`) before checkout
+  results and pushes.
+- Replicas (W9): runs are owned (createRun, owner-fenced updateRun,
+  heartbeat returns lost runs), reaped in SQL time (any stale run not in
+  the reaper's local set), pushes and deletes take `store.lockRun(id)` (a
+  lease in `lock_owner`/`lock_until`, renewed while held; no connection
+  held), outputs carry `OutputVersion` and replicas re-unpack older copies
+  (`output.version` marker, per-run `dirLocks`), listing (keyset paging)
+  and pruning in SQL, idle copies evicted (evictLoop, under the run lock).
+- Protected Secrets: `pipeline.Options.ProtectSecrets` (server) marks
+  sealed/SOPS Secrets gitopsify writes `model.Object.Protected`
+  (`protectSecrets`; chart-rendered ones aren't written, so not marked);
+  transforms can't rename them, jsonPatch ops other than add/remove/replace
+  are refused as written, and their values are restored after transforms
+  (refusing changes would be an oracle; a constant warning names the
+  transforms that targeted values). `gitopsify ui` sets
+  allowSecretValues (one person, like the CLI). Providers get `providerEnv`
+  (allowlist `spec.providers.env`, never the server's own secret
+  variables, found by reflection over the config: `settingEnvs`).
+- `ui/`: Nuxt 4 + Nuxt UI 4 SPA (`make ui` builds into web/dist, embedded by
+  `web/embed.go`; `make ui-dev` proxies a local server). Pages: overview,
+  migration wizard, export wizard, runs, run (log/apps/files/config/pushes),
+  clusters, tools (+provider catalog), audit, profile, login.
+- Tests: internal/server (fake OIDC provider, roles, tokens, runs, exports
+  with a fake provider, store conformance on files and PostgreSQL
+  (GITOPSIFY_TEST_POSTGRES), two replicas, review attack cases);
+  test/e2e/webui/run.sh (kind + Keycloak + Git server + Playwright, binary)
+  and chart.sh (image + chart, 2 replicas on PostgreSQL, impersonation).
+- Dev VM: `test/live/hetzner/devbox.sh up|sync|run|fetch|down` keeps a
+  Hetzner cx33 for the session (Node, Go, kind, Docker); `down` destroys it.
 
 ## What it is
 Go CLI (cobra + Charm huh/lipgloss) that turns a running cluster (or a
@@ -242,6 +303,10 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   `e2e-on-vm.sh destroy`.
 - Safety check in the agent shell: Python heredocs that contain shell-like
   test strings get blocked; write patch scripts to the scratchpad and run them.
+- Patch scripts that assert their anchors write nothing when one fails:
+  check their exit status and grep for the change before committing (a
+  round-8 commit once went out described but without its changes; a test
+  that ran too fast gave it away).
 - A heredoc delimiter inside a heredoc ends it early (an `EOF` in Python code
   inside `<<'EOF'` ran half the script as shell commands): use unique
   delimiters (`PYEOF`, `GOEOF`).
@@ -257,6 +322,265 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
   Helm 3 for golden builds; the apply script uses `helm upgrade --install`.
 - New Docker Hub repos are public on free accounts.
 
+## Verified (web UI, 2026-11-08)
+- Server tests pass (also with PostgreSQL 18 on the devbox:
+  `GITOPSIFY_TEST_POSTGRES=postgres://postgres:pw@127.0.0.1:5432/gitopsify?sslmode=disable`,
+  container `pg`), incl. TestReplicas and TestReplicaPushes (two replicas
+  push one run in turn through a git http-backend); `make lint`; UI
+  typecheck + generate.
+- e2e (binary, run.sh): Keycloak sign-in as operator/viewer/admin, scan,
+  apps, target, review, generate, push to a Git server (commit authored as
+  the person), viewer restrictions, audit log: 3/3 PASS. e2e (chart.sh):
+  the same against the image and chart, 2 replicas on PostgreSQL,
+  impersonation: 3/3 PASS.
+- Review rounds by fresh-context subagents: round 1 found 3 critical (git
+  remote as a command, symlinked checkouts writing outside the run,
+  cross-team pushes with shared credentials) and 14 required items, all
+  fixed (commit "PostgreSQL storage for replicas, and fixes from review").
+  Round 2 found 8 more (Secret values through jsonPatch copy / an
+  operator-chosen sealed-secrets controller / encryptedRegex / Helm values;
+  the notifier crashing on a URL with a newline and logging it; stale
+  output copies and unserialized pushes across replicas; reaping by pod
+  clock without fencing; listing/pruning capped at 5000; chart RBAC `get`
+  on `*` covering nodes/proxy; trustedProxies default; kubeadm: groups),
+  all fixed with tests, plus most optional items (commit "fixes from the
+  second review"). Round 3 confirmed those and found 5 more (tracked
+  `*.secrets.*` files dropped from archives so a push deleted them;
+  renaming sealed Secrets into an operator's namespace and `replace` as a
+  length oracle; advisory locks exhausting the pool; eviction/pruning
+  racing pushes; vendored chart values unredacted): fixed with tests
+  (commit "fixes from the third review"), re-verified on the devbox (PG
+  tests, run.sh 3/3, chart.sh 3/3 with each replica serving every run,
+  typecheck). Chart RBAC checked on kind: a list/watch-only
+  ServiceAccount scans fine; can-i denies nodes/proxy, pods/log, exec and
+  other services' proxies; allows only the sealed-secrets service proxy.
+  Round 4 confirmed round 3's lease locks and directory handling, and
+  found tracked `.secrets/` plaintext reaching the database and pushes, an
+  equality oracle through per-environment `set` on protected Secrets,
+  chart-owned Secrets blocking namespace renames, and a docs overclaim
+  (the protections cover runs' output, not targets: pushing to a target
+  repository is deploying to it): fixed (commit "fixes from the fourth
+  review"). Round 5 found the redaction rewrite regressed and redactURL
+  mishandled @ in passwords; round 6 found more chart shapes (env pairs,
+  fernetKey, replicaSetKey, secureJsonData, references such as GitLab's
+  {secret, key}), lease loss detected late and a dropped client skipping
+  the output: all fixed with tests (commits "fifth review" and "sixth
+  review"); round 6 found the server, store and transform code sound.
+  Round 7 (narrow, with fuzzing and 37 charts' default values) found a
+  bare `key` taken for a credential (tolerations) and later URLs in a
+  string missed, plus wrong redactions of settings: fixed (commit
+  "seventh review"). Round 8 (106 charts' values, defaults and every ""
+  filled in) found the lock changes correct and three more redaction
+  gaps (secretName siblings disabling a map, accessKeySecret, inline TLS
+  keys) plus a quadratic URL scan: fixed (commit "eighth review", with a
+  fuzz test). The review loop stopped there: rounds 5-8 only found
+  chart-specific redaction shapes; the heuristic is documented as such,
+  and the real fix is in TODO.md (encrypted values files).
+- GitHub release downloads returned 504 for every project on 2026-11-08
+  (from Hetzner, WSL and GitHub Actions); the Dockerfile now falls back to
+  the API asset endpoint (pinned asset IDs, same checksums), and the
+  `image` job passes. Bumping sops means updating the checksums and the
+  asset IDs (command in the Dockerfile).
+- GitGuardian on PR #2 flags test fixtures in earlier commits (a base64
+  Basic header in unit_test.go, the chart e2e's throwaway PostgreSQL
+  password): not real secrets; both are now computed/generated. Mark the
+  incidents as test fixtures in the GitGuardian dashboard, or squash-merge.
+
+- 2026-11-09, the user asked for a less generic look and a light/dark/system
+  switch: the UI follows IBM's Carbon Design System (palettes in
+  `ui/app/assets/css/main.css` as `carbon-*` Tailwind colors; White / Gray
+  100 themes as Nuxt UI variables; `--ui-radius: 0`; IBM Plex via
+  @fontsource, Latin + Latin Extended only; Carbon's primary button, side
+  nav selection, toggle track and darker tinted-badge text as compoundVariants
+  in `ui/app/app.config.ts`). UColorModeSelect in the sidebar footer and on
+  the sign-in page. The e2e saves every screenshot in both themes
+  (`<name>-dark.png`) and tests the color mode across a reload. Reviewed
+  (contrast fixed: dimmed text, tinted badges, toggle track). Unbundled:
+  Fontsource's .woff fallbacks still ship (a few hundred KB).
+- 2026-11-09, OpenTelemetry (user: "logs metrics and traces", CLI may
+  benefit too): `internal/telemetry` (official SDK, OTLP/HTTP only, standard
+  OTEL_* variables, off unless an endpoint or exporter is set), started in
+  the CLI root's PersistentPreRun (a span per command except server/ui,
+  flushed in Execute, 5 s max). Server: otelhttp on /api/ (spans renamed to
+  the route in the middleware), run spans as children of the starting
+  request, OTel instruments next to the Prometheus text, slog bridged
+  (otelslog) with trace_id/span_id on stderr. pkg/kube wraps client
+  transports. Chart: `opentelemetry.endpoint`/`env`. Docs:
+  docs/observability.md. Zero-code options were tested and rejected: OBI
+  (eBPF) needs a privileged agent; otelc (compile-time, v1.2.0) built with
+  Go 1.27 but named every span "GET" (our middleware hands the mux a copy of
+  the request), sent no HTTP metrics and no logs, printed two init lines on
+  every CLI command and patches the Go runtime. The binary grew ~11 MB
+  (85 to 96 MB): the OTLP collector protos pull in gRPC stubs, as with
+  otelc. Tests: internal/telemetry (otlptest receiver), server
+  TestTelemetry. Reviewed; fixed: a metric View drops server.address/port
+  from http.server.* (from the Host header), traceparent only from
+  trustedProxies (others: new root with a link; no Baggage propagator),
+  client.address set to the audit log's address, one bad signal setting
+  turns only that signal off, pkg/kube takes ConnectOptions.WrapTransport
+  (no internal import), no telemetry for completion/help, chart env merging
+  (GITOPSIFY_POD_NAME/NAMESPACE). Browser e2e passes with OTel on (SSE
+  through otelhttp). The runs.start/shutdown race is fixed (below).
+- devbox.sh: cx33 was unavailable everywhere on 2026-11-09; use
+  `SERVER_TYPE=cpx32`. `up` now stops when no location has the type.
+- 2026-11-09, full bug hunt (user: "identify all current bugs and fix
+  them"): six fresh-context reviewers over server HTTP, runs/storage,
+  pipeline, CLI/config/target, providers/IaC, UI/chart/CI; ~120 findings,
+  all fixed except the limits below; plus race detector over every package
+  (clean), staticcheck and govulncheck (now in CI; x/net bumped). Commits
+  "Fix bugs found by a full review" (five batches). Notable: a forged Helm
+  release could write outside the output or into .git (tree paths checked,
+  os.Root); usernameClaim: email took unverified addresses; migrate --env
+  deleted other environments' files and pushed; overlays lost list
+  removals (now strategic merge patches); runs.start raced shutdown;
+  PostgreSQL schema errors hung startup; exports never checked out their
+  repository; two dashboards could share one file. The bug list with the
+  fixes is in the commit messages; tests cover each where a test can.
+  A fresh-context review of the five commits then found: overlay patches
+  carried $setElementOrder directives kustomize copies into objects (now
+  stripped; patches kustomize can't apply become full copies; the golden
+  kustomize builds fail on any directive in the output), a no-op
+  NamespaceTransformer (reverted; the Argo single-Application limit is
+  documented), a TDZ error in the wizard's immediate watcher (the e2e now
+  opens /migrations/new?cluster= and fails on page errors), the server
+  missing the dropped-environments guard, repo-per-env repositories without
+  their own manifest (now written per repository), a too-broad helm-hooks
+  rule, plus smaller items; all fixed (sixth commit).
+- 2026-11-09, the user asked whether the chart should be "gitopsify
+  operator" on OperatorHub: it isn't an operator today (no CRDs), so the
+  name stays (Argo's charts are argo-cd/argo-workflows too; Artifact Hub
+  marks charts with "operator" in the name as operators). Artifact Hub
+  listing prepared: Chart.yaml annotations, charts/gitopsify/README.md,
+  artifacthub-repo.yml (fill in repositoryID and owners after adding the
+  repository on artifacthub.io: kind Helm charts, URL
+  oci://ghcr.io/hayone1/charts/gitopsify), and the release pushes it with
+  oras (tag artifacthub.io) after waiting for the image. The user then asked
+  for an operator design after Argo CD/Workflows (CRDs, a CLI that talks to
+  the server, UI): evaluated in the conversation (CLI remote mode: worth it;
+  CRDs + controller: only with scheduled drift capture; split CLI: no);
+  research notes in docs/DESIGN-operator-research.md.
+- 2026-11-09, the user decided: one CLI (no split), no CRDs, but scripts must
+  be able to run a periodic sync (e.g. a CronJob opening a PR); then "close
+  the feature gaps" of: generate-only manifests (existed), merging into an
+  existing repo with rules (was one fixed policy), and target-aware
+  generation (was check/diff/--adopt only). Built (commit "Remote CLI,
+  scheduled sync, merge rules, target-aware generation"):
+  - Remote CLI (W12): `gitopsify login|logout|whoami`, `gitopsify run
+    start|list|get|logs|wait|cancel|delete|download|publish`, `--remote`,
+    GITOPSIFY_REMOTE/GITOPSIFY_REMOTE_TOKEN (token only to that server),
+    saved sign-ins in <UserConfigDir>/gitopsify/servers.yaml (0600).
+    internal/remote (client, SSE follow with resume, browser login),
+    internal/cli/remote*.go. Server: CLI sign-in reuses the OIDC client and
+    callback; after SSO the browser lands on /cli-login (SameSite=Strict
+    pending cookie, `GET/POST /api/v1/auth/cli`) where the person confirms
+    with a check code the terminal also prints (server.CLICheckCode); then
+    a PKCE-bound code (sealed, 5 min) goes to 127.0.0.1 or is shown for
+    pasting (`--no-browser`), exchanged at `POST /api/v1/auth/token` for a
+    `gts_` bearer session (cookie contents, another sealing purpose, no
+    CSRF). Via "cli". No IdP change needed.
+  - Publishing to a PR branch: gitrepo.Options.PushTo (CLI `generate --push
+    --push-branch`, server `publish.branch`, UI push dialog). Nothing pushed
+    when the output equals the base (Unchanged) or the branch already has
+    it (UpToDate). Only `gitopsify/*` branches are ever replaced, and only
+    when every commit not in HEAD has the `Generated-by: gitopsify` trailer
+    (now on every gitopsify commit) with author == committer; other branches
+    only fast-forward. Replacements are audited with the old SHA.
+    `generate --exit-code` (2 = changed), `--dry-run` plan (+ ~ - =),
+    GITOPSIFY_PUSH_TOKEN for HTTPS pushes (bootstrap keeps GITOPSIFY_GIT_TOKEN).
+    gitrepo.SameRemote tolerates CI origins without .git.
+  - Merge rules: render.Tree.Write(dir, WriteOptions) plans then applies;
+    `.gitopsify/checksums.txt` (no .secrets/ hashes) and `encrypted.txt`;
+    `output.merge.edited` overwrite|keep|fail, `unmanaged` fail|overwrite
+    (= --force)|keep, `keep` globs (gitignore-like ** ); per-repository
+    state wins over the output's; gitopsify.yaml is never a hand edit; with
+    repo-per-env only the repositories' files count as changes. The written
+    gitopsify.yaml is config.Portable() (contexts only, no output.dir; on
+    the server the registered cluster names, config.NameClusters, also in
+    the run's stored spec); a config loaded from inside an output writes
+    into its folder. `.gitopsify/source.txt` holds the source's kube-system
+    UID: the CLI refuses to regenerate an output from another cluster
+    without --force (the server always writes with Force, so it doesn't
+    check).
+  - Stable ciphertext: secrets.Fingerprint (source UID + resourceVersion +
+    Secret with values blanked + settings + Protected; empty offline) per
+    env for SealedSecrets (plus secrets.Shape of the written object) and for
+    SOPS; Tree reuses the old file when the fingerprint matches and it wasn't
+    hand-edited. Key rotation (30 days) reseals once.
+  - Target-aware generation: `adopt.existing` include|skip-owned|skip
+    (`--existing`; skip needs argocd/flux), target.MarkExisting in
+    pipeline.Finish: per-env model.Object.Skip; overlays drop them with
+    `$patch: delete` patches (kubectl kustomize verified, CRs too); check and
+    diff see the same. Own apps (Argo tracking-id incl. ns_app, Argo label
+    tracking, Flux, migrated Helm releases) are never skipped; unserved kinds
+    count as absent; a Secret already there counts for the SealedSecret or
+    ExternalSecret that would make it. Chart objects are reported, not
+    skipped.
+  - Docs: docs/scheduled-sync.md (CronJob, GitHub Actions, server), web-ui.md
+    "From the command line", concepts.md (regenerating; existing objects),
+    configuration.md, README, DESIGN-webui W12. The docs pin GITOPSIFY_VERSION
+    v0.3.0 in the CI example: change it if the next release is named
+    otherwise.
+  - Reviewed by three fresh-context reviewers (security, merge logic,
+    UX/docs); all findings fixed except those under "Accepted" below.
+  - Skipped as not worth it now: gitopsify opening pull requests itself (git
+    host APIs; scripts use gh/curl), three-way merge of hand edits (needs the
+    previous generated content; `edited: keep` and `keep` globs cover the
+    common cases), an additive mode that keeps apps an earlier run generated
+    (would need re-reading the previous output's objects; widen the scope
+    or use separate output directories), auto-mapping missing
+    StorageClasses/IngressClasses to the target's defaults (silent
+    performance surprises; `check` names the transforms to add), output to
+    stdout (`kubectl apply -k` on the generated overlays does it).
+
+### Accepted / known limits (web UI)
+- Argo CD's single-Application pattern renders charts with kustomize, which
+  leaves objects without a namespace when the chart's templates set none
+  (documented in docs/gitops-tools.md: use app-of-apps or manifests mode).
+- gitopsify ui's sign-in page is a local file: snap/flatpak browsers can't
+  read it (the terminal says to open the printed address instead).
+- The run list reads each run's spec (json column) and drops it in Go: jsonb
+  would refuse runs with NUL characters.
+- runs.get reports a store error as "not found" (a database blip answers
+  404 to that request); live streams retry instead.
+- UI build-time npm advisories (esbuild's Windows dev server, glob,
+  minimatch, deepmerge in nitropack): pinned by Nuxt's build tools, not in
+  the embedded UI; revisit when Nuxt updates them.
+- Sessions can't be revoked one by one (rotate sessionKey).
+- Helm values are redacted by key name only (documented); release values
+  under other names reach the output.
+- Run logs are inserted a line at a time; maxQueuedPerUser can be passed by
+  a few simultaneous requests; audit paging by time can skip events sharing
+  the boundary timestamp.
+- With `git.repositories` empty, internal addresses are reachable as
+  remotes (warned at startup when roles are scoped).
+- A replica re-unpacking an output can break a download in progress on the
+  same replica (rare: only after another replica pushed that run).
+- A replica that dies while pushing blocks that run's pushes and deletion
+  for the lease (2 minutes). A replica that can't renew its lease for a
+  minute stops its push and doesn't store the output; archive writes
+  aren't fenced on the lease beyond that.
+- `session: {secret: <random hex>}` looks like a Secret name and stays;
+  a Secret named in `runners.secret`-style keys may be redacted. The run
+  warns about every redaction, so mistakes show.
+- CLI sessions (`gts_`) last sessionTTL and can't be revoked one by one,
+  like cookies; the sign-in code can be exchanged more than once within its
+  5 minutes (it is useless without the CLI's PKCE verifier).
+- Merge state: a write that fails halfway (disk error) leaves the old
+  checksums, so the files it did write look hand-edited next run; checkouts
+  with core.autocrlf look edited everywhere; a kept file that gitopsify no
+  longer generates becomes the user's, so generating it again later stops on
+  `unmanaged: fail`; an environment removed with --force leaves its
+  `<env>/.gitopsify/`.
+- `--dry-run` compares with the output directory as it is: with `--push` in
+  an empty directory everything is new (it doesn't clone).
+- GITOPSIFY_PUSH_TOKEN goes to the host of the configured repository:
+  whoever can change the configuration can point it elsewhere.
+- Helm value redaction is by names and shapes (keys, containers, env
+  pairs, URL passwords): reviewed against bitnami, grafana, argo-cd,
+  kube-prometheus-stack, velero, airflow and gitlab values over rounds
+  5-6; query-parameter and connection-string passwords aren't caught
+  (documented). A false positive shows in the run's warnings.
+
 ## Open / next (providers), in order
 1. GitGuardian incident 39798306 (PR #1) is a false positive (a SHA-256 file
    hash in a pre-squash commit); mark it so in the GitGuardian dashboard.
@@ -265,9 +589,9 @@ scripts/set-version.sh vX.Y.Z && git commit -am ... && git tag vX.Y.Z && git pus
    grafana` and `hayone1/grafana` verified in a clean home) and gitopsify
    v0.2.0 (installers verified on Linux/macOS/Windows by the workflow,
    Docker image published, `go install ...@v0.2.0` verified).
-3. TODO.md: registry website and web UI. Design proposals in
-   docs/DESIGN-registry.md and docs/DESIGN-webui.md wait for the user's answers
-   to their open questions (domain, stack, local-only, order).
+3. TODO.md: registry website (design proposal docs/DESIGN-registry.md waits
+   for the user's answers: domain, stack). The web UI is built on branch
+   `webui` (draft PR #2) for the user to review.
 4. Continuous use: three-way merge of re-exports with hand edits (the base
    is in export.json's file hashes), then a `gitopsify sync` loop or a
    controller reconciling `Export` resources (DESIGN-providers §11).

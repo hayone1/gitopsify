@@ -1,0 +1,32 @@
+{
+  "realm": "acme",
+  "enabled": true,
+  "sslRequired": "none",
+  "groups": [{"name": "platform"}, {"name": "shop"}],
+  "users": [
+    {"username": "ada", "enabled": true, "email": "ada@acme.io", "emailVerified": true, "firstName": "Ada", "lastName": "Lovelace",
+     "credentials": [{"type": "password", "value": "ada", "temporary": false}], "groups": ["/shop"]},
+    {"username": "bob", "enabled": true, "email": "bob@acme.io", "emailVerified": true, "firstName": "Bob", "lastName": "Viewer",
+     "credentials": [{"type": "password", "value": "bob", "temporary": false}]},
+    {"username": "root", "enabled": true, "email": "root@acme.io", "emailVerified": true, "firstName": "Root", "lastName": "Admin",
+     "credentials": [{"type": "password", "value": "root", "temporary": false}], "groups": ["/platform"]}
+  ],
+  "clients": [
+    {
+      "clientId": "gitopsify",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "gitopsify-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["*"],
+      "webOrigins": ["+"],
+      "attributes": {"pkce.code.challenge.method": "S256", "post.logout.redirect.uris": "+"},
+      "protocolMappers": [
+        {"name": "groups", "protocol": "openid-connect", "protocolMapper": "oidc-group-membership-mapper",
+         "config": {"claim.name": "groups", "full.path": "false", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true"}}
+      ]
+    }
+  ]
+}

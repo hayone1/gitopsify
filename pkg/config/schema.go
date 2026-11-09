@@ -32,6 +32,9 @@ var enums = map[string][]string{
 	"output.tool":                       {ToolNone, ToolArgoCD, ToolFlux},
 	"output.layout":                     {LayoutFolderPerEnv, LayoutRepoPerEnv},
 	"output.argocd.pattern":             {PatternAppOfApps, PatternApplicationSet, PatternSingle},
+	"output.merge.edited":               {MergeOverwrite, MergeKeep, MergeFail},
+	"adopt.existing":                    {ExistingInclude, ExistingSkipOwned, ExistingSkip},
+	"output.merge.unmanaged":            {MergeOverwrite, MergeKeep, MergeFail},
 }
 
 // ExportSchemaURL is where the JSON Schema of export files is published.
@@ -63,6 +66,36 @@ func exportSchema() map[string]any {
 	s := schemaOf(reflect.TypeOf(Export{}), "", exportEnums)
 	nameRule(s)
 	return s
+}
+
+// ServerSchemaURL is where the JSON Schema of the server's configuration is
+// published.
+const ServerSchemaURL = "https://raw.githubusercontent.com/hayone1/gitopsify/main/docs/gitopsify-server.schema.json"
+
+var serverEnums = map[string][]string{
+	"apiVersion":                    {APIVersion},
+	"kind":                          {KindServer},
+	"spec.auth.mode":                {AuthOIDC, AuthLocal},
+	"spec.rbac.defaultRole":         {RoleViewer, RoleOperator, RoleAdmin},
+	"spec.rbac.bindings[].role":     {RoleViewer, RoleOperator, RoleAdmin},
+	"spec.auth.tokens[].role":       {RoleViewer, RoleOperator, RoleAdmin},
+	"spec.storage.type":             {"file", "postgres"},
+	"spec.notifications[].format":   {"json", "slack", "teams"},
+	"spec.notifications[].events[]": {"run.succeeded", "run.failed", "run.canceled"},
+	"spec.notifications[].types[]":  {"scan", "migrate", "export"},
+}
+
+// ServerSchema returns the JSON Schema of the server's configuration (the
+// Server resource of gitopsify server).
+func ServerSchema() ([]byte, error) {
+	s := schemaOf(reflect.TypeOf(Server{}), "", serverEnums)
+	nameRule(s)
+	s["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+	s["$id"] = ServerSchemaURL
+	s["title"] = "gitopsify server"
+	s["description"] = "The configuration of gitopsify server: sign-in, roles, clusters, tools, Git, storage. Reference: https://github.com/hayone1/gitopsify/blob/main/docs/web-ui.md"
+	b, err := json.MarshalIndent(s, "", "  ")
+	return append(b, '\n'), err
 }
 
 // Schema returns the JSON Schema of gitopsify.yaml. It checks the Migration

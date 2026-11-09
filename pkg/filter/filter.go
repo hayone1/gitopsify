@@ -204,14 +204,12 @@ func Apply(inv *model.Inventory, opts Options) error {
 			o.Exclude(ScopeRule, "namespace not selected")
 		case !o.Namespaced && !o.IsNamespace() && cfg.Scope.ClusterScoped == "none":
 			o.Exclude(ScopeRule, "cluster-scoped objects disabled")
+		case selection && matchesSpecs(o, specs, sel, k):
+			o.Selected = true // named explicitly: cluster-scoped ones too
 		case !o.Namespaced && cfg.Scope.ClusterScoped == "auto" && NarrowScope(cfg):
 			o.Exclude(ScopeRule, "cluster-scoped and not referenced by migrated objects")
 		case selection:
-			if matchesSpecs(o, specs, sel, k) {
-				o.Selected = true
-			} else {
-				o.Exclude(ScopeRule, "not selected")
-			}
+			o.Exclude(ScopeRule, "not selected")
 		}
 	}
 

@@ -2,13 +2,17 @@ package render
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"reflect"
 	"sort"
+	"strings"
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/client-go/kubernetes/scheme"
 
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/helm"
@@ -32,7 +36,7 @@ func (r *renderer) renderApp(l layout, a *model.App) error {
 		if ao.out == nil {
 			continue // differs per environment; lives in the overlays
 		}
-		if err := r.writeObject(l.file(baseDir, ao.file), ao.o, ao.out); err != nil {
+		if err := r.writeObject(l.file(baseDir, ao.file), ao.o, ao.out, ""); err != nil {
 			return err
 		}
 		resources = append(resources, ao.file)
@@ -54,6 +58,9 @@ func (r *renderer) renderFlatApp(l layout, a *model.App, objs []*appObject, env 
 	dir := l.appEnv(a.Name, env.Name)
 	var resources []string
 	for _, ao := range objs {
+		if _, skip := ao.o.Skip[env.Name]; skip {
+			continue
+		}
 		u := ao.out
 		if e, ok := ao.o.EnvOut[env.Name]; ok {
 			u = r.decorate(e.DeepCopy(), a)
@@ -66,7 +73,7 @@ func (r *renderer) renderFlatApp(l layout, a *model.App, objs []*appObject, env 
 		if u == nil {
 			continue
 		}
-		if err := r.writeObject(l.file(dir, ao.file), ao.o, u); err != nil {
+		if err := r.writeObject(l.file(dir, ao.file), ao.o, u, env.Name); err != nil {
 			return err
 		}
 		resources = append(resources, ao.file)
@@ -86,8 +93,15 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 		changed bool
 	}
 	var list []envObject
+	var gone []*appObject // in the base, left out of this environment
 	full := false
 	for _, ao := range objs {
+		if _, skip := ao.o.Skip[env.Name]; skip {
+			if ao.out != nil {
+				gone = append(gone, ao)
+			}
+			continue
+		}
 		if e, ok := ao.o.EnvOut[env.Name]; ok {
 			list = append(list, envObject{ao: ao, u: r.decorate(e.DeepCopy(), a)})
 			continue
@@ -106,11 +120,31 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 		list = append(list, envObject{ao: ao, u: u, changed: changed})
 	}
 
+	// Patches first: one kustomize can't express makes full copies.
+	type envPatch struct {
+		e     envObject
+		patch map[string]any
+	}
+	var made []envPatch
+	if !full {
+		for _, e := range list {
+			if e.ao.out == nil || !e.changed {
+				continue
+			}
+			patch, err := mergePatch(e.ao.out, e.u)
+			if err != nil {
+				full = true // errNoPatch, or fields the typed object doesn't know
+				break
+			}
+			made = append(made, envPatch{e: e, patch: patch})
+		}
+	}
+
 	var resources []string
 	var patches []any
 	if full {
 		for _, e := range list {
-			if err := r.writeObject(l.file(dir, e.ao.file), e.ao.o, e.u); err != nil {
+			if err := r.writeObject(l.file(dir, e.ao.file), e.ao.o, e.u, env.Name); err != nil {
 				return err
 			}
 			resources = append(resources, e.ao.file)
@@ -120,21 +154,28 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 		for _, e := range list {
 			switch {
 			case e.ao.out == nil:
-				if err := r.writeObject(l.file(dir, e.ao.file), e.ao.o, e.u); err != nil {
+				if err := r.writeObject(l.file(dir, e.ao.file), e.ao.o, e.u, env.Name); err != nil {
 					return err
 				}
 				resources = append(resources, e.ao.file)
-			case e.changed:
-				patch, err := mergePatch(e.ao.out, e.u)
-				if err != nil {
-					return fmt.Errorf("computing the %s patch of %s: %w", env.Name, e.ao.o.Ref, err)
-				}
-				name := "patch-" + e.ao.file
-				if err := r.tree.AddYAML(l.file(dir, name), patch); err != nil {
-					return err
-				}
-				patches = append(patches, map[string]any{"path": name})
 			}
+		}
+		for _, m := range made {
+			name := "patch-" + m.e.ao.file
+			if err := r.tree.AddYAML(l.file(dir, name), m.patch); err != nil {
+				return err
+			}
+			patches = append(patches, map[string]any{"path": name})
+		}
+		// Objects of the base left out here: kustomize deletes them.
+		for _, ao := range gone {
+			name := "delete-" + ao.file
+			del := map[string]any{"$patch": "delete", "apiVersion": ao.out.GetAPIVersion(), "kind": ao.out.GetKind(),
+				"metadata": deleteMeta(ao.out)}
+			if err := r.tree.AddYAML(l.file(dir, name), del); err != nil {
+				return err
+			}
+			patches = append(patches, map[string]any{"path": name})
 		}
 	}
 	extra := map[string]any{}
@@ -144,10 +185,20 @@ func (r *renderer) renderOverlay(l layout, a *model.App, objs []*appObject, env 
 	return r.tree.AddYAML(l.file(dir, "kustomization.yaml"), kustomization(resources, extra))
 }
 
+func deleteMeta(u *unstructured.Unstructured) map[string]any {
+	m := map[string]any{"name": u.GetName()}
+	if ns := u.GetNamespace(); ns != "" {
+		m["namespace"] = ns
+	}
+	return m
+}
+
 // mergePatch returns a patch that turns base into env, identified by the
 // object's apiVersion, kind, name and namespace. Kustomize applies it as a
-// strategic merge patch for built-in kinds and as a JSON merge patch for
-// custom resources; both treat this content the same way.
+// strategic merge patch for built-in kinds, which merges lists such as
+// containers and env by key (removals need its directives), and as a JSON
+// merge patch for custom resources (lists replaced whole): the patch is
+// made the same way.
 func mergePatch(base, env *unstructured.Unstructured) (map[string]any, error) {
 	b, err := json.Marshal(base.Object)
 	if err != nil {
@@ -157,13 +208,27 @@ func mergePatch(base, env *unstructured.Unstructured) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, err := jsonpatch.CreateMergePatch(b, e)
+	var p []byte
+	typed, terr := scheme.Scheme.New(base.GroupVersionKind())
+	if terr == nil {
+		p, err = strategicpatch.CreateTwoWayMergePatch(b, e, typed)
+	} else {
+		p, err = jsonpatch.CreateMergePatch(b, e)
+	}
 	if err != nil {
 		return nil, err
 	}
 	patch := map[string]any{}
 	if err := json.Unmarshal(p, &patch); err != nil {
 		return nil, err
+	}
+	if terr == nil {
+		// kustomize (kyaml) applies $patch: delete and nulls, not the other
+		// directives: an order hint is dropped (the base's order stays),
+		// and a patch that needs the rest is written as full copies.
+		if !kustomizable(patch) {
+			return nil, errNoPatch
+		}
 	}
 	patch["apiVersion"] = base.GetAPIVersion()
 	patch["kind"] = base.GetKind()
@@ -179,15 +244,29 @@ func mergePatch(base, env *unstructured.Unstructured) (map[string]any, error) {
 	return patch, nil
 }
 
-// writeObject writes one object, encrypting it with SOPS when required.
-func (r *renderer) writeObject(p string, o *model.Object, u *unstructured.Unstructured) error {
+// writeObject writes one object (env's, or the base's when env is empty),
+// encrypting it with SOPS when required. Encrypted objects get a
+// fingerprint, so an unchanged Secret keeps its ciphertext.
+func (r *renderer) writeObject(p string, o *model.Object, u *unstructured.Unstructured, env string) error {
 	b, err := yamlutil.Marshal(u.Object)
 	if err != nil {
 		return err
 	}
+	if _, sealed := o.EnvOut[env]; sealed && env != "" && o.Fingerprints[env] != "" {
+		// What was sealed, and what is around it (sync options, waves).
+		r.tree.Fingerprint(p, o.Fingerprints[env]+"-"+secrets.Shape(u))
+	}
 	if o.Encrypt && u.GetKind() == "Secret" {
+		transforms := []any{r.cfg.Transforms}
+		for _, e := range r.cfg.Environments {
+			transforms = append(transforms, e.Transforms)
+		}
+		fp := secrets.Fingerprint(r.inv, o, u, "sops", transforms, r.cfg.Secrets.SOPS)
 		if b, err = secrets.Encrypt(r.cfg.Secrets.SOPS, b); err != nil {
 			return fmt.Errorf("encrypting %s: %w", o.Ref, err)
+		}
+		if fp != "" {
+			r.tree.Fingerprint(p, fp)
 		}
 	}
 	r.tree.Add(p, b)
@@ -215,8 +294,16 @@ func (r *renderer) renderHelmApp(l layout, a *model.App) error {
 		if err != nil {
 			return err
 		}
+		// The chart name and file names come from the release record, which
+		// anyone who can create Secrets in the namespace can forge.
+		if c := rel.Chart.Name; c == "" || c == "." || c == ".." || strings.ContainsAny(c, "/\\") {
+			return fmt.Errorf("helm release %s: chart name %q isn't a valid directory name; exclude the release or use helm.mode: manifests", rel.Key(), c)
+		}
 		names := make([]string, 0, len(files))
 		for n := range files {
+			if treePath(n) != nil {
+				return fmt.Errorf("helm release %s: chart file %q isn't a path inside the chart; exclude the release or use helm.mode: manifests", rel.Key(), n)
+			}
 			names = append(names, n)
 		}
 		sort.Strings(names)
@@ -255,6 +342,8 @@ func (r *renderer) kustomizeHelmApp(l layout, a *model.App) error {
 			"namespace":   rel.Namespace,
 			"valuesFile":  "values.yaml",
 			"includeCRDs": true,
+			// helm test hooks would run as plain Pods.
+			"skipTests": true,
 		}
 		extra := map[string]any{"helmCharts": []any{chart}}
 		if rel.Mode == model.HelmModeVendor {
@@ -368,4 +457,33 @@ func (r *renderer) chartRef(l layout, a *model.App) chartRef {
 	c.repoURL = rel.Repo.URL
 	c.oci = rel.Repo.IsOCI()
 	return c
+}
+
+// errNoPatch is an environment change kustomize can't apply as a patch.
+var errNoPatch = errors.New("not expressible as a kustomize patch")
+
+// kustomizable drops $setElementOrder directives from a strategic merge
+// patch (kustomize would copy them into the object) and reports whether
+// the patch uses only what kustomize applies.
+func kustomizable(v any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, c := range t {
+			switch {
+			case strings.HasPrefix(k, "$setElementOrder/"):
+				delete(t, k)
+			case strings.HasPrefix(k, "$deleteFromPrimitiveList/"), k == "$retainKeys":
+				return false
+			case !kustomizable(c):
+				return false
+			}
+		}
+	case []any:
+		for _, c := range t {
+			if !kustomizable(c) {
+				return false
+			}
+		}
+	}
+	return true
 }

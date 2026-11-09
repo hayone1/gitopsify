@@ -4,12 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/hayone1/gitopsify/internal/telemetry"
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/discovery"
 	"github.com/hayone1/gitopsify/pkg/kube"
@@ -28,6 +32,7 @@ const (
 
 // options holds every flag; each command registers the groups it uses.
 type options struct {
+	span       trace.Span // the command's, when telemetry is on
 	configFile string
 	noInput    bool
 	noColor    bool
@@ -84,6 +89,10 @@ type options struct {
 	envs        []string
 	adopt       bool
 	force       bool
+	keep        []string
+	existing    string
+	edited      string
+	unmanaged   string
 	argoVersion string
 	fluxVersion string
 	project     string
@@ -198,11 +207,29 @@ func (a *accessFlags) applyTo(fs *pflag.FlagSet, acc *config.Access) {
 	if set("in-cluster") {
 		acc.InCluster = a.inCluster
 	}
+	// A flag overrides the configuration, including the setting it can't
+	// be combined with (the configuration's other half goes).
+	if set("certificate-authority") {
+		acc.InsecureSkipTLSVerify = false
+	}
+	if set("insecure-skip-tls-verify") && a.insecure {
+		acc.CertificateAuthority = ""
+	}
+	if set("in-cluster") && a.inCluster {
+		acc.Kubeconfig, acc.Context = "", ""
+	}
+	if (set("context") || set("kubeconfig")) && !set("in-cluster") {
+		acc.InCluster = false
+	}
+	if set("token-file") {
+		acc.Token = ""
+	}
+	// Flag, then environment, then configuration.
 	switch {
 	case set("token"):
-		acc.Token = a.token
-	case acc.Token == "" && acc.TokenFile == "" && os.Getenv(a.tokenEnv) != "":
-		acc.Token = os.Getenv(a.tokenEnv)
+		acc.Token, acc.TokenFile = a.token, ""
+	case !set("token-file") && os.Getenv(a.tokenEnv) != "":
+		acc.Token, acc.TokenFile = os.Getenv(a.tokenEnv), ""
 	}
 }
 
@@ -286,13 +313,20 @@ func (o *options) addOutput(fs *pflag.FlagSet) {
 	fs.StringVar(&o.repoPath, "repo-path", "", "directory of the output inside the repository")
 	fs.StringArrayVar(&o.envs, "env", nil, "target environment: name or name=kube-context (repeatable)")
 	fs.BoolVar(&o.adopt, "adopt", false, "the target already runs these objects: generate takeover-safe sync settings")
-	fs.BoolVar(&o.force, "force", false, "write into a non-empty directory not created by gitopsify")
+	fs.StringVar(&o.existing, "existing", "", "objects already in an environment's cluster: include (default), skip-owned (leave out those another tool manages there) or skip (leave them all out)")
+	fs.BoolVar(&o.force, "force", false, "write into a non-empty directory not created by gitopsify (overwriting its files where gitopsify writes), or remove environments this run doesn't generate")
+	fs.StringArrayVar(&o.keep, "keep", nil, "never write or remove these paths of the output (globs: * within a directory, ** across; repeatable)")
+	fs.StringVar(&o.edited, "edited", "", "generated files changed by hand since gitopsify wrote them: overwrite (default, with a warning), keep or fail")
+	fs.StringVar(&o.unmanaged, "unmanaged", "", "files gitopsify didn't write where it writes: fail (default; overwrite with --force), overwrite or keep")
 	fs.StringVar(&o.argoVersion, "argocd-version", "", "Argo CD version to install (default "+config.DefaultArgoCDVersion+")")
 	fs.StringVar(&o.fluxVersion, "flux-version", "", "Flux version to install (default "+config.DefaultFluxVersion+")")
 	fs.StringVar(&o.project, "project", "", "Argo CD project (default gitopsify)")
 	fs.BoolVar(&o.noAutoSync, "no-auto-sync", false, "don't enable automated sync on Argo CD applications")
 	inGroup(fs, groupOutput, "output", "tool", "pattern", "layout", "repo-url", "revision", "repo-path", "env", "adopt",
-		"force", "argocd-version", "flux-version", "project", "no-auto-sync")
+		"existing", "force", "keep", "edited", "unmanaged", "argocd-version", "flux-version", "project", "no-auto-sync")
+	complete(fs, "edited", config.MergeOverwrite, config.MergeKeep, config.MergeFail)
+	complete(fs, "existing", config.ExistingInclude, config.ExistingSkipOwned, config.ExistingSkip)
+	complete(fs, "unmanaged", config.MergeFail, config.MergeOverwrite, config.MergeKeep)
 	complete(fs, "tool", config.ToolNone, config.ToolArgoCD, config.ToolFlux)
 	complete(fs, "pattern", config.PatternAppOfApps, config.PatternApplicationSet, config.PatternSingle)
 	complete(fs, "layout", config.LayoutFolderPerEnv, config.LayoutRepoPerEnv)
@@ -317,6 +351,12 @@ func (o *options) load(cmd *cobra.Command) (*config.Config, error) {
 		var err error
 		if cfg, err = config.Load(path); err != nil {
 			return nil, err
+		}
+		// The gitopsify.yaml an output keeps describes that output: it
+		// writes into the folder it sits in (older copies name a folder
+		// relative to wherever they were made).
+		if dir := filepath.Dir(path); fileExists(filepath.Join(dir, ".gitopsify", "generated.txt")) {
+			cfg.Output.Dir = dir
 		}
 	}
 	if err := o.apply(cmd.Flags(), cfg); err != nil {
@@ -452,7 +492,7 @@ func (o *options) apply(fs *pflag.FlagSet, cfg *config.Config) error {
 	}
 	out := &cfg.Output
 	if set("output") {
-		out.Dir = o.output
+		out.Dir = config.ExpandHome(o.output)
 	}
 	if set("tool") {
 		out.Tool = o.tool
@@ -487,6 +527,27 @@ func (o *options) apply(fs *pflag.FlagSet, cfg *config.Config) error {
 	}
 	if set("adopt") {
 		cfg.Adopt.Enabled = o.adopt
+	}
+	if set("existing") {
+		cfg.Adopt.Existing = o.existing
+	}
+	if set("keep") || set("edited") || set("unmanaged") {
+		if out.Merge == nil {
+			out.Merge = &config.Merge{}
+		}
+		if set("keep") {
+			for _, k := range o.keep {
+				if !slices.Contains(out.Merge.Keep, k) {
+					out.Merge.Keep = append(out.Merge.Keep, k)
+				}
+			}
+		}
+		if set("edited") {
+			out.Merge.Edited = o.edited
+		}
+		if set("unmanaged") {
+			out.Merge.Unmanaged = o.unmanaged
+		}
 	}
 	// --env defines environments on commands that generate; elsewhere it
 	// selects one (see envName).
@@ -573,7 +634,7 @@ func pair(flag, kv string) (string, string, error) {
 
 // connectOptions are the options of every cluster connection.
 func (o *options) connectOptions() kube.ConnectOptions {
-	return kube.ConnectOptions{NoInput: !o.ui().Interactive}
+	return kube.ConnectOptions{NoInput: !o.ui().Interactive, WrapTransport: telemetry.Transport}
 }
 
 // pipelineOptions returns the pipeline options for the source: a cluster, or
@@ -625,10 +686,14 @@ func (o *options) envName(cmd *cobra.Command, cfg *config.Config) (*config.Envir
 	return e, nil
 }
 
-// complete records the fixed shell completions of a flag; registerCompletions
-// attaches them to the commands that have it.
-func complete(_ *pflag.FlagSet, name string, values ...string) {
-	completions[name] = values
+// complete records the fixed shell completions of a flag of a flag set;
+// registerCompletions attaches them to the command that has the set. (Flags
+// of the same name differ between commands: --format, --tool.)
+func complete(fs *pflag.FlagSet, name string, values ...string) {
+	if completions[fs] == nil {
+		completions[fs] = map[string][]string{}
+	}
+	completions[fs][name] = values
 }
 
-var completions = map[string][]string{}
+var completions = map[*pflag.FlagSet]map[string][]string{}

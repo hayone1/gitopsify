@@ -1,0 +1,32 @@
+gitopsify is starting.
+
+{{- if .Values.ingress.enabled }}
+Open {{ .Values.server.externalURL | default (printf "https://%s" .Values.ingress.host) }}
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "gitopsify.fullname" . }} 8080:{{ .Values.service.port }}
+and open {{ .Values.server.externalURL | default "http://localhost:8080" }}
+{{- end }}
+
+{{- if eq (default "oidc" .Values.server.auth.mode) "oidc" }}
+
+Sign-ins go to {{ .Values.server.auth.oidc.issuer }}; register the redirect URL
+  {{ .Values.server.externalURL }}/api/v1/auth/callback
+with client ID {{ .Values.server.auth.oidc.clientID }}.
+{{- end }}
+{{- if and .Values.ingress.enabled (not .Values.server.trustedProxies) }}
+
+server.trustedProxies is empty: behind the ingress, every client looks
+like the ingress controller, so everyone shares its rate limits (sign-ins
+included) and the audit log records its address. Set it to the ingress
+controller's pod CIDR.
+{{- end }}
+{{- if and .Values.ingress.enabled (not .Values.server.metrics) }}
+
+/metrics is reachable through the ingress without a token: set
+server.metrics.token (and metrics.serviceMonitor.tokenSecret).
+{{- end }}
+{{- if not .Values.server.rbac.bindings }}
+
+No role bindings are set: people can sign in but do nothing until you add
+server.rbac.bindings (or server.rbac.defaultRole).
+{{- end }}

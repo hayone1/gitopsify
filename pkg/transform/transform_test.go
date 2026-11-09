@@ -2,6 +2,7 @@ package transform
 
 import (
 	"encoding/base64"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -135,6 +136,19 @@ spec: {ingressClassName: nginx}
 	if c, _, _ := unstructured.NestedString(ing.Object, "spec", "ingressClassName"); c != "traefik" || ing.GetAnnotations()["kubernetes.io/ingress.class"] != "traefik" {
 		t.Errorf("ingress class = %s / %v", c, ing.GetAnnotations())
 	}
+	// No annotations, and a map with an empty key: no panic, nothing added.
+	bare, bo := object(t, `
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: bare, namespace: shop}
+spec: {ingressClassName: nginx}
+`)
+	if _, err := Object(bare, bo, []config.Transform{{Type: "ingressClass", Map: map[string]string{"": "x", "nginx": "traefik"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bare.GetAnnotations()) != 0 {
+		t.Errorf("annotations added: %v", bare.GetAnnotations())
+	}
 }
 
 func TestValues(t *testing.T) {
@@ -169,6 +183,16 @@ func TestValues(t *testing.T) {
 	if values["replicas"] != 1 {
 		t.Error("Values must not modify its input")
 	}
+	// Targets by namespace and name pick releases; kinds pick objects.
+	rel := &model.App{Name: "web", Release: &model.HelmRelease{Name: "web", Namespace: "shop"}}
+	out, err = Values(map[string]any{"replicas": 1}, rel, []config.Transform{
+		{Type: "set", Path: "values.replicas", Value: 2, Target: &config.Selector{Namespaces: []string{"legacy"}}},
+		{Type: "set", Path: "values.replicas", Value: 3, Target: &config.Selector{Kinds: []string{"Deployment"}}},
+		{Type: "set", Path: "values.replicas", Value: 4, Target: &config.Selector{Namespaces: []string{"shop"}, Names: []string{"w*"}}},
+	})
+	if err != nil || fmt.Sprint(out["replicas"]) != "4" {
+		t.Errorf("targeted values: %v %v", out, err)
+	}
 }
 
 func TestParsePath(t *testing.T) {
@@ -191,4 +215,104 @@ func normalize(v any) any {
 	var out any
 	_ = yaml.Unmarshal(b, &out)
 	return out
+}
+
+// A Secret turned into another kind would skip the secrets strategy.
+func TestSecretKeepsKind(t *testing.T) {
+	u, o := object(t, "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop}\ndata: {k: c2FtcGxl}\n")
+	_, err := Object(u, o, []config.Transform{{Type: "set", Path: "kind", Value: "ConfigMap"}})
+	if err == nil {
+		t.Fatal("a Secret became a ConfigMap")
+	}
+	u, o = object(t, "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop}\ndata: {k: c2FtcGxl}\n")
+	if _, err := Object(u, o, []config.Transform{{Type: "namespace", Map: map[string]string{"shop": "store"}}}); err != nil || u.GetNamespace() != "store" {
+		t.Fatalf("namespace: %v %s", err, u.GetNamespace())
+	}
+}
+
+// Protected Secrets keep their namespace, name and data.
+func TestProtectedSecret(t *testing.T) {
+	const secret = "apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop, labels: {host: a.example.com}}\ndata: {k: c2FtcGxl}\nstringData: {url: https://a.example.com}\n"
+	u, o := object(t, secret)
+	o.Protected = true
+	if _, err := Object(u, o, []config.Transform{{Type: "replace", From: "^h.*", To: "", Regex: true}, {Type: "replace", From: "a.example.com", To: "b.example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	if d, _, _ := unstructured.NestedString(u.Object, "data", "k"); d != "c2FtcGxl" {
+		t.Errorf("data replaced: %s", d)
+	}
+	if s, _, _ := unstructured.NestedString(u.Object, "stringData", "url"); s != "https://a.example.com" {
+		t.Errorf("stringData replaced: %s", s)
+	}
+	if u.GetLabels()["host"] != "b.example.com" {
+		t.Errorf("labels: %v", u.GetLabels())
+	}
+	for _, tr := range []config.Transform{
+		{Type: "namespace", Map: map[string]string{"shop": "mine"}},
+		{Type: "set", Path: "metadata.name", Value: "other"},
+		{Type: "jsonPatch", Patch: []map[string]any{{"op": "replace", "path": "/metadata/namespace", "value": "mine"}}},
+	} {
+		u, o := object(t, secret)
+		o.Protected = true
+		if _, err := Object(u, o, []config.Transform{tr}); err == nil {
+			t.Errorf("%s %s moved a protected Secret", tr.Type, tr.Path)
+		}
+	}
+	// Values come out unchanged whatever is set (a right guess and a wrong
+	// one look the same).
+	for _, tr := range []config.Transform{
+		{Type: "set", Path: "data.k", Value: "c2FtcGxl"},
+		{Type: "set", Path: "data.k", Value: "d3Jvbmc="},
+		{Type: "jsonPatch", Patch: []map[string]any{{"op": "replace", "path": "/stringData/url", "value": "x"}}},
+		{Type: "remove", Path: "data.k"},
+		{Type: "set", Path: "data.extra", Value: "eA=="},
+	} {
+		u, o := object(t, secret)
+		o.Protected = true
+		changed, err := Object(u, o, []config.Transform{tr})
+		d, _, _ := unstructured.NestedStringMap(u.Object, "data")
+		sd, _, _ := unstructured.NestedStringMap(u.Object, "stringData")
+		if err != nil || changed || len(d) != 1 || d["k"] != "c2FtcGxl" || sd["url"] != "https://a.example.com" {
+			t.Errorf("%s %s: changed %v, %v, data %v %v", tr.Type, tr.Path, changed, err, d, sd)
+		}
+	}
+	// Ops that read values are refused as written; value changes warn.
+	u, o = object(t, secret)
+	o.Protected = true
+	if _, err := Object(u, o, []config.Transform{{Type: "jsonPatch", Patch: []map[string]any{{"op": "copy", "from": "/data/k", "path": "/metadata/labels/x"}}}}); err == nil {
+		t.Error("jsonPatch copy on a protected Secret")
+	}
+	u, o = object(t, secret)
+	o.Protected = true
+	if _, err := Object(u, o, []config.Transform{{Type: "set", Path: "data.k", Value: "eA=="}, {Type: "set", Path: "metadata.labels.a", Value: "b"}}); err != nil || len(o.Warnings) != 1 || u.GetLabels()["a"] != "b" {
+		t.Errorf("warnings %v, %v, labels %v", o.Warnings, err, u.GetLabels())
+	}
+	// A protected Secret's SealedSecret keeps its identity too.
+	u, o = object(t, "apiVersion: bitnami.com/v1alpha1\nkind: SealedSecret\nmetadata: {name: db, namespace: shop}\n")
+	o.Ref.Kind, o.Ref.Group, o.Protected = "Secret", "", true
+	if _, err := Object(u, o, []config.Transform{{Type: "namespace", Map: map[string]string{"shop": "mine"}}}); err == nil {
+		t.Error("a protected SealedSecret moved")
+	}
+	// Unprotected (the CLI): namespaces move and data is replaced.
+	u, o = object(t, secret)
+	if _, err := Object(u, o, []config.Transform{{Type: "namespace", Map: map[string]string{"shop": "mine"}}, {Type: "replace", From: "sample", To: "x"}}); err != nil || u.GetNamespace() != "mine" {
+		t.Errorf("unprotected: %v %s", err, u.GetNamespace())
+	}
+}
+
+// Swapping namespaces rewrites DNS names in one pass: a.svc and b.svc
+// trade places, whatever the map order.
+func TestNamespaceSwap(t *testing.T) {
+	for range 20 {
+		cm, _ := object(t, `
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: c, namespace: a}
+data: {x: "db.a.svc:5432 cache.b.svc.cluster.local"}
+`)
+		Namespace(cm, map[string]string{"a": "b", "b": "a"})
+		if v, _, _ := unstructured.NestedString(cm.Object, "data", "x"); v != "db.b.svc:5432 cache.a.svc.cluster.local" {
+			t.Fatalf("rewritten: %q", v)
+		}
+	}
 }

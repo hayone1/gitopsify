@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -24,6 +26,20 @@ import (
 // and reports whether anything changed.
 func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform) (bool, error) {
 	before, _ := json.Marshal(u.Object)
+	secret := u.GetAPIVersion() == "v1" && u.GetKind() == "Secret"
+	// A protected Secret's values come out as they went in, whatever the
+	// transforms do: a change that depends on the value (an overlay of
+	// patches or of full copies, an error or none) would tell whether a
+	// guess was right.
+	var values map[string]any
+	if secret && o.Protected {
+		values = map[string]any{}
+		for _, f := range []string{"data", "stringData"} {
+			if v, ok := u.Object[f]; ok {
+				values[f] = deepCopy(v)
+			}
+		}
+	}
 	for i, t := range ts {
 		ok, err := match.SelectorOrAll(t.Target, o, o.App)
 		if err != nil {
@@ -32,15 +48,83 @@ func Object(u *unstructured.Unstructured, o *model.Object, ts []config.Transform
 		if !ok {
 			continue
 		}
-		if err := apply(u, t); err != nil {
+		if secret && o.Protected {
+			// Decided by the transform as written, never by its effect.
+			if t.Type == "jsonPatch" {
+				for _, op := range t.Patch {
+					if name, _ := op["op"].(string); name != "add" && name != "remove" && name != "replace" {
+						return false, fmt.Errorf("transform %d (jsonPatch) on %s: %q isn't allowed on a Secret whose values are protected", i, o.Ref, name)
+					}
+				}
+			}
+			if msg := fmt.Sprintf("transform %d (%s) doesn't change this Secret's values: they are protected (an admin can allow Secret values)", i, t.Type); touchesValues(t) && !slices.Contains(o.Warnings, msg) {
+				o.Warnings = append(o.Warnings, msg)
+			}
+		}
+		if err := apply(u, t, secret && o.Protected); err != nil {
 			return false, fmt.Errorf("transform %d (%s) on %s: %w", i, t.Type, o.Ref, err)
+		}
+	}
+	// A Secret that became another kind would skip the secrets strategy,
+	// and its values would be written as they are.
+	if secret && (u.GetAPIVersion() != "v1" || u.GetKind() != "Secret") {
+		if o.Protected { // what it became could hold a value
+			return false, fmt.Errorf("transforms change the kind of Secret %s: a Secret must stay a Secret", o.Ref)
+		}
+		return false, fmt.Errorf("transforms change Secret %s into %s %s: a Secret must stay a Secret", o.Ref, u.GetAPIVersion(), u.GetKind())
+	}
+	// Protected Secrets (and their SealedSecrets) keep their identity,
+	// which sealing binds to.
+	if o.Protected && (u.GetNamespace() != o.Ref.Namespace || u.GetName() != o.Ref.Name) {
+		return false, fmt.Errorf("transforms move Secret %s to another namespace or name: its values are protected, so it keeps them (an admin can allow Secret values)", o.Ref)
+	}
+	if values != nil {
+		for _, f := range []string{"data", "stringData"} {
+			if v, ok := values[f]; ok {
+				u.Object[f] = v
+			} else {
+				delete(u.Object, f)
+			}
 		}
 	}
 	after, _ := json.Marshal(u.Object)
 	return string(before) != string(after), nil
 }
 
-func apply(u *unstructured.Unstructured, t config.Transform) error {
+// touchesValues reports whether a transform, as written, sets or removes a
+// Secret's values (or reads them, for jsonPatch).
+func touchesValues(t config.Transform) bool {
+	under := func(p, sep string) bool {
+		for _, f := range []string{"data", "stringData"} {
+			if p == sep+f || strings.HasPrefix(p, sep+f+sep) || strings.HasPrefix(p, sep+f+"[") {
+				return true
+			}
+		}
+		return false
+	}
+	switch t.Type {
+	case "set", "remove":
+		p := strings.TrimPrefix(t.Path, ".")
+		for _, f := range []string{"data", "stringData"} {
+			if strings.HasPrefix(p, `["`+f+`"]`) || strings.HasPrefix(p, `['`+f+`']`) {
+				return true
+			}
+		}
+		return under("."+p, ".")
+	case "jsonPatch":
+		for _, op := range t.Patch {
+			for _, k := range []string{"path", "from"} {
+				if p, _ := op[k].(string); under(p, "/") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// apply applies one transform; protected leaves a Secret's values alone.
+func apply(u *unstructured.Unstructured, t config.Transform, protected bool) error {
 	obj := u.Object
 	switch t.Type {
 	case "replace":
@@ -52,6 +136,7 @@ func apply(u *unstructured.Unstructured, t config.Transform) error {
 		for k, v := range obj {
 			switch {
 			case k == "apiVersion" || k == "kind":
+			case protected && (k == "data" || k == "stringData"):
 			case k == "metadata":
 				m, _ := v.(map[string]any)
 				for mk, mv := range m {
@@ -107,9 +192,11 @@ func apply(u *unstructured.Unstructured, t config.Transform) error {
 		if u.GroupVersionKind().GroupKind().String() == "Ingress.networking.k8s.io" {
 			mapField(obj, t.Map, "spec", "ingressClassName")
 			a := u.GetAnnotations()
-			if to, ok := t.Map[a["kubernetes.io/ingress.class"]]; ok {
-				a["kubernetes.io/ingress.class"] = to
-				u.SetAnnotations(a)
+			if from, ok := a["kubernetes.io/ingress.class"]; ok {
+				if to, ok := t.Map[from]; ok {
+					a["kubernetes.io/ingress.class"] = to
+					u.SetAnnotations(a)
+				}
 			}
 		}
 	case "namespace":
@@ -200,16 +287,60 @@ func Namespace(u *unstructured.Unstructured, m map[string]string) {
 	if webhooks != nil {
 		_ = unstructured.SetNestedSlice(obj, webhooks, "webhooks")
 	}
-	for from, to := range m {
-		re := regexp.MustCompile(`\.` + regexp.QuoteMeta(from) + `(\.svc(\.cluster\.local)?)\b`)
-		r := func(s string) string { return re.ReplaceAllString(s, "."+to+"$1") }
-		if spec, ok := obj["spec"]; ok {
-			obj["spec"] = replaceStrings(spec, r)
-		}
-		if data, ok := obj["data"]; ok && gk == "ConfigMap" {
-			obj["data"] = replaceStrings(data, r)
+	// One pass for every namespace: swaps (a: b, b: a) and chains don't
+	// depend on map order.
+	if len(m) == 0 {
+		return
+	}
+	froms := make([]string, 0, len(m))
+	for from := range m {
+		if from != "" {
+			froms = append(froms, regexp.QuoteMeta(from))
 		}
 	}
+	if len(froms) == 0 {
+		return
+	}
+	sort.Slice(froms, func(i, j int) bool {
+		return len(froms[i]) > len(froms[j]) || len(froms[i]) == len(froms[j]) && froms[i] < froms[j]
+	})
+	re := regexp.MustCompile(`\.(` + strings.Join(froms, "|") + `)(\.svc(\.cluster\.local)?)\b`)
+	r := func(s string) string {
+		return re.ReplaceAllStringFunc(s, func(hit string) string {
+			sub := re.FindStringSubmatch(hit)
+			return "." + m[sub[1]] + sub[2]
+		})
+	}
+	if spec, ok := obj["spec"]; ok {
+		obj["spec"] = replaceStrings(spec, r)
+	}
+	if data, ok := obj["data"]; ok && gk == "ConfigMap" {
+		obj["data"] = replaceStrings(data, r)
+	}
+}
+
+// valuesTarget reports whether a transform's target covers a release's
+// values: by app, the release's namespace and name. Kinds and label
+// selectors pick objects, not values.
+func valuesTarget(sel *config.Selector, app *model.App) bool {
+	if sel == nil {
+		return true
+	}
+	if len(sel.Kinds) > 0 || sel.LabelSelector != "" {
+		return false
+	}
+	if len(sel.Apps) > 0 && !match.Glob(sel.Apps, app.Name) {
+		return false
+	}
+	if rel := app.Release; rel != nil {
+		if len(sel.Namespaces) > 0 && !match.Glob(sel.Namespaces, rel.Namespace) {
+			return false
+		}
+		if len(sel.Names) > 0 && !match.Glob(sel.Names, rel.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 // Values applies the transforms that affect Helm values to a copy of values.
@@ -222,7 +353,7 @@ func Values(values map[string]any, app *model.App, ts []config.Transform) (map[s
 		if !config.True(t.HelmValues, true) {
 			continue
 		}
-		if t.Target != nil && len(t.Target.Apps) > 0 && !match.Glob(t.Target.Apps, app.Name) {
+		if !valuesTarget(t.Target, app) {
 			continue
 		}
 		switch t.Type {

@@ -14,6 +14,8 @@ Every command reads `./gitopsify.yaml` when it exists (or `--config`); flags ove
 | [`gitopsify export`](#gitopsify-export) | Turn a tool's live state (Grafana, ...) into Terraform or Crossplane |
 | [`gitopsify generate`](#gitopsify-generate) | Write the GitOps repository |
 | [`gitopsify init`](#gitopsify-init) | Describe a migration in gitopsify.yaml (interactive on a terminal) |
+| [`gitopsify login`](#gitopsify-login) | Sign in to a gitopsify server |
+| [`gitopsify logout`](#gitopsify-logout) | Forget the sign-in to a gitopsify server |
 | [`gitopsify migrate`](#gitopsify-migrate) | Generate, push, check and bootstrap in one go |
 | [`gitopsify provider`](#gitopsify-provider) | Find, install and inspect providers (Grafana, ...) for gitopsify export |
 | [`gitopsify provider info`](#gitopsify-provider-info) | Show what a provider reads and what it needs to connect |
@@ -22,13 +24,27 @@ Every command reads `./gitopsify.yaml` when it exists (or `--config`); flags ove
 | [`gitopsify provider remove`](#gitopsify-provider-remove) | Uninstall a provider |
 | [`gitopsify provider search`](#gitopsify-provider-search) | Search the provider index |
 | [`gitopsify rules`](#gitopsify-rules) | List the built-in exclusion rules |
+| [`gitopsify run`](#gitopsify-run) | Start and follow migrations and exports on a gitopsify server |
+| [`gitopsify run cancel`](#gitopsify-run-cancel) | Stop a queued or working run |
+| [`gitopsify run delete`](#gitopsify-run-delete) | Delete a finished run and its files |
+| [`gitopsify run download`](#gitopsify-run-download) | Download the files a run wrote |
+| [`gitopsify run get`](#gitopsify-run-get) | Show a run |
+| [`gitopsify run list`](#gitopsify-run-list) | List runs, newest first |
+| [`gitopsify run logs`](#gitopsify-run-logs) | Print a run's log |
+| [`gitopsify run publish`](#gitopsify-run-publish) | Push a run's output to its Git repository |
+| [`gitopsify run start`](#gitopsify-run-start) | Start a migration, scan or export on the server |
+| [`gitopsify run wait`](#gitopsify-run-wait) | Wait for a run to end; exit 1 when it or its push failed |
 | [`gitopsify scan`](#gitopsify-scan) | Inventory the source cluster: what would be migrated, how, and what is left out |
+| [`gitopsify server`](#gitopsify-server) | Run the shared web server (single sign-on, roles, audit log) |
+| [`gitopsify server token`](#gitopsify-server-token) | Make an API token for automation |
 | [`gitopsify skills`](#gitopsify-skills) | Install the gitopsify skills for AI coding agents (Claude Code, Codex, Gemini CLI, Cursor, Copilot) |
 | [`gitopsify skills install`](#gitopsify-skills-install) | Copy the skills to where your AI coding agents find them |
 | [`gitopsify skills list`](#gitopsify-skills-list) | List the bundled skills |
 | [`gitopsify skills show`](#gitopsify-skills-show) | Print a skill's SKILL.md |
 | [`gitopsify status`](#gitopsify-status) | Show whether Argo CD or Flux has synced every app of an environment |
+| [`gitopsify ui`](#gitopsify-ui) | Open the web UI on this machine |
 | [`gitopsify version`](#gitopsify-version) | Print the version |
+| [`gitopsify whoami`](#gitopsify-whoami) | Show who you are on a gitopsify server, and your roles |
 | `gitopsify completion bash\|zsh\|fish\|powershell` | Shell completion scripts |
 
 ## gitopsify adopt
@@ -48,7 +64,7 @@ Pair it with "generate --adopt", which writes takeover-safe sync settings.
 Usage: `gitopsify adopt [flags]`
 
 ```sh
-  gitopsify adopt --env prod --helm-records backup-delete
+  gitopsify adopt -o gitops --env prod --helm-records backup-delete
 ```
 
 **Flags**
@@ -58,6 +74,7 @@ Usage: `gitopsify adopt [flags]`
 | `--backup-dir` | `.gitopsify-backup/helm-records` | where backups are written |
 | `--dry-run` |  | show what would happen |
 | `--helm-records` | `backup` | keep, backup or backup-delete |
+| `-o`, `--output` |  | directory of the generated repository, whose gitopsify.yaml names the GitOps tool |
 | `-y`, `--yes` |  | don't ask for confirmation |
 
 **Scope**
@@ -497,9 +514,12 @@ Usage: `gitopsify doctor [flags]`
 |---|---|---|
 | `--adopt` |  | the target already runs these objects: generate takeover-safe sync settings |
 | `--argocd-version` |  | Argo CD version to install (default v3.5.6) |
+| `--edited` |  | generated files changed by hand since gitopsify wrote them: overwrite (default, with a warning), keep or fail |
 | `--env` |  | target environment: name or name=kube-context (repeatable) |
+| `--existing` |  | objects already in an environment's cluster: include (default), skip-owned (leave out those another tool manages there) or skip (leave them all out) |
 | `--flux-version` |  | Flux version to install (default v2.9.6) |
-| `--force` |  | write into a non-empty directory not created by gitopsify |
+| `--force` |  | write into a non-empty directory not created by gitopsify (overwriting its files where gitopsify writes), or remove environments this run doesn't generate |
+| `--keep` |  | never write or remove these paths of the output (globs: * within a directory, ** across; repeatable) |
 | `--layout` |  | environment layout: folder-per-env or repo-per-env |
 | `--no-auto-sync` |  | don't enable automated sync on Argo CD applications |
 | `-o`, `--output` |  | output directory (default ./gitops) |
@@ -509,6 +529,7 @@ Usage: `gitopsify doctor [flags]`
 | `--repo-url` |  | Git repository the output is pushed to |
 | `--revision` |  | Git branch (default main) |
 | `--tool` |  | GitOps tool: none, argocd or flux |
+| `--unmanaged` |  | files gitopsify didn't write where it writes: fail (default; overwrite with --force), overwrite or keep |
 
 **Target cluster access**
 
@@ -606,7 +627,17 @@ Maturity levels:
                   Argo CD bootstrap (--pattern app-of-apps|applicationset|single)
   --tool flux     plus Flux Kustomizations, HelmReleases and a pinned Flux bootstrap
 
-Re-running it updates the files it generated and keeps files you added.
+Re-running it updates the files it generated and keeps files you added. Files
+changed by hand since gitopsify wrote them are overwritten with a warning
+(--edited keep|fail), files it didn't write where it writes stop the run
+(--unmanaged overwrite|keep), and --keep paths are never touched (all three are
+spec.output.merge in gitopsify.yaml).
+
+For scheduled runs (a CronJob or CI job that opens a pull request):
+--push-branch pushes to a branch of its own, only when the output changed, and
+--exit-code exits with status 2 when files changed. Sealed and SOPS-encrypted
+Secrets keep their ciphertext while the Secret doesn't change, so an unchanged
+cluster gives an unchanged repository.
 ```
 
 Usage: `gitopsify generate [flags]`
@@ -625,13 +656,17 @@ Usage: `gitopsify generate [flags]`
 
   # Argo CD takes over the cluster it was exported from
   gitopsify generate --tool argocd --adopt --env prod=prod --repo-url ...
+
+  # nightly: regenerate and push to a pull request branch when anything changed
+  gitopsify generate -c gitops/gitopsify.yaml -o gitops --push --push-branch gitopsify/drift
 ```
 
 **Flags**
 
 | Flag | Default | |
 |---|---|---|
-| `--dry-run` |  | list the files that would be written |
+| `--dry-run` |  | show what would be written, changed and removed, without writing |
+| `--exit-code` |  | exit with status 2 when the output changed (or, with --dry-run, would change) |
 | `-i`, `--interactive` |  | choose the apps to migrate interactively |
 
 **Scope**
@@ -697,9 +732,12 @@ Usage: `gitopsify generate [flags]`
 |---|---|---|
 | `--adopt` |  | the target already runs these objects: generate takeover-safe sync settings |
 | `--argocd-version` |  | Argo CD version to install (default v3.5.6) |
+| `--edited` |  | generated files changed by hand since gitopsify wrote them: overwrite (default, with a warning), keep or fail |
 | `--env` |  | target environment: name or name=kube-context (repeatable) |
+| `--existing` |  | objects already in an environment's cluster: include (default), skip-owned (leave out those another tool manages there) or skip (leave them all out) |
 | `--flux-version` |  | Flux version to install (default v2.9.6) |
-| `--force` |  | write into a non-empty directory not created by gitopsify |
+| `--force` |  | write into a non-empty directory not created by gitopsify (overwriting its files where gitopsify writes), or remove environments this run doesn't generate |
+| `--keep` |  | never write or remove these paths of the output (globs: * within a directory, ** across; repeatable) |
 | `--layout` |  | environment layout: folder-per-env or repo-per-env |
 | `--no-auto-sync` |  | don't enable automated sync on Argo CD applications |
 | `-o`, `--output` |  | output directory (default ./gitops) |
@@ -709,6 +747,7 @@ Usage: `gitopsify generate [flags]`
 | `--repo-url` |  | Git repository the output is pushed to |
 | `--revision` |  | Git branch (default main) |
 | `--tool` |  | GitOps tool: none, argocd or flux |
+| `--unmanaged` |  | files gitopsify didn't write where it writes: fail (default; overwrite with --force), overwrite or keep |
 
 **Git**
 
@@ -716,7 +755,8 @@ Usage: `gitopsify generate [flags]`
 |---|---|---|
 | `--commit` |  | git init (if needed) and commit the output |
 | `--message` | `Generated by gitopsify` | commit message |
-| `--push` |  | commit and push the output to --repo-url |
+| `--push` |  | commit and push the output to --repo-url (with your git credentials, or $GITOPSIFY_PUSH_TOKEN over HTTPS) |
+| `--push-branch` |  | with --push: push to this branch instead of --revision, for a pull request; nothing is pushed when the output didn't change |
 
 **Target cluster access**
 
@@ -831,9 +871,12 @@ Usage: `gitopsify init [flags]`
 |---|---|---|
 | `--adopt` |  | the target already runs these objects: generate takeover-safe sync settings |
 | `--argocd-version` |  | Argo CD version to install (default v3.5.6) |
+| `--edited` |  | generated files changed by hand since gitopsify wrote them: overwrite (default, with a warning), keep or fail |
 | `--env` |  | target environment: name or name=kube-context (repeatable) |
+| `--existing` |  | objects already in an environment's cluster: include (default), skip-owned (leave out those another tool manages there) or skip (leave them all out) |
 | `--flux-version` |  | Flux version to install (default v2.9.6) |
-| `--force` |  | write into a non-empty directory not created by gitopsify |
+| `--force` |  | write into a non-empty directory not created by gitopsify (overwriting its files where gitopsify writes), or remove environments this run doesn't generate |
+| `--keep` |  | never write or remove these paths of the output (globs: * within a directory, ** across; repeatable) |
 | `--layout` |  | environment layout: folder-per-env or repo-per-env |
 | `--no-auto-sync` |  | don't enable automated sync on Argo CD applications |
 | `-o`, `--output` |  | output directory (default ./gitops) |
@@ -843,6 +886,69 @@ Usage: `gitopsify init [flags]`
 | `--repo-url` |  | Git repository the output is pushed to |
 | `--revision` |  | Git branch (default main) |
 | `--tool` |  | GitOps tool: none, argocd or flux |
+| `--unmanaged` |  | files gitopsify didn't write where it writes: fail (default; overwrite with --force), overwrite or keep |
+
+
+## gitopsify login
+
+Sign in to a gitopsify server.
+
+```text
+Signs in to a gitopsify server (gitopsify server, or its Helm chart) and makes it
+the one the run commands talk to.
+
+With single sign-on it opens your browser. Where the browser can't reach this
+machine (SSH sessions, containers), --no-browser prints the address and asks for
+the code the server's page shows. --token-stdin signs in with an API token from
+gitopsify server token instead.
+
+Sign-ins are saved, readable by you only, in servers.yaml in your configuration
+directory ($GITOPSIFY_REMOTE_CONFIG). Logging in to a saved server whose sign-in
+is still valid makes it the current one again; --renew signs in afresh.
+
+In CI and CronJobs, skip login: set GITOPSIFY_REMOTE to the address and
+GITOPSIFY_REMOTE_TOKEN to an API token.
+```
+
+Usage: `gitopsify login [address | name] [flags]`
+
+```sh
+  gitopsify login gitopsify.example.com
+  gitopsify login gitopsify.example.com --no-browser       # over SSH
+  gitopsify server token --name me --role operator          # (an admin) then:
+  echo "$TOKEN" | gitopsify login gitopsify.example.com --token-stdin
+  gitopsify login staging                                    # switch to a saved server
+```
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--name` |  | name to save the server under (default: its host) |
+| `--no-browser` |  | print the sign-in address and ask for the code the page shows (SSH sessions, containers) |
+| `--remote-ca` |  | CA file (PEM) the server's certificate is checked against |
+| `--remote-insecure-skip-tls-verify` |  | don't verify the server's certificate (test servers only) |
+| `--renew` |  | sign in again even if the saved sign-in is still valid |
+| `--token-stdin` |  | read an API token from standard input instead of signing in with the browser |
+
+
+## gitopsify logout
+
+Forget the sign-in to a gitopsify server.
+
+```text
+Removes a saved sign-in (by default the current one) from this machine. A
+session token stays valid on the server until it expires, and an API token until
+an admin removes it from the Server resource.
+```
+
+Usage: `gitopsify logout [name] [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--all` |  | forget every saved sign-in |
 
 
 ## gitopsify migrate
@@ -936,9 +1042,12 @@ Usage: `gitopsify migrate [flags]`
 |---|---|---|
 | `--adopt` |  | the target already runs these objects: generate takeover-safe sync settings |
 | `--argocd-version` |  | Argo CD version to install (default v3.5.6) |
+| `--edited` |  | generated files changed by hand since gitopsify wrote them: overwrite (default, with a warning), keep or fail |
 | `--env` |  | target environment: name or name=kube-context (repeatable) |
+| `--existing` |  | objects already in an environment's cluster: include (default), skip-owned (leave out those another tool manages there) or skip (leave them all out) |
 | `--flux-version` |  | Flux version to install (default v2.9.6) |
-| `--force` |  | write into a non-empty directory not created by gitopsify |
+| `--force` |  | write into a non-empty directory not created by gitopsify (overwriting its files where gitopsify writes), or remove environments this run doesn't generate |
+| `--keep` |  | never write or remove these paths of the output (globs: * within a directory, ** across; repeatable) |
 | `--layout` |  | environment layout: folder-per-env or repo-per-env |
 | `--no-auto-sync` |  | don't enable automated sync on Argo CD applications |
 | `-o`, `--output` |  | output directory (default ./gitops) |
@@ -948,6 +1057,7 @@ Usage: `gitopsify migrate [flags]`
 | `--repo-url` |  | Git repository the output is pushed to |
 | `--revision` |  | Git branch (default main) |
 | `--tool` |  | GitOps tool: none, argocd or flux |
+| `--unmanaged` |  | files gitopsify didn't write where it writes: fail (default; overwrite with --force), overwrite or keep |
 
 **Git**
 
@@ -955,7 +1065,7 @@ Usage: `gitopsify migrate [flags]`
 |---|---|---|
 | `--commit` |  | git init (if needed) and commit the output |
 | `--message` | `Generated by gitopsify` | commit message |
-| `--push` |  | commit and push the output to --repo-url |
+| `--push` |  | commit and push the output to --repo-url (with your git credentials, or $GITOPSIFY_PUSH_TOKEN over HTTPS) |
 
 **Bootstrap**
 
@@ -1100,6 +1210,201 @@ Lists the rules that leave system and controller-generated objects out. Disable 
 Usage: `gitopsify rules [flags]`
 
 
+## gitopsify run
+
+Start and follow migrations and exports on a gitopsify server.
+
+```text
+Runs migrations, scans and exports on a gitopsify server instead of this machine:
+the server reaches the clusters, tools and Git repositories with its own
+credentials, checks your role, and keeps the log, the files and an audit trail,
+as in its web UI.
+
+Sign in first (gitopsify login), or set GITOPSIFY_REMOTE and GITOPSIFY_REMOTE_TOKEN.
+```
+
+```sh
+  gitopsify run start -c gitopsify.yaml --follow
+  gitopsify run start -c gitopsify.yaml --publish --branch gitopsify/drift --wait
+  gitopsify run list --status failed
+  gitopsify run logs -f 01JC...
+  gitopsify run download 01JC... -o ./out
+```
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--remote` |  | gitopsify server: a name from gitopsify login, or an address (default: the current one, or $GITOPSIFY_REMOTE) |
+
+
+## gitopsify run cancel
+
+Stop a queued or working run.
+
+Usage: `gitopsify run cancel <id> [flags]`
+
+
+## gitopsify run delete
+
+Delete a finished run and its files.
+
+Usage: `gitopsify run delete <id> [flags]`
+
+
+## gitopsify run download
+
+Download the files a run wrote.
+
+```text
+Downloads the files a migration or export wrote on the server into a new
+directory (-o; default <name>-<id>). Secret values the server keeps (git-ignored
+files) aren't included.
+```
+
+Usage: `gitopsify run download <id> [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `-o`, `--output` |  | directory to write into; must be new or empty (default <name>-<id>) |
+
+
+## gitopsify run get
+
+Show a run.
+
+Usage: `gitopsify run get <id> [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--format` | `table` | output format: table, json or yaml |
+
+
+## gitopsify run list
+
+List runs, newest first.
+
+Usage: `gitopsify run list [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--cluster` |  | only runs on this cluster |
+| `--created-by` |  | only runs started by this user |
+| `--format` | `table` | output format: table, json or yaml |
+| `--limit` | `30` | at most this many (up to 500) |
+| `--status` |  | only runs with this status: queued, running, succeeded, failed or canceled |
+| `--type` |  | only this type: scan, migrate or export |
+
+
+## gitopsify run logs
+
+Print a run's log.
+
+Usage: `gitopsify run logs <id> [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `-f`, `--follow` |  | keep printing until the run ends |
+
+
+## gitopsify run publish
+
+Push a run's output to its Git repository.
+
+```text
+Commits a succeeded migration's or export's files and pushes them to the
+repository the run names. --branch pushes to that branch instead, for a pull
+request: nothing is pushed when the output doesn't differ from the run's branch,
+and a branch holding only gitopsify's commits is replaced. Exits 1 when a push
+failed.
+```
+
+Usage: `gitopsify run publish <id> [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--branch` |  | push to this branch instead, for a pull request |
+| `--format` | `table` | output format: table (for people), json or yaml (the run) |
+| `--message` |  | commit message (default: names the run) |
+
+
+## gitopsify run start
+
+Start a migration, scan or export on the server.
+
+```text
+Sends a Migration (gitopsify.yaml) or an Export resource (--config) to the
+server and starts it there.
+
+Migrations: the source cluster is --cluster, or the file's spec.source.context,
+by the name the server registers it under; environments name registered clusters
+in cluster.context. The server reaches them with its own credentials, so the
+file's other access settings (kubeconfig, tokens) are left out. --scan only
+inventories the cluster.
+
+Exports: the tool is --tool, a tool registered on the server (default: the
+file's only instance); --repo-url is where the output can be pushed.
+
+--publish pushes the output when the run succeeds; with --branch, to that
+branch instead of the one Argo CD or Flux follows, for a pull request: nothing
+is pushed when the output doesn't differ, and a branch holding only gitopsify's
+commits is replaced. --wait waits for the end and exits 1 when the run or the
+push failed; --follow also prints the log.
+```
+
+Usage: `gitopsify run start [flags]`
+
+```sh
+  gitopsify run start --follow
+  gitopsify run start -c uat.yaml --cluster test --publish --wait
+  # nightly, for a pull request (see docs/scheduled-sync.md)
+  gitopsify run start --publish --branch gitopsify/drift --wait -q
+  gitopsify run start -c gitopsify-grafana.yaml --tool grafana-prod --repo-url https://github.com/acme/grafana.git
+```
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--allow-partial` |  | write an export even if the provider couldn't read everything |
+| `--branch` |  | with --publish: push to this branch instead, for a pull request |
+| `--cluster` |  | source cluster, by its name on the server (default: the file's spec.source.context) |
+| `-f`, `--follow` |  | print the run's log until it ends (implies --wait) |
+| `--format` | `table` | output format: table (for people), json or yaml (the run) |
+| `--message` |  | commit message (default: names the run) |
+| `--publish` |  | push the output when the run succeeds |
+| `--repo-branch` |  | branch of --repo-url (default main) |
+| `--repo-url` |  | Git repository an export's output is pushed to |
+| `--scan` |  | only scan the cluster: what would be migrated, how, and what is left out |
+| `--timeout` | `2h0m0s` | with --wait: give up after this long (the run goes on) |
+| `--tool` |  | tool an export reads, by its name on the server (default: the file's only instance) |
+| `--wait` |  | wait for the run to end; exit 1 when it or its push failed |
+
+
+## gitopsify run wait
+
+Wait for a run to end; exit 1 when it or its push failed.
+
+Usage: `gitopsify run wait <id> [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--format` | `table` | output format: table (for people), json or yaml (the run) |
+| `--timeout` | `2h0m0s` | give up after this long (the run goes on) |
+
+
 ## gitopsify scan
 
 Inventory the source cluster: what would be migrated, how, and what is left out.
@@ -1166,6 +1471,51 @@ Usage: `gitopsify scan [flags]`
 | `--namespace-map` |  | rename namespaces: from=to (repeatable) |
 | `--replace` |  | replace a string everywhere, also in Helm values: from=to (repeatable) |
 | `--storage-class` |  | map StorageClasses: from=to (repeatable) |
+
+
+## gitopsify server
+
+Run the shared web server (single sign-on, roles, audit log).
+
+```text
+Runs gitopsify's web UI and API for a team: people sign in with OpenID Connect
+(Dex, Keycloak, Okta, Entra ID, Google...), get roles per cluster from their
+groups, and every action lands in an audit log. Runs (scans and migrations)
+work in the background and are kept in the data directory.
+
+The configuration is a Server resource (--config, default
+/etc/gitopsify/server.yaml); docs/web-ui.md describes it, and the Helm chart in
+charts/gitopsify deploys it in a cluster.
+```
+
+Usage: `gitopsify server [flags]`
+
+```sh
+  gitopsify server --config server.yaml
+  gitopsify server token --name ci --role operator
+```
+
+
+## gitopsify server token
+
+Make an API token for automation.
+
+```text
+Prints a new API token and the spec.auth.tokens entry that admits it. The server
+stores only the token's SHA-256; keep the token itself in your CI's secrets and
+send it as "Authorization: Bearer <token>".
+```
+
+Usage: `gitopsify server token [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--cluster` |  | limit the token to these clusters (globs) |
+| `--name` | `automation` | the token's name, as the audit log shows it |
+| `--role` | `operator` | viewer, operator or admin |
+| `--tool` |  | limit the token to these tools (globs) |
 
 
 ## gitopsify skills
@@ -1287,11 +1637,62 @@ Usage: `gitopsify status [flags]`
 | `--target-token-file` |  | file with a bearer token for the target cluster |
 
 
+## gitopsify ui
+
+Open the web UI on this machine.
+
+```text
+Starts the web UI on localhost for you alone and opens it in the browser. It uses
+the clusters of your kubeconfig, as the CLI does, and keeps its runs in
+--data-dir.
+
+For a shared, multi-user server with single sign-on, roles and an audit log,
+run gitopsify server (or the Helm chart) instead.
+```
+
+Usage: `gitopsify ui [flags]`
+
+```sh
+  gitopsify ui
+  gitopsify ui --listen 127.0.0.1:8080 --no-browser
+```
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--data-dir` |  | where runs are kept (default: the user cache directory) |
+| `--kubeconfig` |  | kubeconfig whose contexts the UI offers (default: KUBECONFIG or ~/.kube/config) |
+| `--listen` | `127.0.0.1:0` | address to listen on (localhost only; port 0 picks a free one) |
+| `--no-browser` |  | print the address instead of opening the browser |
+
+
 ## gitopsify version
 
 Print the version.
 
 Usage: `gitopsify version [flags]`
+
+
+## gitopsify whoami
+
+Show who you are on a gitopsify server, and your roles.
+
+```text
+Asks the current gitopsify server (or --remote) who you are signed in as and
+which roles you have on its clusters and tools. --all lists the saved sign-ins
+instead, without asking any server.
+```
+
+Usage: `gitopsify whoami [flags]`
+
+**Flags**
+
+| Flag | Default | |
+|---|---|---|
+| `--all` |  | list the saved sign-ins |
+| `--format` | `table` | output format: table, json or yaml |
+| `--remote` |  | gitopsify server: a name from gitopsify login, or an address (default: the current one, or $GITOPSIFY_REMOTE) |
 
 
 ## Global flags

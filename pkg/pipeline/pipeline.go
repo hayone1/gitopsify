@@ -5,6 +5,7 @@ package pipeline
 import (
 	"context"
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/hayone1/gitopsify/pkg/clean"
@@ -29,6 +31,7 @@ import (
 	"github.com/hayone1/gitopsify/pkg/portability"
 	"github.com/hayone1/gitopsify/pkg/render"
 	"github.com/hayone1/gitopsify/pkg/secrets"
+	"github.com/hayone1/gitopsify/pkg/target"
 	"github.com/hayone1/gitopsify/pkg/transform"
 )
 
@@ -52,7 +55,15 @@ type Options struct {
 	Log func(format string, args ...any)
 	// Version of gitopsify, written into generated files.
 	Version string
+	// ProtectSecrets keeps Secret values from being learnt from the output
+	// (the server sets it unless an admin allows Secret values): Secrets
+	// written encrypted are Protected from transforms, and Helm values
+	// that look like credentials are replaced with RedactedValue.
+	ProtectSecrets bool
 }
+
+// RedactedValue replaces Helm values ProtectSecrets removes.
+const RedactedValue = "<redacted by gitopsify: set from a Secret>"
 
 // Result is the outcome of a run.
 type Result struct {
@@ -112,6 +123,9 @@ func Scan(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	ExcludeApps(inv, cfg.Scope.ExcludeApps)
+	if opts.ProtectSecrets {
+		protectSecrets(inv, cfg)
+	}
 	if err := applyGlobalTransforms(inv, cfg); err != nil {
 		return nil, err
 	}
@@ -143,11 +157,15 @@ func Finish(ctx context.Context, opts Options, res *Result) error {
 	if err := order.Run(res.Inventory, cfg); err != nil {
 		return err
 	}
+	if err := markExisting(ctx, &opts, res.Inventory); err != nil {
+		return err
+	}
 	opts.log("rendering %d apps for %s", len(res.Inventory.Apps), cfg.Output.Tool)
 	tree, err := render.Render(res.Inventory, render.Options{Config: cfg, Secrets: sres, Version: opts.Version})
 	if err != nil {
 		return err
 	}
+	tree.SourceID = res.Inventory.Source.ID
 	res.Tree = tree
 	return nil
 }
@@ -156,7 +174,7 @@ func discover(ctx context.Context, opts *Options) (*model.Inventory, *discovery.
 	cfg := opts.Config
 	if opts.Offline != nil {
 		opts.log("reading %d objects from %s", len(opts.Offline), opts.OfflineName)
-		inv := &model.Inventory{Source: model.ClusterInfo{Context: "offline", Server: opts.OfflineName}}
+		inv := &model.Inventory{Source: model.ClusterInfo{Context: "offline", Server: opts.OfflineName, Offline: true}}
 		return inv, discovery.FromObjects(opts.Offline), nil
 	}
 	src := opts.Source
@@ -171,6 +189,12 @@ func discover(ctx context.Context, opts *Options) (*model.Inventory, *discovery.
 		return nil, nil, fmt.Errorf("connecting to the source cluster %s: %w", src.Server, err)
 	}
 	inv := &model.Inventory{Source: model.ClusterInfo{Context: src.Context, Server: src.Server, Version: version}}
+	// The cluster's identity, whatever address reaches it: kube-system's UID.
+	if src.Kubernetes != nil {
+		if ns, err := src.Kubernetes.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{}); err == nil {
+			inv.Source.ID = string(ns.UID)
+		}
+	}
 	dopts, err := discoveryOptions(cfg)
 	if err != nil {
 		return nil, nil, err
@@ -389,14 +413,463 @@ func resolveCharts(ctx context.Context, inv *model.Inventory, cfg *config.Config
 		for _, r := range refs {
 			rel.Warnings = append(rel.Warnings, fmt.Sprintf("%s differs from the chart's manifest at %s; the GitOps tool will reset it to the chart's value", r, strings.Join(drift[r], ", ")))
 		}
-		for _, p := range credentialPaths(rel.Values, "") {
+		if opts.ProtectSecrets {
+			if ps := redactCredentials(rel.Values, ""); len(ps) > 0 {
+				rel.Warnings = append(rel.Warnings, fmt.Sprintf("values %s look like credentials and were redacted; set them from a Secret (Flux valuesFrom, an encrypted values file) before syncing", strings.Join(ps, ", ")))
+			}
+			if rel.Mode == model.HelmModeVendor {
+				// The vendored chart's own values.yaml is written too.
+				if ps := redactCredentials(rel.ChartValues, ""); len(ps) > 0 {
+					rel.Warnings = append(rel.Warnings, fmt.Sprintf("the vendored chart's values %s look like credentials and were redacted", strings.Join(ps, ", ")))
+				}
+			}
+		}
+		for _, p := range credentialPaths(rel.Values, "", false) {
 			rel.Warnings = append(rel.Warnings, fmt.Sprintf("values key %s looks like a credential and will be committed to Git; move it to a Secret (valuesFrom) or encrypt it", p))
 		}
 	}
 	return nil
 }
 
-func credentialPaths(v any, prefix string) []string {
+// credentialName reports whether a values key names a credential (and not
+// a reference to one, such as existingSecret or passwordKey, or image pull
+// secrets).
+func credentialName(k, parent string) bool {
+	l := strings.ToLower(k)
+	return (credentialKey.MatchString(k) || redactKey.MatchString(k)) && !strings.Contains(l, "secretname") &&
+		!strings.HasSuffix(l, "ref") && !strings.Contains(l, "existing") && !strings.HasSuffix(l, "passwordkey") &&
+		!strings.Contains(l, "pullsecret") && !secretNameKey(l) && !keySetting.MatchString(k) &&
+		!strings.Contains(strings.ToLower(parent), "secretkeys") && !strings.EqualFold(parent, "keys") &&
+		!strings.Contains(strings.ToLower(parent), "expiry")
+}
+
+// leafSetting is keySetting under a credential container, where URLs and
+// files (SLACK_WEBHOOK_URL, keyfile) are values the user put there.
+var leafSetting = regexp.MustCompile(`(?i)(path|issuer|ttl|expiry|expiration|selector|algorithm|rotationpolicy|duration|size|length|timeout|interval|enabled|type|mode|format|policy|provider|backend|audience)s?$`)
+
+// privateKeyPEM reports PEM-encoded private keys, wherever they are.
+func privateKeyPEM(s string) bool {
+	return strings.Contains(s, "-----BEGIN") && strings.Contains(s, "PRIVATE KEY-----")
+}
+
+// keySetting matches keys about a credential rather than holding one
+// (token_url, bearer_token_file, tokenIssuer, secretFieldSelector).
+var keySetting = regexp.MustCompile(`(?i)(url|uri|file|path|issuer|ttl|expiry|expiration|selector|algorithm|rotationpolicy|duration|size|length|timeout|interval|enabled|type|mode|format|policy|provider|backend|endpoint|audience)s?$`)
+
+// redactKey adds credentials known by other names (Airflow's fernetKey and
+// connection pass, MongoDB's replicaSetKey, LDAP bind passwords, Grafana's
+// secureJsonData, Argo CD's repository keys, alerting integration keys).
+var redactKey = regexp.MustCompile(`(?i)(passphrase|fernet|bindpw|replicasetkey|securejsondata|tlsclientcertkey|tlsclientkey|serviceaccountkey|routing_key|service_key|user_key|integrationkey|(^|[_.-])pass$|dsn$|[_.-]key$)`)
+
+// secretNameKey reports keys whose string is the name of a Secret.
+func secretNameKey(l string) bool {
+	for _, suffix := range []string{"fromsecret", "certificatessecret", "certificatesecret", "tlssecret", "certsecret", "secretnames",
+		"privatekeysecret", "passwordsecretkey", "configsecretkey", "varssecret", "scriptssecret", "accountsecret",
+		"accountsecretkey", "admintokensecret"} {
+		if strings.HasSuffix(l, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// container reports keys whose maps and lists hold credentials: their last
+// word is one (secrets, extraSecrets, credentials; not passwordUpdateJob).
+func container(k string) bool {
+	l := strings.ToLower(k)
+	if l == "securejsondata" || strings.HasSuffix(l, "securejsondata") {
+		return true
+	}
+	switch strings.TrimSuffix(lastWord(k), "s") {
+	case "secret", "credential", "password", "token", "key", "apikey":
+		return !strings.Contains(l, "pullsecret")
+	}
+	return false
+}
+
+// lastWord returns the last word of a key, lowercased: camelCase,
+// snake_case, kebab-case and dotted.
+func lastWord(k string) string {
+	i := len(k)
+	for i > 0 {
+		c := k[i-1]
+		if c == '_' || c == '-' || c == '.' {
+			break
+		}
+		if c >= 'A' && c <= 'Z' && i < len(k) && k[i] >= 'a' && k[i] <= 'z' {
+			i--
+			break
+		}
+		i--
+	}
+	return strings.ToLower(strings.TrimLeft(k[i:], "_-."))
+}
+
+// redactCredentials replaces values that look like credentials with
+// RedactedValue and returns their paths: strings under credential keys,
+// and the strings of maps under keys whose last word is a credential
+// (secrets, credentials, secureJsonData) but names, references and
+// settings; numbers under keys ending like a credential (adminPin,
+// apiKey; not passwordMinLength or tokenTTL); the value of name/value
+// pairs (env lists) whose name holds a credential but isn't a setting
+// (DB_PASSWORD, FERNET_KEY; not TOKEN_TTL or TOKEN_URL); and the passwords
+// of URLs anywhere in strings.
+func redactCredentials(v any, prefix string) []string {
+	var out []string
+	join := func(k string) string {
+		if prefix == "" {
+			return k
+		}
+		return prefix + "." + k
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		if referenceShape(t) {
+			return nil
+		}
+		if n, ok := t["name"].(string); ok && envCredential(n) && redactable(t["value"]) {
+			t["value"] = RedactedValue
+			out = append(out, join("value"))
+		}
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parent := prefix[strings.LastIndex(prefix, ".")+1:]
+		_, tlsPair := t["cert"]
+		for _, c := range []string{"crt", "certificate", "ca"} {
+			_, ok := t[c]
+			tlsPair = tlsPair || ok
+		}
+		for _, k := range keys {
+			if skipSubtree(k) {
+				continue
+			}
+			switch x := t[k].(type) {
+			case string:
+				// An inline TLS private key: {cert, key} (not a file path).
+				inlineKey := k == "key" && tlsPair && !strings.HasPrefix(x, "/")
+				if (credentialName(k, parent) || inlineKey || privateKeyPEM(x)) && redactable(x) {
+					t[k] = RedactedValue
+					out = append(out, join(k))
+				} else if r, ok := redactURLs(x); ok {
+					t[k] = r
+					out = append(out, join(k))
+				}
+			case map[string]any:
+				if container(k) && credentialName(k, parent) {
+					out = append(out, redactLeaves(x, join(k))...)
+				}
+				out = append(out, redactCredentials(x, join(k))...)
+			case []any:
+				if container(k) && credentialName(k, parent) {
+					out = append(out, redactLeaves(x, join(k))...) // maps in it; strings are names
+				}
+				out = append(out, redactCredentials(x, join(k))...)
+			default:
+				if numberCredential(k) && redactable(x) {
+					t[k] = RedactedValue
+					out = append(out, join(k))
+				}
+			}
+		}
+	case []any:
+		for i, c := range t {
+			if s, ok := c.(string); ok {
+				if privateKeyPEM(s) {
+					t[i] = RedactedValue
+					out = append(out, fmt.Sprintf("%s[%d]", prefix, i))
+				} else if r, ok := redactURLs(s); ok {
+					t[i] = r
+					out = append(out, fmt.Sprintf("%s[%d]", prefix, i))
+				}
+				continue
+			}
+			out = append(out, redactCredentials(c, fmt.Sprintf("%s[%d]", prefix, i))...)
+		}
+	}
+	return out
+}
+
+// redactLeaves redacts the strings in a map under a credential container,
+// but names, references and settings. Lists of strings are left alone:
+// under such keys they are names (Secrets to mount).
+func redactLeaves(v any, prefix string) []string {
+	var out []string
+	switch t := v.(type) {
+	case map[string]any:
+		if referenceShape(t) {
+			return nil
+		}
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if skipSubtree(k) || reference(k) || settingKeys[strings.ToLower(k)] || secretNameKey(strings.ToLower(k)) || leafSetting.MatchString(k) ||
+				strings.EqualFold(k, "keys") || strings.Contains(strings.ToLower(k), "secretkeys") { // key names in a Secret
+				continue
+			}
+			if s, ok := t[k].(string); ok {
+				if redactable(s) {
+					t[k] = RedactedValue
+					out = append(out, prefix+"."+k)
+				}
+				continue
+			}
+			out = append(out, redactLeaves(t[k], prefix+"."+k)...)
+		}
+	case []any:
+		for i, c := range t {
+			if _, ok := c.(string); !ok {
+				out = append(out, redactLeaves(c, fmt.Sprintf("%s[%d]", prefix, i))...)
+			}
+		}
+	}
+	return out
+}
+
+// referenceShape reports maps that point at a Secret ({name, key},
+// GitLab's {secret, key}) rather than hold a value.
+func referenceShape(m map[string]any) bool {
+	if len(m) == 0 {
+		return false
+	}
+	if _, ok := m["secretName"]; ok {
+		// A Secret volume, a TLS block or an env entry names one; a map
+		// with other keys (external-dns' {apiToken, secretName: ""}) holds
+		// values next to it.
+		for k := range m {
+			switch k {
+			case "secretName", "secretKey", "key", "envName", "items", "defaultMode", "optional", "hosts", "name", "mountPath", "subPath", "readOnly":
+			default:
+				return false
+			}
+		}
+		return true
+	}
+	if _, key := m["key"]; key {
+		if _, path := m["path"]; path { // a volume's items: {key, path, mode}
+			for k := range m {
+				if k != "key" && k != "path" && k != "mode" {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	for k, v := range m {
+		switch k {
+		case "name", "secret", "key", "optional", "secretName", "enabled":
+		default:
+			return false
+		}
+		if _, ok := v.(map[string]any); ok {
+			return false
+		}
+	}
+	_, named := m["name"]
+	_, secret := m["secret"]
+	_, key := m["key"]
+	_, secretName := m["secretName"]
+	return (named || secret || secretName) && (key || len(m) == 1 || secret || secretName)
+}
+
+// skipSubtree reports keys whose values are never credentials: metadata,
+// references to Secrets, image pull secrets.
+func skipSubtree(k string) bool {
+	l := strings.ToLower(k)
+	return strings.HasSuffix(l, "annotations") || strings.HasSuffix(l, "labels") || l == "valuefrom" ||
+		strings.HasSuffix(l, "ref") || strings.Contains(l, "pullsecret") || l == "envfrom"
+}
+
+// reference reports keys whose strings name or point at something.
+func reference(k string) bool {
+	l := strings.ToLower(k)
+	return strings.HasSuffix(l, "name") || strings.HasPrefix(l, "existing") || strings.HasSuffix(l, "passwordkey") ||
+		strings.HasSuffix(l, "tokenkey")
+}
+
+// settingKeys are settings of a Secret, not values, under credential keys.
+var settingKeys = map[string]bool{"create": true, "enabled": true, "mountpath": true, "subpath": true, "path": true, "type": true,
+	"mode": true, "defaultmode": true, "driver": true, "prefix": true, "provider": true, "format": true, "encoding": true,
+	"refreshinterval": true, "namespace": true, "kind": true, "apiversion": true, "scope": true, "immutable": true,
+	"resourcespreset": true, "image": true, "resources": true, "env": true, "algorithm": true, "rotationpolicy": true}
+
+// envCredential reports env variable names that hold a credential:
+// DB_PASSWORD, SECRET_KEY_BASE, FERNET_KEY, SENTRY_DSN; not settings about
+// one (TOKEN_TTL, PASSWORD_FILE, API_KEY_ID, TOKEN_URL).
+func envCredential(n string) bool {
+	return (credentialKey.MatchString(n) || envCredentialEnd.MatchString(n)) && !envSetting.MatchString(n)
+}
+
+var envCredentialEnd = regexp.MustCompile(`(?i)(_key|passphrase|dsn|_pin|_pass)$`)
+
+var envSetting = regexp.MustCompile(`(?i)(_ttl|_file|_path|_length|_timeout|_enabled|_name|_key_id|_expiry|_expiration|_seconds|_minutes|_hours|_days|_size|_count|_header|_type|_mode|_url|_uri|_endpoint|_issuer|_audience|_provider|_backend)$`)
+
+// numberCredential reports keys whose numbers are credentials: they end
+// in a credential word (adminPin, DBPassword, apiKey, TOKEN; not spin,
+// passwordMinLength, tokenTTL or maxToken).
+func numberCredential(k string) bool {
+	l := strings.ToLower(k)
+	if strings.HasPrefix(l, "max") || strings.HasPrefix(l, "min") {
+		return false
+	}
+	for _, w := range []string{"password", "passwd", "passphrase", "passcode", "pin", "token", "secret", "apikey", "api_key", "secretkey", "secret_key", "accesskey", "access_key"} {
+		if !strings.HasSuffix(l, w) {
+			continue
+		}
+		i := len(k) - len(w)
+		if i == 0 || strings.ContainsRune("_.-", rune(k[i-1])) {
+			return true
+		}
+		upper := func(c byte) bool { return c >= 'A' && c <= 'Z' }
+		if upper(k[i]) && (!upper(k[i-1]) || (i+1 < len(k) && !upper(k[i+1]))) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactURLs redacts the passwords of the URLs in s (in arguments, lines,
+// lists such as http://u:p@es1,http://u:p@es2), in one pass.
+func redactURLs(s string) (string, bool) {
+	if !strings.Contains(s, "://") {
+		return s, false
+	}
+	sep := func(c byte) bool { return strings.IndexByte(" \t\r\n\"'", c) >= 0 }
+	var b strings.Builder
+	changed := false
+	for i := 0; i < len(s); {
+		j := i
+		for j < len(s) && !sep(s[j]) {
+			j++
+		}
+		piece := s[i:j]
+		if r, ok := redactPiece(piece); ok {
+			piece, changed = r, true
+		}
+		b.WriteString(piece)
+		k := j
+		for k < len(s) && sep(s[k]) {
+			k++
+		}
+		b.WriteString(s[j:k])
+		i = k
+	}
+	return b.String(), changed
+}
+
+// redactPiece redacts the URLs in a piece of text without whitespace: each
+// runs from its scheme to the next URL's scheme.
+func redactPiece(p string) (string, bool) {
+	var starts []int
+	for from := 0; ; {
+		i := strings.Index(p[from:], "://")
+		if i < 0 {
+			break
+		}
+		i += from
+		st := i
+		for st > from && (isAlnum(p[st-1]) || strings.IndexByte("+.-", p[st-1]) >= 0) {
+			st--
+		}
+		if st < i {
+			starts = append(starts, st)
+		}
+		from = i + 3
+	}
+	if len(starts) == 0 {
+		return p, false
+	}
+	var b strings.Builder
+	b.WriteString(p[:starts[0]])
+	changed := false
+	for n, st := range starts {
+		end := len(p)
+		if n+1 < len(starts) {
+			end = starts[n+1]
+		}
+		seg := p[st:end]
+		if r, ok := redactURL(seg); ok {
+			seg, changed = r, true
+		}
+		b.WriteString(seg)
+	}
+	return b.String(), changed
+}
+
+func isAlnum(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
+// redactURL replaces the password of a URL with <redacted>, failing
+// closed: the password runs from the first colon of the authority (not a
+// port) to the last @ before the first / that follows an @ (a password may
+// hold @, /, ? or #). References ($(DB_PASSWORD), ${DB_PASSWORD}, Helm
+// templates) are left alone.
+func redactURL(s string) (string, bool) {
+	i := strings.Index(s, "://")
+	if i <= 0 || !urlScheme.MatchString(s[:i]) {
+		return s, false
+	}
+	rest := s[i+3:]
+	c := strings.Index(rest, ":")
+	if c < 0 || strings.ContainsAny(rest[:c], "/?#[") {
+		return s, false
+	}
+	if port := rest[c+1:]; len(port) > 0 {
+		j := 0
+		for j < len(port) && port[j] >= '0' && port[j] <= '9' {
+			j++
+		}
+		if j > 0 && (j == len(port) || strings.ContainsRune("/?#", rune(port[j]))) {
+			return s, false // host:port
+		}
+	}
+	first := strings.Index(rest[c+1:], "@")
+	if first < 0 {
+		return s, false
+	}
+	first += c + 1
+	limit := len(rest)
+	if slash := strings.Index(rest[first:], "/"); slash >= 0 {
+		limit = first + slash
+	}
+	at := strings.LastIndex(rest[:limit], "@")
+	pw := rest[c+1 : at]
+	if pw == "" || pw == "<redacted>" || varRef.MatchString(pw) || strings.Contains(pw, "{{") {
+		return s, false
+	}
+	return s[:i+3] + rest[:c+1] + "<redacted>" + rest[at:], true
+}
+
+var (
+	urlScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*$`)
+	varRef    = regexp.MustCompile(`^(\$\([A-Za-z_][A-Za-z0-9_]*\)|\$\{[A-Za-z_][A-Za-z0-9_]*\})$`)
+)
+
+// redactable reports whether a value is a credential's value: a non-empty
+// string or a number.
+func redactable(v any) bool {
+	switch x := v.(type) {
+	case string:
+		switch strings.ToLower(x) {
+		case "", "true", "false", "on", "off", "yes", "no", "enabled", "disabled":
+			return false
+		}
+		return x != RedactedValue && !strings.Contains(x, "{{")
+	case int, int64, float64, json.Number:
+		return true
+	}
+	return false
+}
+
+// credentialPaths lists the values that look like credentials, replacing
+// them with RedactedValue when redact is set.
+func credentialPaths(v any, prefix string, redact bool) []string {
 	var out []string
 	switch t := v.(type) {
 	case map[string]any:
@@ -410,15 +883,18 @@ func credentialPaths(v any, prefix string) []string {
 			if prefix != "" {
 				p = prefix + "." + k
 			}
-			if s, ok := t[k].(string); ok && s != "" && credentialKey.MatchString(k) && !strings.Contains(strings.ToLower(k), "secretname") && !strings.HasSuffix(strings.ToLower(k), "ref") {
+			if s, ok := t[k].(string); ok && s != "" && s != RedactedValue && credentialKey.MatchString(k) && !strings.Contains(strings.ToLower(k), "secretname") && !strings.HasSuffix(strings.ToLower(k), "ref") && !strings.HasPrefix(strings.ToLower(k), "existing") {
 				out = append(out, p)
+				if redact {
+					t[k] = RedactedValue
+				}
 				continue
 			}
-			out = append(out, credentialPaths(t[k], p)...)
+			out = append(out, credentialPaths(t[k], p, redact)...)
 		}
 	case []any:
 		for i, c := range t {
-			out = append(out, credentialPaths(c, fmt.Sprintf("%s[%d]", prefix, i))...)
+			out = append(out, credentialPaths(c, fmt.Sprintf("%s[%d]", prefix, i), redact)...)
 		}
 	}
 	return out
@@ -446,9 +922,70 @@ func ExcludeApps(inv *model.Inventory, patterns []string) {
 	inv.Apps = kept
 }
 
+// protectSecrets marks the Secrets gitopsify writes with their values
+// (encrypted) Protected; those a chart renders are never written.
+func protectSecrets(inv *model.Inventory, cfg *config.Config) {
+	for _, o := range inv.Objects {
+		if !o.IsSecret() {
+			continue
+		}
+		if o.HelmRelease != "" {
+			if r := inv.Release(o.HelmRelease); r != nil && r.Mode != model.HelmModeManifests {
+				continue
+			}
+		}
+		switch secrets.StrategyFor(cfg, o.Ref.Namespace, o.Ref.Name) {
+		case config.SecretsSealedSecrets, config.SecretsSOPS, config.SecretsPlain, config.SecretsLocal:
+			o.Protected = true
+		}
+	}
+}
+
+// chartTransformWarnings tells which transforms don't reach objects that
+// Helm charts render (chart and vendor modes): only chart values change.
+func chartTransformWarnings(inv *model.Inventory, cfg *config.Config) {
+	check := func(where string, ts []config.Transform, env bool) {
+		for i, t := range ts {
+			objectOnly := false
+			switch t.Type {
+			case "labels", "annotations", "jsonPatch", "remove":
+				objectOnly = true
+			case "set":
+				objectOnly = !strings.HasPrefix(t.Path, "values.")
+			case "namespace":
+				objectOnly = env // global ones rename releases too
+			}
+			if !objectOnly {
+				continue
+			}
+			var apps []string
+			for _, a := range inv.Apps {
+				if a.Release == nil || a.Release.Mode == model.HelmModeManifests {
+					continue
+				}
+				for _, o := range a.Objects {
+					if ok, _ := match.SelectorOrAll(t.Target, o, o.App); ok {
+						apps = append(apps, a.Name)
+						break
+					}
+				}
+			}
+			if len(apps) > 0 {
+				inv.Warn("%stransform %d (%s) doesn't change the objects of Helm apps %s, which their charts render: set their values instead (values.<path>), or use helm.mode: manifests",
+					where, i, t.Type, strings.Join(apps, ", "))
+			}
+		}
+	}
+	check("", cfg.Transforms, false)
+	for _, e := range cfg.Environments {
+		check("environment "+e.Name+": ", e.Transforms, true)
+	}
+}
+
 // applyGlobalTransforms applies the transforms that hold for every
 // environment to the objects, and namespace renames to Helm releases.
 func applyGlobalTransforms(inv *model.Inventory, cfg *config.Config) error {
+	chartTransformWarnings(inv, cfg)
 	for _, o := range inv.Objects {
 		if o.Excluded || o.Out == nil {
 			continue
@@ -462,12 +999,22 @@ func applyGlobalTransforms(inv *model.Inventory, cfg *config.Config) error {
 			continue
 		}
 		for _, a := range inv.Apps {
+			if t.Target != nil && len(t.Target.Apps) > 0 && !match.Glob(t.Target.Apps, a.Name) {
+				continue
+			}
 			if to, ok := t.Map[a.Namespace]; ok {
 				a.Namespace = to
 			}
 			if a.Release != nil {
 				if to, ok := t.Map[a.Release.Namespace]; ok {
+					// Objects find their release by key (namespace/name).
+					old := a.Release.Key()
 					a.Release.Namespace = to
+					for _, o := range inv.Objects {
+						if o.HelmRelease == old {
+							o.HelmRelease = a.Release.Key()
+						}
+					}
 				}
 			}
 		}
@@ -488,7 +1035,7 @@ func certSource(ctx context.Context, opts *Options) func(env string) (*rsa.Publi
 		}
 		var key *rsa.PublicKey
 		if f := cfg.Secrets.SealedSecrets.CertFile; f != "" {
-			data, err := os.ReadFile(f)
+			data, err := os.ReadFile(config.ExpandHome(f))
 			if err != nil {
 				return nil, err
 			}
@@ -508,6 +1055,29 @@ func certSource(ctx context.Context, opts *Options) func(env string) (*rsa.Publi
 		cache[env] = key
 		return key, nil
 	}
+}
+
+// markExisting leaves out of each environment the objects its cluster
+// already has, as adopt.existing says.
+func markExisting(ctx context.Context, opts *Options, inv *model.Inventory) error {
+	cfg := opts.Config
+	if cfg.Adopt.Existing == "" || cfg.Adopt.Existing == config.ExistingInclude {
+		return nil
+	}
+	for i := range cfg.Environments {
+		env := &cfg.Environments[i]
+		c, err := envClient(opts, env.Name)
+		if err != nil {
+			return fmt.Errorf("adopt.existing: %s needs to read each environment's cluster: %w", cfg.Adopt.Existing, err)
+		}
+		opts.log("looking for objects that already exist in %s", env.Name)
+		notes, err := target.MarkExisting(ctx, inv, cfg, env, c)
+		if err != nil {
+			return err
+		}
+		inv.Warnings = append(inv.Warnings, notes...)
+	}
+	return nil
 }
 
 // ErrNoEnvCluster is returned when an environment has no cluster to connect to.

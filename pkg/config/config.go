@@ -88,7 +88,29 @@ type Config struct {
 	Output       Output        `json:"output"`
 	Environments []Environment `json:"environments"`
 	Adopt        Adopt         `json:"adopt"`
+
+	derived derivedDefaults
+	// names are the clusters' names where access comes from elsewhere
+	// (the server's registered clusters): Portable writes them.
+	names *clusterNames
 }
+
+type clusterNames struct {
+	source string
+	envs   []string
+}
+
+// NameClusters records the names the source and environment clusters go
+// by (envs by index; empty for none) when their access settings are filled
+// in from elsewhere, such as a server's registered clusters. Portable then
+// writes these names as the contexts.
+func (c *Config) NameClusters(source string, envs []string) {
+	c.names = &clusterNames{source: source, envs: envs}
+}
+
+// derivedDefaults records the defaults Default worked out from other fields,
+// which Document leaves out.
+type derivedDefaults struct{ prune, createProject bool }
 
 // Source is the cluster gitopsify reads from.
 type Source struct {
@@ -390,7 +412,31 @@ type Output struct {
 	Repo   Repo   `json:"repo,omitempty"`
 	ArgoCD ArgoCD `json:"argocd,omitempty"`
 	Flux   Flux   `json:"flux,omitempty"`
+	// Merge says how a run treats files already in the output directory.
+	Merge *Merge `json:"merge,omitempty"`
 }
+
+// Merge says how generating treats files already in the output directory.
+type Merge struct {
+	// Edited is what happens to generated files changed by hand since
+	// gitopsify wrote them: overwrite (default, with a warning), keep (with
+	// a warning) or fail.
+	Edited string `json:"edited,omitempty"`
+	// Unmanaged is what happens to a file gitopsify didn't write where it
+	// writes one: fail (default; overwrite with --force), overwrite or keep.
+	Unmanaged string `json:"unmanaged,omitempty"`
+	// Keep are paths, relative to the output directory, that gitopsify never
+	// writes or removes: globs where * stays within a directory and **
+	// crosses them; a directory covers what is in it.
+	Keep []string `json:"keep,omitempty"`
+}
+
+// Merge policies.
+const (
+	MergeOverwrite = "overwrite"
+	MergeKeep      = "keep"
+	MergeFail      = "fail"
+)
 
 // Repo is the Git repository the output is pushed to.
 type Repo struct {
@@ -457,4 +503,18 @@ type Adopt struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// ProtectKinds are never pruned or deleted by the GitOps tool.
 	ProtectKinds []string `json:"protectKinds,omitempty"`
+	// Existing is what generating does with objects that already exist in
+	// an environment's cluster: include (default; the first sync takes them
+	// over), skip-owned (leave out those another tool manages there: Argo
+	// CD, Flux, Helm, an operator) or skip (leave out all of them, so Git
+	// adds only what is missing). Needs access to each environment's
+	// cluster.
+	Existing string `json:"existing,omitempty"`
 }
+
+// What to do with objects that already exist in an environment's cluster.
+const (
+	ExistingInclude   = "include"
+	ExistingSkipOwned = "skip-owned"
+	ExistingSkip      = "skip"
+)

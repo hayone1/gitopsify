@@ -7,6 +7,8 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+
+	"github.com/hayone1/gitopsify/sdk"
 )
 
 // TestStringsRoundTrip writes hostile strings as HCL, parses them back and
@@ -54,5 +56,15 @@ func TestFileCallPathsAreSafe(t *testing.T) {
 		if strings.ContainsAny(sp, `"\$%{}`) {
 			t.Errorf("safePath(%q) = %q", p, sp)
 		}
+	}
+	// Files Terraform would load as configuration.
+	for _, p := range []string{"versions.tf", "main.TF", "x.tf.json", "secrets.auto.tfvars", "a.tfvars.json"} {
+		sp := strings.ToLower(safePath(p, "k"))
+		if strings.HasSuffix(sp, ".tf") || strings.HasSuffix(sp, ".tf.json") || strings.Contains(sp, ".tfvars") {
+			t.Errorf("safePath(%q) = %q", p, sp)
+		}
+	}
+	if b := kindFileBase(&sdk.Kind{Name: "Provider"}); b == "providers" {
+		t.Errorf("kind Provider writes %s.tf", b)
 	}
 }

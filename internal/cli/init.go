@@ -177,11 +177,20 @@ func wizard(ctx context.Context, u *ui.UI, o *options, cfg *config.Config) error
 	}); err != nil {
 		return err
 	}
+	// Start from what --env gave (name=context and the rest), so the
+	// questions offer it rather than dropping it.
+	given := map[string]config.Environment{}
+	for _, e := range cfg.Environments {
+		given[e.Name] = e
+	}
 	cfg.Environments = nil
 	for _, n := range strings.Split(envs, ",") {
 		n = strings.TrimSpace(n)
 		e := config.Environment{Name: n}
-		ctxName := ""
+		if g, ok := given[n]; ok {
+			e = g
+		}
+		ctxName := e.Cluster.Context
 		if len(contexts) > 0 {
 			opts := append([]ui.Option{{Label: "(none: set it later)", Value: ""}}, contexts...)
 			if err := u.Select("Cluster of "+n, "Used by check, diff, adopt and bootstrap", opts, &ctxName); err != nil {

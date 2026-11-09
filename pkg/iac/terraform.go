@@ -24,13 +24,15 @@ func renderTerraform(res *Result, in Input, workspaces []*workspace, byKey map[s
 	d := in.Description
 	for _, w := range workspaces {
 		base := path.Join("terraform", w.dir)
-		wu := res.unit(config.FormatTerraform, w.id, "")
-		versions, err := versionsFile(d, in.Options.Backend, w)
-		if err != nil {
-			return err
+		if !w.unannounced {
+			wu := res.unit(config.FormatTerraform, w.id, "")
+			versions, err := versionsFile(d, in.Options.Backend, w)
+			if err != nil {
+				return err
+			}
+			wu.add(base+"/versions.tf", versions, false)
+			wu.add(base+"/providers.tf", providersFile(d, w), false)
 		}
-		wu.add(base+"/versions.tf", versions, false)
-		wu.add(base+"/providers.tf", providersFile(d, w), false)
 
 		for _, kind := range tfKinds(d, w) {
 			if w.isIncomplete(kind.Name) {
@@ -98,7 +100,7 @@ func providersFile(d *sdk.Description, w *workspace) []byte {
 			envs = append(envs, fmt.Sprintf("%s (%s)", s.Env, firstNonEmpty(s.Title, s.Name)))
 		}
 	}
-	comment := fmt.Sprintf("# %s: %s\n", w.inst.Name, firstNonEmpty(w.inst.Target, d.Title))
+	comment := fmt.Sprintf("# %s: %s\n", oneLine(w.inst.Name), oneLine(firstNonEmpty(w.inst.Target, d.Title)))
 	if len(envs) > 0 {
 		comment += "# Credentials come from the environment: " + strings.Join(envs, ", ") + ".\n"
 	}
@@ -164,7 +166,10 @@ func renderTerraformKind(res *Result, in Input, w *workspace, kind *sdk.Kind, by
 	for _, b := range kind.Terraform.Blocks {
 		blocks[b] = true
 	}
-	varNames := newNamer("_")
+	if w.vars == nil {
+		w.vars = newNamer("_")
+	}
+	varNames := w.vars
 	var tfvars []string
 	var imports []*resource
 	rep := &res.Report
@@ -180,7 +185,7 @@ func renderTerraformKind(res *Result, in Input, w *workspace, kind *sdk.Kind, by
 		h := &hclValue{
 			ref: func(ref sdk.RefValue) (hclwrite.Tokens, bool) {
 				t, ok := byKey[stateKey(w.inst.Name, ref.Ref)]
-				if !ok || t.ws != w || t.kind.Terraform == nil || t.state.Terraform == "" || !hclsyntax.ValidIdentifier(ref.Attr) {
+				if !ok || t.ws != w || t.kind.Terraform == nil || t.state.Terraform == "" || !hclsyntax.ValidIdentifier(ref.Attr) || !declared(t, in.Previous) {
 					return nil, false
 				}
 				return rawTokens(t.state.Terraform + "." + ref.Attr), true
@@ -190,7 +195,7 @@ func renderTerraformKind(res *Result, in Input, w *workspace, kind *sdk.Kind, by
 					rep.leaveOut(kind, w, r.r, p, s, secretNotReturned)
 					return nil, false
 				}
-				v := varNames.assign(truncate(short+"_"+name+"_"+s.Secret, 120, "_"), r.r.Key+p)
+				v := varNames.assign(tfIdent(truncate(short+"_"+name+"_"+s.Secret, 120, "_")), r.r.Key+p)
 				typ := "string"
 				if m, ok := s.Value.(map[string]string); ok {
 					typ = "map(string)"
@@ -240,7 +245,7 @@ func renderTerraformKind(res *Result, in Input, w *workspace, kind *sdk.Kind, by
 		}
 		var deps []string
 		for _, dep := range r.r.DependsOn {
-			if t, ok := byKey[stateKey(w.inst.Name, dep)]; ok && t.ws == w && t.state.Terraform != "" && t.kind.Terraform != nil {
+			if t, ok := byKey[stateKey(w.inst.Name, dep)]; ok && t.ws == w && t.state.Terraform != "" && t.kind.Terraform != nil && declared(t, in.Previous) {
 				deps = append(deps, t.state.Terraform)
 			}
 		}
@@ -280,7 +285,7 @@ func renderTerraformKind(res *Result, in Input, w *workspace, kind *sdk.Kind, by
 		u.add(base+"/"+fileName, hclwrite.Format(f.Bytes()), false)
 	}
 	if len(tfvars) > 0 {
-		u.add(base+"/"+kindFileBase(kind)+SecretTFVarsSuffix, []byte("# Secret values read from "+in.Description.Title+". Never commit this file. gitopsify export\n# rewrites it: set other values in TF_VAR_ variables or a *.auto.tfvars file of your own.\n"+strings.Join(tfvars, "")), true)
+		u.add(base+"/"+kindFileBase(kind)+SecretTFVarsSuffix, []byte("# Secret values read from "+oneLine(in.Description.Title)+". Never commit this file. gitopsify export\n# rewrites it: set other values in TF_VAR_ variables or a *.auto.tfvars file of your own.\n"+strings.Join(tfvars, "")), true)
 	}
 	return nil
 }
@@ -374,7 +379,13 @@ func kindFileBase(k *sdk.Kind) string {
 	if p == "" {
 		p = k.Name + "s"
 	}
-	return snake(p)
+	b := snake(p)
+	// The workspace's own files (providers.tf, versions.tf) keep their names.
+	switch b {
+	case "", "providers", "versions", "namespace", "providerconfig", "kustomization":
+		b = "kind_" + b + "_" + shortHash(k.Name)
+	}
+	return b
 }
 
 func snake(s string) string {
@@ -407,4 +418,30 @@ func describe(s string) string {
 		return ""
 	}
 	return " (" + s + ")"
+}
+
+// oneLine keeps a provider's or tool's text (a target, a title) inside the
+// comment it goes into: a line break would start configuration.
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+// tfIdent makes a Terraform identifier of s: letters, digits, _ and -, not
+// starting with a digit or -. Providers name their secrets.
+func tfIdent(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if !(c == '_' || c == '-' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			b[i] = '_'
+		}
+	}
+	if len(b) == 0 || b[0] == '-' || b[0] >= '0' && b[0] <= '9' {
+		return "v_" + string(b)
+	}
+	return string(b)
 }

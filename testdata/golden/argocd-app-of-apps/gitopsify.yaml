@@ -39,7 +39,6 @@ spec:
       propertyPerKey: true
       refreshInterval: 1h
   output:
-    dir: gitops
     tool: argocd
     layout: folder-per-env
     repo:
@@ -49,10 +48,8 @@ spec:
       pattern: app-of-apps
       namespace: argocd
       project: gitopsify
-      createProject: true
       version: v3.5.6
       autoSync: true
-      prune: true
       selfHeal: true
       serverSideApply: true
     flux:

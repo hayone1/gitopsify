@@ -114,6 +114,9 @@ the GitOps tool works with its own ServiceAccount.
 - In a Kubernetes Job, use `--in-cluster` (and `--target-in-cluster` when the
   target is the same cluster). Inside a pod without a kubeconfig, gitopsify
   uses the pod's ServiceAccount automatically.
+- Flags win over these variables, which win over `gitopsify.yaml`; a flag
+  also replaces the setting it can't be combined with (`--token` replaces a
+  configured `tokenFile`, `--in-cluster` a `context`).
 - Always pass `--no-input`.
 
 ```yaml

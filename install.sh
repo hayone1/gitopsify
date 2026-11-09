@@ -134,6 +134,7 @@ if [ -w "$dir" ]; then
   install -m 0755 "$bin" "$target" 2>/dev/null || { cp "$bin" "$target" && chmod 0755 "$target"; }
 elif command -v sudo >/dev/null 2>&1; then
   say "$dir is not writable; using sudo"
+  sudo mkdir -p "$dir"
   sudo install -m 0755 "$bin" "$target"
 else
   die "$dir is not writable; set GITOPSIFY_INSTALL_DIR to a directory you own"

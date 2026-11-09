@@ -36,6 +36,11 @@ Three patterns (`--pattern`):
 | `applicationset` | One ApplicationSet per environment over `argocd/<env>/config/*.json`, ordered with progressive syncs | Many similar apps, central control |
 | `single` | One Application over every app | Small clusters |
 
+With `single`, Helm apps are rendered by kustomize's Helm support, which
+doesn't give objects a namespace when the chart's templates leave it out (the
+Application has no destination namespace either): such charts need
+`app-of-apps`, or `helm.mode: manifests` for them.
+
 Helm apps are multi-source Applications: the chart from its repository, values
 from Git. Applications are named `<env>-<app>` so one Argo CD can serve several
 environments; the AppProject is `gitopsify-<env>` unless you set `--project`.

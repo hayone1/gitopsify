@@ -93,6 +93,13 @@ type workspace struct {
 	resources []*resource
 	// incomplete holds kinds that weren't read completely; "*" means all.
 	incomplete map[string]bool
+	// unannounced is a partition only a warning named: its attributes are
+	// unknown, so the workspace's own files (provider settings) stay as
+	// the last export wrote them.
+	unannounced bool
+	// vars names Terraform variables: one module per workspace, so names
+	// are unique across its kinds' files.
+	vars *namer
 	// gone holds resources exported before that aren't any more, by kind.
 	gone map[string][]*goneResource
 }
@@ -105,6 +112,20 @@ func (w *workspace) title() string {
 }
 
 func (w *workspace) isIncomplete(kind string) bool { return w.incomplete["*"] || w.incomplete[kind] }
+
+// declared reports whether a resource is in the output: its kind is
+// written this time, or it was exported before (an incomplete kind keeps
+// the last export's file). References to others would name nothing.
+func declared(t *resource, prev *State) bool {
+	if !t.ws.isIncomplete(t.kind.Name) {
+		return true
+	}
+	if prev == nil {
+		return false
+	}
+	ps, ok := prev.Resources[stateKey(t.ws.inst.Name, t.r.Key)]
+	return ok && !ps.Gone
+}
 
 type resource struct {
 	r     *sdk.Resource
@@ -231,6 +252,7 @@ func plan(in Input, st *State) ([]*workspace, map[string]*resource, error) {
 		}
 		if w.partition == nil && partitionID != "" {
 			w.partition = &sdk.Partition{ID: partitionID, Name: partitionID}
+			w.unannounced = true
 		}
 		if prev, ok := st.Workspaces[id]; ok {
 			w.dir, w.namespace = prev.Dir, prev.Namespace
@@ -295,6 +317,13 @@ func plan(in Input, st *State) ([]*workspace, map[string]*resource, error) {
 			if !selected && (!exportedBefore || in.Options.Prune) {
 				continue // not selected: gone below if it was exported before
 			}
+			if in.Options.Adopt && r.ImportID == "" && !exportedBefore {
+				// Without an import there is nothing to adopt: the first
+				// apply would create a second one.
+				inst.Inventory.Skipped = append(inst.Inventory.Skipped[:len(inst.Inventory.Skipped):len(inst.Inventory.Skipped)],
+					sdk.Skipped{Kind: r.Kind, Partition: r.Partition, Name: r.Name, Reason: "the provider gave no import ID, so adopting it would create a second one"})
+				continue
+			}
 			w := getWS(inst, r.Partition)
 			if rs != nil && (rs.Workspace != w.id || rs.Kind != r.Kind) {
 				oldType, _, _ := strings.Cut(rs.Terraform, ".")
@@ -324,8 +353,30 @@ func plan(in Input, st *State) ([]*workspace, map[string]*resource, error) {
 			w.resources = append(w.resources, res)
 			byKey[sk] = res
 		}
-		// Incomplete scopes.
+		// Workspaces exported before stay in play even when nothing of
+		// theirs was read now (everything deleted): what they held is gone.
+		for _, id := range sortedMapKeys(st.Workspaces) {
+			if part, ok := strings.CutPrefix(id, inst.Name+"/"); ok && (part == "" || partitions[part]) {
+				getWS(inst, part)
+			}
+		}
+		// Incomplete scopes. A warning about a kind the provider doesn't
+		// describe, or a partition that is neither announced nor exported
+		// before (a typo, a name instead of an ID), covers more rather
+		// than less: what wasn't read must not look deleted.
+		known := map[string]bool{}
+		for id := range st.Workspaces {
+			known[id] = true
+		}
 		for _, warn := range inst.Inventory.Warnings {
+			if warn.Kind != "" {
+				if _, ok := d.Kind(warn.Kind); !ok {
+					warn.Kind = ""
+				}
+			}
+			if warn.Partition != "" && !partitions[warn.Partition] && !known[wsID(inst.Name, warn.Partition)] {
+				warn.Partition = ""
+			}
 			switch {
 			case warn.Partition == "" && warn.Kind == "":
 				for _, w := range workspaces {
@@ -412,6 +463,9 @@ func plan(in Input, st *State) ([]*workspace, map[string]*resource, error) {
 				files.reserve(f)
 			}
 		}
+		// claimed maps each written path (lower case) to its resource: two
+		// resources never share a file, even if an older state says so.
+		claimed := map[string]string{}
 		for _, r := range w.resources {
 			if k := r.kind.Terraform; k != nil {
 				if t, _, _ := strings.Cut(r.state.Terraform, "."); t != k.Type {
@@ -444,19 +498,28 @@ func plan(in Input, st *State) ([]*workspace, map[string]*resource, error) {
 				}
 			}
 			for _, p := range sortedSet(want) {
-				if _, ok := r.state.Files[p]; ok {
-					continue
+				if old, ok := r.state.Files[p]; ok && !terraformLoaded(old) {
+					if owner, dup := claimed[strings.ToLower(old)]; !dup || owner == r.r.Key {
+						claimed[strings.ToLower(old)] = r.r.Key
+						continue
+					}
+					// Another resource has this file: a new one for this one.
 				}
 				sp := safePath(p, r.r.Key)
 				if files.taken(sp) {
+					// Names differ by extension only: try the full path.
 					ext := ""
 					if i := strings.LastIndex(sp, "."); i > strings.LastIndex(sp, "/") {
 						ext = sp[i:]
 					}
-					sp = files.assign(strings.TrimSuffix(sp, ext), r.r.Key) + ext
-				} else {
-					files.reserve(sp)
+					base := strings.TrimSuffix(sp, ext)
+					sp = base + "-" + shortHash(r.r.Key) + ext
+					for i := 2; files.taken(sp); i++ {
+						sp = fmt.Sprintf("%s-%s%d%s", base, shortHash(r.r.Key), i, ext)
+					}
 				}
+				files.reserve(sp)
+				claimed[strings.ToLower(sp)] = r.r.Key
 				r.state.Files[p] = sp
 			}
 		}

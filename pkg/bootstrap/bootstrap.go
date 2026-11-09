@@ -65,6 +65,21 @@ func Run(ctx context.Context, o Options) error {
 	if o.Timeout == 0 {
 		o.Timeout = 15 * time.Minute
 	}
+	// The file that hands the cluster to the tool, checked before
+	// installing anything: a missing one (another -o, an environment
+	// renamed, no generate yet) would show only after the install.
+	var root string
+	switch o.Config.Output.Tool {
+	case config.ToolArgoCD:
+		root = filepath.Join(o.Dir, "argocd", o.Env.Name, "root.yaml")
+	case config.ToolFlux:
+		root = filepath.Join(o.Dir, "clusters", o.Env.Name, "flux-system", "gotk-sync.yaml")
+	}
+	if root != "" {
+		if _, err := os.Stat(root); err != nil {
+			return fmt.Errorf("%s is missing: generate environment %s into %s first (or pass the right -o)", root, o.Env.Name, o.Dir)
+		}
+	}
 	switch o.Config.Output.Tool {
 	case config.ToolArgoCD:
 		return argoCD(ctx, o)
@@ -237,6 +252,7 @@ func flux(ctx context.Context, o Options) error {
 		}
 		data["identity"] = string(key)
 		if g.KnownHostsFile == "" {
+			//lint:ignore ST1005 a product name
 			return fmt.Errorf("Flux needs the Git server's host keys for SSH: pass --known-hosts (for example from ssh-keyscan)")
 		}
 		kh, err := os.ReadFile(g.KnownHostsFile)

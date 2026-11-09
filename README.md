@@ -75,6 +75,20 @@ gitopsify export                         # asks; or: gitopsify export grafana --
 More in [docs/providers.md](docs/providers.md); to support another tool, see
 [docs/writing-providers.md](docs/writing-providers.md).
 
+## In the browser, for you or your team
+
+```sh
+gitopsify ui                             # on your machine: your kubeconfig, signed in
+helm install gitopsify oci://ghcr.io/hayone1/charts/gitopsify -f values.yaml   # for a team
+gitopsify login gitopsify.acme.io        # then: gitopsify run start --follow
+```
+
+The web UI scans, picks apps, configures and pushes migrations, and exports
+tools, with single sign-on (Keycloak, Okta, Entra ID, Dex...), roles per
+cluster and tool, an audit log, and PostgreSQL for several replicas. The same
+CLI runs migrations on the server (`gitopsify login`, `gitopsify run`). More in
+[docs/web-ui.md](docs/web-ui.md).
+
 ## With an AI coding agent
 
 gitopsify ships skills that guide Claude Code, Codex, Gemini CLI, Cursor or
@@ -104,13 +118,16 @@ More in [docs/ai-agents.md](docs/ai-agents.md).
 | [Environments and transforms](docs/environments.md) | uat, prod and what differs between them |
 | [Argo CD, Flux or plain Kustomize](docs/gitops-tools.md) | What gets generated and how to bootstrap |
 | [Taking over a running cluster](docs/takeover.md) | GitOps for the cluster you already have |
+| [Scheduled sync](docs/scheduled-sync.md) | A CronJob or CI job that opens a pull request when the cluster changes |
 | [Grafana and other tools](docs/providers.md) | Terraform and Crossplane from a tool's live state |
 | [Writing a provider](docs/writing-providers.md) | Support another tool |
+| [Web UI](docs/web-ui.md) | `gitopsify ui`, and the team server: sign-in, roles, audit, Helm, high availability, `gitopsify login` and `run` |
+| [Observability](docs/observability.md) | OpenTelemetry traces, metrics and logs from the CLI and the server |
 | [AI agents](docs/ai-agents.md) | Skills and plugins |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and answers |
 | [Configuration reference](docs/configuration.md) | Every field of `gitopsify.yaml` |
 | [Command reference](docs/commands.md) | Every command and flag |
-| [Design](docs/DESIGN.md) · [Providers design](docs/DESIGN-providers.md) · [Development](docs/development.md) | For contributors |
+| [Design](docs/DESIGN.md) · [Providers design](docs/DESIGN-providers.md) · [Web UI design](docs/DESIGN-webui.md) · [Development](docs/development.md) | For contributors |
 
 Example output for every mode, generated from [a real cluster](testdata/clusters/clickops.yaml),
 is in [testdata/golden](testdata/golden).

@@ -1,0 +1,25 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "gitopsify.fullname" . }}
+  labels:
+    {{- include "gitopsify.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "gitopsify.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      {{- with .Values.metrics.serviceMonitor.tokenSecret }}
+      # server.metrics.token: Prometheus sends it as a bearer token.
+      authorization:
+        type: Bearer
+        credentials: {name: {{ .name }}, key: {{ .key }}}
+      {{- end }}
+{{- end }}

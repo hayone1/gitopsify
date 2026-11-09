@@ -14,3 +14,12 @@
 .terraform.lock.hcl
 /.logs/
 /test/live/hetzner/.state-runner/
+/test/live/hetzner/.state-devbox/
+
+# Web UI (ui/ builds into web/dist, which only commits its README)
+/ui/node_modules/
+/ui/.nuxt/
+/ui/.output/
+/ui/dist
+/web/dist/*
+!/web/dist/README

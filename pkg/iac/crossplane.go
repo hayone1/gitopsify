@@ -43,27 +43,29 @@ func renderCrossplane(res *Result, in Input, workspaces []*workspace, byKey map[
 
 	for _, w := range workspaces {
 		base := path.Join("crossplane", w.dir)
-		wu := res.unit(config.FormatCrossplane, w.id, "")
-		wu.add(base+"/namespace.yaml", mustYAML(map[string]any{
-			"apiVersion": "v1", "kind": "Namespace",
-			"metadata": map[string]any{"name": w.namespace},
-		}), false)
-		spec := map[string]any{
-			"credentials": map[string]any{
-				"source":    "Secret",
-				"secretRef": map[string]any{"namespace": CredentialsNamespace, "name": credentialsSecret(d, w.inst.Name), "key": "credentials"},
-			},
-		}
-		if w.partition != nil {
-			for k, v := range w.partition.Crossplane {
-				spec[k] = v
+		if !w.unannounced {
+			wu := res.unit(config.FormatCrossplane, w.id, "")
+			wu.add(base+"/namespace.yaml", mustYAML(map[string]any{
+				"apiVersion": "v1", "kind": "Namespace",
+				"metadata": map[string]any{"name": w.namespace},
+			}), false)
+			spec := map[string]any{
+				"credentials": map[string]any{
+					"source":    "Secret",
+					"secretRef": map[string]any{"namespace": CredentialsNamespace, "name": credentialsSecret(d, w.inst.Name), "key": "credentials"},
+				},
 			}
+			if w.partition != nil {
+				for k, v := range w.partition.Crossplane {
+					spec[k] = v
+				}
+			}
+			wu.add(base+"/providerconfig.yaml", mustYAML(map[string]any{
+				"apiVersion": xp.ProviderConfig.APIVersion, "kind": xp.ProviderConfig.Kind,
+				"metadata": map[string]any{"name": w.namespace},
+				"spec":     spec,
+			}), false)
 		}
-		wu.add(base+"/providerconfig.yaml", mustYAML(map[string]any{
-			"apiVersion": xp.ProviderConfig.APIVersion, "kind": xp.ProviderConfig.Kind,
-			"metadata": map[string]any{"name": w.namespace},
-			"spec":     spec,
-		}), false)
 		secretNames := newNamer("-")
 		for _, rs := range stateList(res.State) {
 			if rs.Workspace == w.id {
@@ -91,7 +93,7 @@ func renderCrossplane(res *Result, in Input, workspaces []*workspace, byKey map[
 			u := res.unit(config.FormatCrossplane, w.id, kind.Name)
 			dir := base + "/" + kindDir(kind)
 			for _, r := range rs {
-				resolver := &xpResolver{w: w, r: r, byKey: byKey, keys: newNamer("-"), names: secretNames}
+				resolver := &xpResolver{w: w, r: r, byKey: byKey, keys: newNamer("-"), names: secretNames, prev: in.Previous}
 				fp, omitted, err := sdk.ForProvider(kind, r.r, resolver)
 				if err != nil {
 					return err
@@ -307,11 +309,13 @@ type xpResolver struct {
 	names   *namer
 	strName string
 	secrets []*xpSecret
+	// prev is the last export's state: references only to what is output.
+	prev *State
 }
 
 func (x *xpResolver) Ref(key string) (string, string, bool) {
 	t, ok := x.byKey[stateKey(x.w.inst.Name, key)]
-	if !ok || t.kind.Crossplane == nil || t.state.Crossplane == "" {
+	if !ok || t.kind.Crossplane == nil || t.state.Crossplane == "" || !declared(t, x.prev) {
 		return "", "", false
 	}
 	ns := ""
@@ -377,15 +381,6 @@ func toAny(ss []string) []any {
 		out[i] = s
 	}
 	return out
-}
-
-func appendUnique(list []string, s string) []string {
-	for _, v := range list {
-		if v == s {
-			return list
-		}
-	}
-	return append(list, s)
 }
 
 func sortedMapKeys[V any](m map[string]V) []string {

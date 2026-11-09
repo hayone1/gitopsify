@@ -41,15 +41,28 @@ func (r Resource) KindInfo() match.KindInfo {
 // neverList are resources that are never deployable and can be very large,
 // so they are not even listed.
 var neverList = map[string]string{
-	"events":                    "events are runtime records",
-	"events.events.k8s.io":      "events are runtime records",
-	"componentstatuses":         "deprecated, read-only status",
-	"bindings":                  "write-only API",
-	"podtemplates":              "rarely used, controller-owned in practice",
-	"metrics.k8s.io":            "metrics are runtime data",
-	"custom.metrics.k8s.io":     "metrics are runtime data",
-	"external.metrics.k8s.io":   "metrics are runtime data",
-	"packages.operators.coreos": "OLM package manifests are generated",
+	"events":                        "events are runtime records",
+	"events.events.k8s.io":          "events are runtime records",
+	"componentstatuses":             "deprecated, read-only status",
+	"bindings":                      "write-only API",
+	"podtemplates":                  "rarely used, controller-owned in practice",
+	"metrics.k8s.io":                "metrics are runtime data",
+	"custom.metrics.k8s.io":         "metrics are runtime data",
+	"external.metrics.k8s.io":       "metrics are runtime data",
+	"packages.operators.coreos.com": "OLM package manifests are generated",
+	// OpenShift's compatibility groups mirror objects of other groups, or
+	// hold credentials and objects the platform makes.
+	"authorization.openshift.io":                "mirrors rbac.authorization.k8s.io",
+	"project.openshift.io":                      "Projects mirror Namespaces",
+	"oauth.openshift.io":                        "OAuth tokens and clients are credentials the platform issues",
+	"user.openshift.io":                         "users, identities and groups come from the identity provider",
+	"images.image.openshift.io":                 "image metadata the registry records",
+	"imagestreamtags.image.openshift.io":        "views of ImageStreams",
+	"imagetags.image.openshift.io":              "views of ImageStreams",
+	"imagestreamimages.image.openshift.io":      "views of ImageStreams",
+	"imagestreammappings.image.openshift.io":    "write-only API",
+	"imagestreamimports.image.openshift.io":     "write-only API",
+	"subjectaccessreviews.authorization.k8s.io": "write-only API",
 }
 
 func skipReason(group, resource string) (string, bool) {

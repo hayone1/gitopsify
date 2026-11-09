@@ -1,0 +1,11 @@
+server:
+  externalURL: https://gitopsify.example.com
+  auth:
+    oidc:
+      issuer: https://dex.example.com
+      scopes: [profile, email, groups]
+storage:
+  type: postgres
+  postgres:
+    existingSecret: gitopsify-db
+replicaCount: 3

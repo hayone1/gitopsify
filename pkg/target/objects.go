@@ -26,8 +26,9 @@ type EnvObject struct {
 }
 
 // Objects returns the objects gitopsify generates for an environment: the
-// manifests of every app with the environment's transforms, and the objects
-// of Helm releases as recorded in the release.
+// manifests of every app with the environment's transforms (but those left
+// out of it, model.Object.Skip), and the objects of Helm releases as
+// recorded in the release.
 func Objects(inv *model.Inventory, cfg *config.Config, env *config.Environment) ([]EnvObject, error) {
 	var out []EnvObject
 	for _, a := range inv.Apps {
@@ -38,6 +39,9 @@ func Objects(inv *model.Inventory, cfg *config.Config, env *config.Environment) 
 			continue
 		}
 		for _, o := range a.Objects {
+			if _, skip := o.Skip[env.Name]; skip {
+				continue
+			}
 			var u *unstructured.Unstructured
 			if e, ok := o.EnvOut[env.Name]; ok {
 				u = e.DeepCopy()

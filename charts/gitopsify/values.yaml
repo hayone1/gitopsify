@@ -1,0 +1,219 @@
+# Values for the gitopsify chart. The server's configuration is a Server
+# resource (docs/web-ui.md); `server` below is its spec, minus what the chart
+# sets itself (listen, dataDir).
+
+image:
+  repository: docker.io/hayone/gitopsify
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The Server resource's spec.
+server:
+  # The address people reach gitopsify at; required for OIDC.
+  externalURL: ""
+  auth:
+    mode: oidc
+    oidc:
+      issuer: ""
+      clientID: gitopsify
+      # The client secret comes from secrets.oidcClientSecret (or an
+      # existing Secret); don't put it here.
+      # Dex needs "groups" too: [profile, email, groups]
+      scopes: [profile, email]
+      groupsClaim: groups
+    sessionTTL: 12h
+    # API tokens: gitopsify server token --name ci --role operator
+    tokens: []
+  rbac:
+    # Role of anyone who signs in and matches no binding: "", viewer, operator or admin.
+    defaultRole: ""
+    bindings: []
+    #  - role: admin
+    #    groups: [platform-team]
+    #  - role: operator
+    #    groups: [shop-team]
+    #    clusters: [staging-*]
+  # Clusters besides this one (inCluster below). Mount their kubeconfigs or
+  # tokens with extraVolumes and refer to the files.
+  clusters: []
+  #  - name: prod-eu
+  #    description: Production, Frankfurt
+  #    impersonate: true
+  #    access:
+  #      apiServer: https://prod-eu.example.com:6443
+  #      certificateAuthority: /etc/gitopsify/clusters/prod-eu/ca.crt
+  #    token: {file: /etc/gitopsify/clusters/prod-eu/token}
+  git:
+    # The repositories runs may check out and push to with the credentials
+    # below, per cluster or tool. Empty allows any https/ssh repository:
+    # only for a server that serves one team.
+    repositories: []
+    #  - url: https://github.com/acme/shop-*
+    #    clusters: [shop-*]
+    credentials: []
+    #  - host: github.com
+    #    token: {env: GITHUB_TOKEN}
+  runs:
+    concurrency: 2
+    timeout: 30m
+    retention: 720h
+  audit:
+    stdout: true
+    retention: 2160h
+  # The proxies in front, as narrowly as you can (the ingress controller's
+  # pod CIDR, or its pods' addresses): from them, the client address comes
+  # from X-Forwarded-For. Empty: the address that connected (the ingress
+  # controller's, so rate limits and the audit log see the proxy). Don't
+  # list ranges clients connect from: they could then pick their address.
+  trustedProxies: []
+  # /metrics needs this bearer token when set (the ingress exposes it):
+  # metrics: {token: {env: METRICS_TOKEN}}
+
+# Where runs and the audit log are kept: file (the PVC below; one replica)
+# or postgres (shared by several replicas: high availability).
+storage:
+  type: file
+  postgres:
+    # The connection string (postgres://user:password@host:5432/db?sslmode=require),
+    # from an existing Secret (key below) or stored in the chart's Secret.
+    existingSecret: ""
+    secretKey: url
+    url: ""
+    maxConnections: 0
+
+# More than one needs storage.type: postgres. Providers installed from the
+# UI then land on one replica only: the chart turns installing off (set
+# server.providers.disableInstall: false to keep it) and providers come with
+# the image or a shared volume (server.providers.dir).
+replicaCount: 1
+
+# This cluster, as a source and target, through the pod's ServiceAccount.
+inCluster:
+  enabled: true
+  name: in-cluster
+  description: The cluster gitopsify runs in
+  # Read as the signed-in person (Kubernetes RBAC applies per person); the
+  # ServiceAccount then needs the impersonate verb (rbac.impersonate), and
+  # loses its own read access (rbac.clusterReader applies only without).
+  # Without impersonation, operators can migrate everything the
+  # ServiceAccount reads, Secrets included.
+  impersonate: false
+  # Where this cluster's sealed-secrets controller runs: migrations sealing
+  # for it fetch its certificate there (the chart grants get on that
+  # service's proxy only).
+  sealedSecrets:
+    controllerNamespace: kube-system
+    controllerName: sealed-secrets-controller
+
+rbac:
+  create: true
+  # list/watch on every resource, cluster-wide: what a scan reads.
+  clusterReader: true
+  # impersonate users and groups, for inCluster.impersonate.
+  impersonate: false
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Pods read these at start: after changing them (or the Secrets they come
+# from), restart them (kubectl rollout restart deployment/<release>).
+secrets:
+  # Signs and encrypts session cookies. Generated (and kept across upgrades)
+  # by helm install/upgrade when empty and no existingSecret is given. With
+  # Argo CD, Flux or helm template there is no lookup: set it (or
+  # existingSecret), or every sync makes a new key and signs everyone out.
+  sessionKey: ""
+  # The OIDC client secret.
+  oidcClientSecret: ""
+  # A Secret holding session-key and oidc-client-secret instead.
+  existingSecret: ""
+
+# OpenTelemetry traces, metrics and logs over OTLP/HTTP (docs/observability.md).
+opentelemetry:
+  # The collector's OTLP/HTTP address, for example
+  # http://opentelemetry-collector.observability:4318. Empty: off.
+  endpoint: ""
+  # More OTEL_* settings, for example
+  # {OTEL_TRACES_SAMPLER: parentbased_traceidratio, OTEL_TRACES_SAMPLER_ARG: "0.1"}
+  # (OTEL_RESOURCE_ATTRIBUTES is added to the pod's own).
+  # Headers with credentials (OTEL_EXPORTER_OTLP_HEADERS) go in extraEnv, from a Secret.
+  env: {}
+
+# Extra environment variables (Git tokens, ...), as in a container spec.
+extraEnv: []
+#  - name: GITHUB_TOKEN
+#    valueFrom: {secretKeyRef: {name: gitopsify-git, key: token}}
+extraVolumes: []
+extraVolumeMounts: []
+
+# The data directory (file storage). With postgres, replicas keep only
+# working copies there, in an emptyDir.
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  existingClaim: ""
+  # Without a claim (storage.type: postgres, or persistence off) each
+  # replica works in an emptyDir: runs it works on and copies of outputs
+  # (unused ones are removed after an hour). Exceeding it evicts the pod.
+  workSizeLimit: 10Gi
+  # /tmp, also HOME: Helm's chart cache, Git's and the providers' files.
+  tmpSizeLimit: 4Gi
+
+service:
+  type: ClusterIP
+  port: 80
+  # With type NodePort.
+  nodePort: null
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: gitopsify.example.com
+  tls: []
+  #  - secretName: gitopsify-tls
+  #    hosts: [gitopsify.example.com]
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+    # With server.metrics.token: the Secret Prometheus reads it from, such
+    # as {name: gitopsify-metrics, key: token}.
+    tokenSecret: {}
+
+networkPolicy:
+  # Allow ingress only from these namespaces' pods (the ingress controller,
+  # Prometheus); egress stays open (clusters, Git, the identity provider).
+  enabled: false
+  ingressNamespaces: [ingress-nginx, monitoring]
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {memory: 2Gi}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: {type: RuntimeDefault}
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""

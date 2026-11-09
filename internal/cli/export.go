@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -272,7 +273,9 @@ func (r *exportRun) pickProvider(ctx context.Context) (string, error) {
 func (r *exportRun) ensureProvider(ctx context.Context, ref string) error {
 	pin := r.cfg.Spec.Provider.Version
 	installRef := ref
-	if pin != "" && !strings.Contains(ref, "@") && !provider.IsPath(ref) {
+	if _, v, ok := strings.Cut(ref, "@"); ok && !provider.IsPath(ref) {
+		pin = v // export grafana@v0.2.0 asks for that version
+	} else if pin != "" && !provider.IsPath(ref) {
 		installRef = ref + "@" + pin
 	}
 	p, err := provider.Find(ref)
@@ -311,6 +314,10 @@ func (r *exportRun) ensureProvider(ctx context.Context, ref string) error {
 	for _, s := range p.Shadowed {
 		r.u.Warn("%s is not used; %s comes first", s, p.Path)
 	}
+	// A provider of the same name from another owner isn't this one.
+	if src := r.cfg.Spec.Provider.Source; src != "" && p.Origin == provider.OriginInstalled && p.Source != "" && !strings.EqualFold(src, p.Source) {
+		return &exitError{code: 1, msg: fmt.Sprintf("%s wants %s from %s, but the installed one comes from %s. Install it with:\n  gitopsify provider install %s", r.cfgPath, p.Name, src, p.Source, src)}
+	}
 	if p.Origin != provider.OriginInstalled && len(r.cfg.Spec.Provider.Checksums) > 0 {
 		if !r.u.Interactive {
 			return &exitError{code: 1, msg: fmt.Sprintf("%s pins checksums, which can't be checked for %s (not installed by gitopsify). Install the pinned version:\n  gitopsify provider install %s", r.cfgPath, p.Path, installRef)}
@@ -335,6 +342,11 @@ func (r *exportRun) ensureProvider(ctx context.Context, ref string) error {
 	}
 	r.d = d
 	if pin != "" && p.Origin != provider.OriginInstalled && !sameVersion(d.Version, pin) {
+		// Pinned means pinned; at a terminal, a warning lets people try a
+		// build of their own.
+		if !r.u.Interactive {
+			return &exitError{code: 1, msg: fmt.Sprintf("%s is %s %s, but %s pins %s. Install the pinned version:\n  gitopsify provider install %s", p.Path, p.Name, d.Version, r.cfgPath, pin, installRef)}
+		}
 		r.u.Warn("using %s %s from %s; %s pins %s", p.Name, d.Version, p.Path, r.cfgPath, pin)
 	}
 	r.cfg.Spec.Provider.Name = d.Name
@@ -450,7 +462,7 @@ func (r *exportRun) connect(ctx context.Context) error {
 		}
 		if inst == "" {
 			if len(c.Instances) > 1 {
-				return fmt.Errorf("--set %s: there are several instances; use --set <instance>.%s=...", k, k)
+				return fmt.Errorf("--set %s: there are several instances; use --set <instance>.%s=<value>", k, k)
 			}
 			inst = c.Instances[0].Name
 		}
@@ -834,7 +846,9 @@ func (r *exportRun) pick(ctx context.Context) error {
 			if len(r.insts) > 1 {
 				label = ri.cfg.Name + ": " + label
 			}
-			opts = append(opts, ui.Option{Label: label, Value: addr})
+			// The value is the object itself: two objects can share an
+			// address (same title in two folders).
+			opts = append(opts, ui.Option{Label: label, Value: ri.cfg.Name + "\x00" + res.Key})
 		}
 	}
 	if len(opts) == 0 {
@@ -848,14 +862,37 @@ func (r *exportRun) pick(ctx context.Context) error {
 	if len(selected) == 0 {
 		return fmt.Errorf("nothing selected")
 	}
-	r.cfg.Spec.Select.Include = selected
-	// Read only what was picked and what it needs.
+	// Read only what was picked and what it references, per instance. The
+	// saved configuration keeps the picks' addresses.
+	var include []string
 	for i, ri := range r.insts {
-		picked := iac.Select(summaries[i], iac.Selection{Include: selected})
-		for _, res := range picked.Resources {
-			ri.keys = append(ri.keys, res.Key)
+		byKey := map[string]*sdk.Resource{}
+		for j := range summaries[i].Resources {
+			byKey[summaries[i].Resources[j].Key] = &summaries[i].Resources[j]
+		}
+		var walk func(key string)
+		walk = func(key string) {
+			res, ok := byKey[key]
+			if !ok || slices.Contains(ri.keys, key) {
+				return
+			}
+			ri.keys = append(ri.keys, key)
+			if !r.cfg.Spec.Select.NoDeps {
+				for _, dep := range iac.Dependencies(res) {
+					walk(dep)
+				}
+			}
+		}
+		for _, v := range selected {
+			if inst, key, _ := strings.Cut(v, "\x00"); inst == ri.cfg.Name {
+				if res, ok := byKey[key]; ok {
+					include = append(include, iac.Address(summaries[i], res))
+				}
+				walk(key)
+			}
 		}
 	}
+	r.cfg.Spec.Select.Include = include
 	return nil
 }
 
@@ -869,7 +906,7 @@ func (r *exportRun) discover(ctx context.Context) error {
 		if len(ri.keys) > 0 && prev != nil {
 			// Read what was exported before too, to tell what still exists.
 			for k, rs := range prev.Resources {
-				if key, ok := strings.CutPrefix(k, ri.cfg.Name+"/"); ok && !rs.Gone && !strings.Contains(key, "#") {
+				if key, ok := strings.CutPrefix(k, ri.cfg.Name+"/"); ok && !rs.Gone {
 					ri.keys = appendNew(ri.keys, key)
 				}
 			}

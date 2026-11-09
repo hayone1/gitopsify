@@ -30,8 +30,9 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
+          # Spelled out: pull requests from forks get no secrets.
           images: |
-            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/gitopsify
+            docker.io/hayone/gitopsify
             ghcr.io/${{ github.repository }}
           tags: |
             type=semver,pattern={{version}}
@@ -49,6 +50,23 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Before anything is published: the image starts and has its tools.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: gitopsify:test
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ github.event.head_commit.timestamp }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test
+        run: |
+          docker run --rm gitopsify:test version
+          docker run --rm --entrypoint sh gitopsify:test -c 'git --version && helm version --short && kubectl version --client'
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -62,8 +80,3 @@ jobs:
             DATE=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Smoke test
-        run: |
-          docker buildx build --load -t gitopsify:test .
-          docker run --rm gitopsify:test version
-          docker run --rm --entrypoint sh gitopsify:test -c 'git --version && helm version --short && kubectl version --client'

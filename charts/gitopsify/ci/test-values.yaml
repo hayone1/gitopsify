@@ -1,0 +1,24 @@
+server:
+  externalURL: https://gitopsify.example.com
+  auth:
+    oidc:
+      issuer: https://keycloak.example.com/realms/acme
+  git:
+    repositories:
+      - url: https://github.com/acme/*
+  rbac:
+    bindings:
+      - role: admin
+        groups: [platform]
+ingress:
+  enabled: true
+  className: nginx
+metrics:
+  serviceMonitor:
+    enabled: true
+networkPolicy:
+  enabled: true
+rbac:
+  impersonate: true
+inCluster:
+  impersonate: true

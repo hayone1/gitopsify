@@ -6,6 +6,7 @@ package model
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -68,9 +69,22 @@ type Object struct {
 	// environment, such as SealedSecrets sealed for each cluster. When set,
 	// the object is written to the environment overlays instead of the base.
 	EnvOut map[string]*unstructured.Unstructured
+	// Fingerprints describe what each environment's EnvOut encrypts,
+	// without the values (secrets.Fingerprint): when it is the same as last
+	// run, the earlier ciphertext is kept.
+	Fingerprints map[string]string
+	// Skip holds the environments the object is left out of, with why:
+	// it already exists in their cluster (config adopt.existing).
+	Skip map[string]string
 	// Encrypt marks Secrets that must be encrypted with SOPS when written.
-	Encrypt  bool
-	Warnings []string
+	Encrypt bool
+	// Protected marks Secrets written encrypted while their values must
+	// not be learnt from the output (the server, unless an admin allows
+	// Secret values): transforms keep their namespace and name (sealing
+	// binds to them) and leave their data alone (a replace changes the
+	// ciphertext's length, which tells about the value).
+	Protected bool
+	Warnings  []string
 }
 
 // Exclude marks the object as excluded unless it already is.
@@ -275,6 +289,11 @@ type ClusterInfo struct {
 	Context string `json:"context,omitempty"`
 	Server  string `json:"server,omitempty"`
 	Version string `json:"version,omitempty"`
+	// Offline: the objects were read from files, not a cluster.
+	Offline bool `json:"offline,omitempty"`
+	// ID identifies the cluster whatever address reaches it: the UID of
+	// its kube-system namespace (empty when it couldn't be read).
+	ID string `json:"id,omitempty"`
 }
 
 // String describes the cluster for people: "context (server, Kubernetes v)".
@@ -375,7 +394,12 @@ func (inv *Inventory) Release(key string) *HelmRelease {
 
 // Warn records an inventory-wide warning.
 func (inv *Inventory) Warn(format string, args ...any) {
-	inv.Warnings = append(inv.Warnings, fmt.Sprintf(format, args...))
+	w := fmt.Sprintf(format, args...)
+	// Steps that run again (ordering after a narrowed scan) say it once.
+	if slices.Contains(inv.Warnings, w) {
+		return
+	}
+	inv.Warnings = append(inv.Warnings, w)
 }
 
 // SortObjects sorts objects by namespace, group, kind and name.
@@ -401,4 +425,24 @@ var dockercfgSuffix = regexp.MustCompile(`-dockercfg-[a-z0-9]{5}$`)
 // generated for it by OpenShift (<serviceaccount>-dockercfg-xxxxx).
 func GeneratedPullSecret(serviceAccount, secret string) bool {
 	return strings.HasPrefix(secret, serviceAccount+"-dockercfg-") && dockercfgSuffix.MatchString(secret)
+}
+
+// AllWarnings returns the inventory's warnings with those of its Helm
+// releases and included objects, as the migration report lists them.
+func (inv *Inventory) AllWarnings() []string {
+	out := append([]string(nil), inv.Warnings...)
+	for _, rel := range inv.Releases {
+		if rel.Skip {
+			continue
+		}
+		for _, w := range rel.Warnings {
+			out = append(out, "Helm release "+rel.Key()+": "+w)
+		}
+	}
+	for _, o := range inv.Included() {
+		for _, w := range o.Warnings {
+			out = append(out, o.Ref.String()+": "+w)
+		}
+	}
+	return out
 }

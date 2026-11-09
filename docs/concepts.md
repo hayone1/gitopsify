@@ -55,6 +55,7 @@ name, a reason in the report, and can be switched off with `--disable-rule`:
 | `addon-managed`, `system-served-registrations` | Objects the platform's addon manager applies (GKE, EKS, AKS, k3s add-ons), and APIServices and webhooks whose server runs in a system namespace |
 | `default-serviceaccount`, `platform-serviceaccounts`, `legacy-token-secrets` | Accounts and tokens every cluster creates itself |
 | `cert-manager-secrets` | TLS Secrets cert-manager will issue again |
+| `helm-hooks` | Objects left by Helm hooks (`helm.sh/hook`); the chart runs them again |
 | `already-gitops-managed` | Objects Argo CD, Flux or Config Sync already manage |
 
 `gitopsify rules` lists all of them. `scope.rules` adds your own include and
@@ -120,8 +121,65 @@ constraints. Argo CD gets sync waves, Flux gets `dependsOn` and `wait`.
 | `flux` | The same, plus Flux Kustomizations and HelmReleases with their sources, and a pinned Flux install |
 
 Every output has a `MIGRATION_REPORT.md` and the `gitopsify.yaml` that
-produced it. Regenerating replaces what gitopsify generated before and keeps
-files you added. See [Argo CD, Flux or plain Kustomize](gitops-tools.md).
+produced it. See [Argo CD, Flux or plain Kustomize](gitops-tools.md).
+
+## Regenerating into an existing repository
+
+gitopsify records, in `.gitopsify/`, the files it wrote and their checksums.
+On every run it:
+
+- rewrites the files it generated and removes those it no longer produces
+  (deleting an object from the cluster deletes its file);
+- leaves files you added alone;
+- **hand edits** to files it generated are overwritten with a warning that
+  lists them: `--edited keep` keeps them (and warns each time), `--edited
+  fail` stops the run before writing anything;
+- **a file of yours where it writes** stops the run: `--unmanaged overwrite`
+  (or `--force`) replaces it, `--unmanaged keep` leaves it;
+- **`--keep` paths** (globs: `apps/web/envs/prod`, `**/values.yaml`; `*`
+  stays within a directory, `**/` is any directories) are never written or
+  removed;
+- an environment the run doesn't list stops it (`--force` removes it);
+- an output made from another cluster stops it (gitopsify records the
+  source's identity, the UID of its `kube-system` namespace; `--force`
+  replaces it).
+
+These are `spec.output.merge` in gitopsify.yaml. `--dry-run` shows the plan:
+`+` new, `~` changed, `-` removed, `=` kept. The `gitopsify.yaml` the output
+keeps is the next run's configuration (`gitopsify generate -c
+gitops/gitopsify.yaml` writes into `gitops/`): edit it freely. It leaves out
+what belongs to one machine: kubeconfig paths, tokens, `--in-cluster` and the
+output directory. Into another repository, use `-o`
+with that checkout and `--repo-path` for the directory it lives in. A run
+that keeps a file gets nothing new into it: keep your own changes in files of
+your own (an extra patch in an overlay, say) where you can, so the generated
+ones stay current.
+
+Sealed and SOPS-encrypted Secrets keep their ciphertext while the source
+Secret doesn't change (gitopsify records a fingerprint of the Secret's
+identity, resourceVersion and settings, never its values), so a regeneration
+of an unchanged cluster changes nothing in Git. Secrets read from files
+(`--from-file`) are encrypted afresh each time, and so is every sealed Secret
+after the controller's key changes (every 30 days by default).
+
+## Objects that already exist in the target
+
+By default every object is generated and the first sync takes over the ones
+already in the environment's cluster (`check` lists them, with who manages
+them). `--existing` (`spec.adopt.existing`) reads each environment's cluster
+while generating and leaves objects out of that environment instead:
+
+| `--existing` | Left out of the environment |
+|---|---|
+| `include` (default) | nothing |
+| `skip-owned` | objects another tool manages there: an Argo CD application, Flux, a Helm release, kapp, Config Sync, or an operator (a controller owner reference). A Secret already there counts for the SealedSecret or ExternalSecret that would make it |
+| `skip` | every object that exists there, so Git only adds what is missing (`--tool argocd` or `flux`) |
+
+Objects this migration's own Argo CD or Flux apps manage are never left out,
+so regenerating after the first sync keeps them. The overlay of an
+environment drops a left-out object with a delete patch; other environments
+keep it. Objects a Helm chart renders can't be left out one by one: the report
+lists them. `check` and `diff` apply the same rule.
 
 ## Maturity levels
 

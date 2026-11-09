@@ -6,5 +6,6 @@ helmCharts:
     namespace: podinfo
     releaseName: podinfo
     repo: https://stefanprodan.github.io/podinfo
+    skipTests: true
     valuesFile: values.yaml
     version: 6.9.2

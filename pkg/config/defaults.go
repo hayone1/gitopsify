@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -144,6 +145,7 @@ func (c *Config) defaultSecrets() {
 
 func (c *Config) defaultOutput() {
 	o := &c.Output
+	o.Dir = ExpandHome(o.Dir) // ~/gitops, as other paths
 	if o.Dir == "" {
 		o.Dir = "gitops"
 	}
@@ -169,6 +171,7 @@ func (c *Config) defaultOutput() {
 	}
 	if a.CreateProject == nil {
 		a.CreateProject = boolPtr(a.Project != "default")
+		c.derived.createProject = true
 	}
 	if a.Version == "" {
 		a.Version = DefaultArgoCDVersion
@@ -179,6 +182,7 @@ func (c *Config) defaultOutput() {
 	if a.Prune == nil {
 		// Pruning during a takeover deletes anything the export missed.
 		a.Prune = boolPtr(!c.Adopt.Enabled)
+		c.derived.prune = true
 	}
 	if a.SelfHeal == nil {
 		a.SelfHeal = boolPtr(true)
@@ -228,6 +232,17 @@ func (c *Config) Validate() error {
 		add("%s must be one of %s, got %q", field, strings.Join(allowed, ", "), v)
 	}
 	oneOf("scope.clusterScoped", c.Scope.ClusterScoped, "auto", "all", "none")
+	// Any rule that matches decides, before the built-in exclusions: a
+	// misspelled action must not include what they would leave out.
+	for i, r := range c.Scope.Rules {
+		oneOf(fmt.Sprintf("scope.rules[%d].action", i), r.Action, "include", "exclude")
+	}
+	if c.Output.Tool == ToolFlux && c.Output.Flux.Namespace != "flux-system" {
+		add("output.flux.namespace must be flux-system: Flux's install manifests, which bootstrap applies and Flux then manages itself, use that namespace")
+	}
+	if c.Adopt.Enabled && c.Output.ArgoCD.Prune != nil && *c.Output.ArgoCD.Prune {
+		add("output.argocd.prune: true with adopt: Argo CD would delete what the export missed during the takeover; remove prune (it is off while adopting) or set it to false")
+	}
 	oneOf("helm.mode", c.Helm.Mode, HelmAuto, HelmChart, HelmVendor, HelmManifests)
 	for _, r := range c.Helm.Resolvers {
 		oneOf("helm.resolvers[]", r, "local", "artifacthub")
@@ -265,6 +280,28 @@ func (c *Config) Validate() error {
 	oneOf("output.tool", c.Output.Tool, ToolNone, ToolArgoCD, ToolFlux)
 	oneOf("output.layout", c.Output.Layout, LayoutFolderPerEnv, LayoutRepoPerEnv)
 	oneOf("output.argocd.pattern", c.Output.ArgoCD.Pattern, PatternAppOfApps, PatternApplicationSet, PatternSingle)
+	if c.Adopt.Existing != "" {
+		oneOf("adopt.existing", c.Adopt.Existing, ExistingInclude, ExistingSkipOwned, ExistingSkip)
+		// A later run tells the objects it generated from those that were
+		// there by the GitOps tool's tracking; plain manifests have none.
+		if c.Adopt.Existing == ExistingSkip && c.Output.Tool == ToolNone {
+			add("adopt.existing: skip needs --tool argocd or flux: with plain manifests a later run can't tell the objects it generated from those that were already there (skip-owned works)")
+		}
+	}
+	if m := c.Output.Merge; m != nil {
+		if m.Edited != "" {
+			oneOf("output.merge.edited", m.Edited, MergeOverwrite, MergeKeep, MergeFail)
+		}
+		if m.Unmanaged != "" {
+			oneOf("output.merge.unmanaged", m.Unmanaged, MergeOverwrite, MergeKeep, MergeFail)
+		}
+		for i, k := range m.Keep {
+			k = strings.Trim(path.Clean(strings.TrimSpace(k)), "/")
+			if k == "" || k == "." || !filepath.IsLocal(filepath.FromSlash(k)) {
+				add("output.merge.keep[%d]: %q isn't a path inside the output directory", i, m.Keep[i])
+			}
+		}
+	}
 	if c.Output.Tool != ToolNone && c.Output.Repo.URL == "" && c.Output.Layout == LayoutFolderPerEnv {
 		add("output.repo.url (or --repo-url) is required for --tool %s: the generated %s objects point at it", c.Output.Tool, c.Output.Tool)
 	}
@@ -356,6 +393,20 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err // names the file
 	}
+	return loadMigration(path, docs)
+}
+
+// ParseMigration reads the migration in data (YAML, or JSON when name ends in
+// .json); name appears in errors.
+func ParseMigration(name string, data []byte) (*Config, error) {
+	docs, err := ParseDocuments(name, data)
+	if err != nil {
+		return nil, err
+	}
+	return loadMigration(name, docs)
+}
+
+func loadMigration(path string, docs []Document) (*Config, error) {
 	if len(docs) == 0 {
 		return &Config{}, nil // empty, or only comments: the defaults, as in v0.1
 	}
@@ -476,7 +527,41 @@ func specField(name string) bool {
 func (c *Config) Document() any {
 	spec := *c
 	spec.APIVersion, spec.Kind = "", ""
+	// Defaults worked out from other fields stay unwritten: saved, they
+	// would no longer follow them (prune from adopt, createProject from
+	// project).
+	if c.derived.prune {
+		spec.Output.ArgoCD.Prune = nil
+	}
+	if c.derived.createProject {
+		spec.Output.ArgoCD.CreateProject = nil
+	}
 	return migrationDocument{APIVersion: c.APIVersion, Kind: c.Kind, Metadata: c.Metadata, Spec: spec}
+}
+
+// Portable is the migration without what belongs to one machine: access
+// settings other than kubeconfig contexts (kubeconfig paths, token files,
+// in-cluster) and the output directory. The output keeps this copy, so the
+// next run, on any machine or in a CronJob, starts from the same settings
+// and an unchanged cluster gives an unchanged repository.
+func (c *Config) Portable() *Config {
+	p := *c
+	p.Source.Access = Access{Context: c.Source.Access.Context}
+	p.Environments = append([]Environment(nil), c.Environments...)
+	for i := range p.Environments {
+		cl := c.Environments[i].Cluster
+		p.Environments[i].Cluster = Cluster{Server: cl.Server, Name: cl.Name, Access: Access{Context: cl.Access.Context}}
+	}
+	if n := c.names; n != nil {
+		p.Source.Access.Context = n.source
+		for i := range p.Environments {
+			if i < len(n.envs) {
+				p.Environments[i].Cluster.Access.Context = n.envs[i]
+			}
+		}
+	}
+	p.Output.Dir = ""
+	return &p
 }
 
 // Marshal renders the Migration resource as YAML, with the fields in their

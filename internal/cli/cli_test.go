@@ -293,3 +293,62 @@ func TestInitWritesResources(t *testing.T) {
 		})
 	}
 }
+
+// TestRegenerateExitCodeAndMerge: --exit-code tells a scheduled job whether
+// the repository changed; hand edits and files of one's own follow the
+// merge settings.
+func TestRegenerateExitCodeAndMerge(t *testing.T) {
+	dump := chdir(t)
+	gen := func(extra ...string) (int, string, string) {
+		return run(t, append([]string{"generate", "--from-file", dump, "-o", "out", "--exit-code"}, extra...)...)
+	}
+	if code, _, errOut := gen(); code != 2 {
+		t.Fatalf("first run: %d %s", code, errOut)
+	}
+	if code, out, errOut := gen(); code != 0 || !strings.Contains(errOut+out, "0 changed") {
+		t.Fatalf("unchanged rerun: %d %s %s", code, out, errOut)
+	}
+	// Dry run: the plan, and 2 when something would change.
+	report := "out/MIGRATION_REPORT.md"
+	if err := os.WriteFile(report, []byte("my notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := gen("--dry-run", "--edited", "fail")
+	if code != 1 || !strings.Contains(errOut, "changed by hand") || !strings.Contains(errOut, "MIGRATION_REPORT.md") {
+		t.Errorf("--edited fail: %d %s %s", code, out, errOut)
+	}
+	// (--keep is recorded in the written gitopsify.yaml: that changes.)
+	code, out, _ = gen("--dry-run", "--keep", "MIGRATION_REPORT.md")
+	if code != 2 || !strings.Contains(out, "= out/MIGRATION_REPORT.md") || !strings.Contains(out, "~ out/gitopsify.yaml") {
+		t.Errorf("--keep dry run: %d %s", code, out)
+	}
+	code, out, errOut = gen("--dry-run")
+	if code != 2 || !strings.Contains(out, "~ out/MIGRATION_REPORT.md") || !strings.Contains(errOut, "would overwrite") {
+		t.Errorf("dry run of an overwrite: %d %s %s", code, out, errOut)
+	}
+	if b, _ := os.ReadFile(report); string(b) != "my notes" {
+		t.Error("the dry run wrote")
+	}
+	if code, _, errOut := gen(); code != 2 || !strings.Contains(errOut, "changed by hand") {
+		t.Errorf("overwriting an edit: %d %s", code, errOut)
+	}
+	// A file of one's own where gitopsify writes stops the run.
+	if err := os.Remove("out/README.md"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile("out/.gitopsify/generated.txt")
+	_ = os.WriteFile("out/.gitopsify/generated.txt", []byte(strings.Replace(string(b), "README.md\n", "", 1)), 0o644)
+	_ = os.WriteFile("out/README.md", []byte("my readme"), 0o644)
+	if code, _, errOut := gen(); code != 1 || !strings.Contains(errOut, "didn't write") {
+		t.Errorf("unmanaged file: %d %s", code, errOut)
+	}
+	if code, _, errOut := gen("--unmanaged", "keep"); code == 1 {
+		t.Errorf("--unmanaged keep: %s", errOut)
+	}
+	if b, _ := os.ReadFile("out/README.md"); string(b) != "my readme" {
+		t.Error("kept file overwritten")
+	}
+	if code, _, errOut := gen("--push-branch", "x"); code != 1 || !strings.Contains(errOut, "--push") {
+		t.Errorf("--push-branch without --push: %d %s", code, errOut)
+	}
+}

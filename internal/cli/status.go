@@ -31,6 +31,9 @@ time).`,
   gitopsify status --env uat --wait --timeout 15m   # in CI, after bootstrap`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := checkFormat(format); err != nil {
+				return err
+			}
 			cfg, err := o.loadForBootstrap(cmd)
 			if err != nil {
 				return err

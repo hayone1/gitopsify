@@ -129,23 +129,7 @@ func scanReportOf(inv *model.Inventory, withExcluded bool) scanReport {
 	return r
 }
 
-func allWarnings(inv *model.Inventory) []string {
-	out := append([]string(nil), inv.Warnings...)
-	for _, rel := range inv.Releases {
-		if rel.Skip {
-			continue
-		}
-		for _, w := range rel.Warnings {
-			out = append(out, "Helm release "+rel.Key()+": "+w)
-		}
-	}
-	for _, o := range inv.Included() {
-		for _, w := range o.Warnings {
-			out = append(out, o.Ref.String()+": "+w)
-		}
-	}
-	return out
-}
+func allWarnings(inv *model.Inventory) []string { return inv.AllWarnings() }
 
 func printReport(u *ui.UI, v any, format string) error {
 	var b []byte

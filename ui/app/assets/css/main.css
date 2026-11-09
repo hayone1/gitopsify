@@ -1,0 +1,158 @@
+/*
+ * The look follows IBM's Carbon Design System (carbondesignsystem.com,
+ * Apache-2.0): its color palette, the White theme in light mode and the
+ * Gray 100 theme in dark mode, square corners and IBM Plex type (SIL OFL,
+ * bundled: no font is fetched from the internet).
+ */
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+
+/* Carbon's color scales (10-100), as Tailwind's 50-950 for Nuxt UI. */
+@theme static {
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  --color-carbon-blue-50: #edf5ff;
+  --color-carbon-blue-100: #d0e2ff;
+  --color-carbon-blue-200: #a6c8ff;
+  --color-carbon-blue-300: #78a9ff;
+  --color-carbon-blue-400: #4589ff;
+  --color-carbon-blue-500: #0f62fe;
+  --color-carbon-blue-600: #0043ce;
+  --color-carbon-blue-700: #002d9c;
+  --color-carbon-blue-800: #001d6c;
+  --color-carbon-blue-900: #001141;
+  --color-carbon-blue-950: #000a26;
+
+  --color-carbon-gray-50: #f4f4f4;
+  --color-carbon-gray-100: #e0e0e0;
+  --color-carbon-gray-200: #c6c6c6;
+  --color-carbon-gray-300: #a8a8a8;
+  --color-carbon-gray-400: #8d8d8d;
+  --color-carbon-gray-500: #6f6f6f;
+  --color-carbon-gray-600: #525252;
+  --color-carbon-gray-700: #393939;
+  --color-carbon-gray-800: #262626;
+  --color-carbon-gray-900: #161616;
+  --color-carbon-gray-950: #0d0d0d;
+
+  --color-carbon-green-50: #defbe6;
+  --color-carbon-green-100: #a7f0ba;
+  --color-carbon-green-200: #6fdc8c;
+  --color-carbon-green-300: #42be65;
+  --color-carbon-green-400: #24a148;
+  --color-carbon-green-500: #198038;
+  --color-carbon-green-600: #0e6027;
+  --color-carbon-green-700: #044317;
+  --color-carbon-green-800: #022d0d;
+  --color-carbon-green-900: #071908;
+  --color-carbon-green-950: #030c04;
+
+  --color-carbon-red-50: #fff1f1;
+  --color-carbon-red-100: #ffd7d9;
+  --color-carbon-red-200: #ffb3b8;
+  --color-carbon-red-300: #ff8389;
+  --color-carbon-red-400: #fa4d56;
+  --color-carbon-red-500: #da1e28;
+  --color-carbon-red-600: #a2191f;
+  --color-carbon-red-700: #750e13;
+  --color-carbon-red-800: #520408;
+  --color-carbon-red-900: #2d0709;
+  --color-carbon-red-950: #170304;
+
+  --color-carbon-yellow-50: #fcf4d6;
+  --color-carbon-yellow-100: #fddc69;
+  --color-carbon-yellow-200: #f1c21b;
+  --color-carbon-yellow-300: #d2a106;
+  --color-carbon-yellow-400: #b28600;
+  --color-carbon-yellow-500: #8e6a00;
+  --color-carbon-yellow-600: #684e00;
+  --color-carbon-yellow-700: #483700;
+  --color-carbon-yellow-800: #302400;
+  --color-carbon-yellow-900: #1c1500;
+  --color-carbon-yellow-950: #0e0a00;
+
+  --color-carbon-purple-50: #f6f2ff;
+  --color-carbon-purple-100: #e8daff;
+  --color-carbon-purple-200: #d4bbff;
+  --color-carbon-purple-300: #be95ff;
+  --color-carbon-purple-400: #a56eff;
+  --color-carbon-purple-500: #8a3ffc;
+  --color-carbon-purple-600: #6929c4;
+  --color-carbon-purple-700: #491d8b;
+  --color-carbon-purple-800: #31135e;
+  --color-carbon-purple-900: #1c0f30;
+  --color-carbon-purple-950: #0e0818;
+}
+
+/* White theme. */
+:root {
+  --ui-radius: 0rem;
+
+  --ui-info: #0043ce;
+  --ui-warning: #8e6a00;
+
+  /* Shifted one step darker than Nuxt UI's scale so dimmed text (log
+     timestamps, ids) still reads at 4.5:1 on the muted background. */
+  --ui-text-dimmed: #6f6f6f;
+  --ui-text-muted: #525252;
+  --ui-text-toned: #393939;
+  --ui-text: #262626;
+  --ui-text-highlighted: #161616;
+  --ui-text-inverted: #ffffff;
+
+  --ui-bg: #ffffff;
+  --ui-bg-muted: #f4f4f4;
+  --ui-bg-elevated: #f4f4f4;
+  --ui-bg-accented: #e0e0e0;
+  --ui-bg-inverted: #161616;
+
+  --ui-border: #e0e0e0;
+  --ui-border-muted: #e0e0e0;
+  --ui-border-accented: #8d8d8d;
+  --ui-border-inverted: #161616;
+
+  /* Primary buttons are Blue 60 with white text in both themes. */
+  --cds-button-primary: #0f62fe;
+  --cds-button-primary-hover: #0050e6;
+  --cds-button-primary-active: #002d9c;
+}
+
+/* Gray 100 theme. */
+.dark {
+  --ui-info: #4589ff;
+  --ui-success: #42be65;
+  --ui-warning: #f1c21b;
+
+  --ui-text-dimmed: #8d8d8d;
+  --ui-text-muted: #a8a8a8;
+  --ui-text-toned: #c6c6c6;
+  --ui-text: #e0e0e0;
+  --ui-text-highlighted: #f4f4f4;
+  --ui-text-inverted: #161616;
+
+  --ui-bg: #161616;
+  --ui-bg-muted: #262626;
+  --ui-bg-elevated: #262626;
+  --ui-bg-accented: #393939;
+  --ui-bg-inverted: #f4f4f4;
+
+  --ui-border: #393939;
+  --ui-border-muted: #393939;
+  --ui-border-accented: #6f6f6f;
+  --ui-border-inverted: #f4f4f4;
+}
+
+body {
+  font-family: var(--font-sans);
+  /* Carbon's body-compact-01: 14px with 0.16px tracking. */
+  letter-spacing: 0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-mono, pre, code, kbd {
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+}

@@ -1,0 +1,81 @@
+{{- if and .Values.rbac.create .Values.inCluster.enabled .Values.inCluster.impersonate (not .Values.rbac.impersonate) }}
+{{- fail "inCluster.impersonate needs rbac.impersonate: true (the ServiceAccount then reads as each person, and loses its own read access)" }}
+{{- end }}
+{{- $reader := and .Values.rbac.clusterReader (not .Values.inCluster.impersonate) }}
+{{- if and .Values.rbac.create (or $reader .Values.rbac.impersonate) }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gitopsify.fullname" . }}
+  labels:
+    {{- include "gitopsify.labels" . | nindent 4 }}
+rules:
+  {{- if $reader }}
+  # A scan lists every kind of object (Secrets included: it decides how
+  # they reach Git safely) and never writes. Only list and watch: "*" also
+  # matches subresources, and get on them would reach nodes/proxy (the
+  # kubelet), pods/log and services/proxy. Not granted when the cluster is
+  # read as the signed-in person (inCluster.impersonate).
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: [list, watch]
+  {{- end }}
+  {{- if .Values.rbac.impersonate }}
+  # Read as the signed-in person (inCluster.impersonate). gitopsify never
+  # impersonates system: users or groups, but Kubernetes can't enforce that:
+  # treat this ServiceAccount as highly privileged.
+  - apiGroups: [""]
+    resources: [users, groups]
+    verbs: [impersonate]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gitopsify.fullname" . }}
+  labels:
+    {{- include "gitopsify.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gitopsify.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gitopsify.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- with .Values.inCluster.sealedSecrets }}
+{{- if and $.Values.rbac.create $.Values.inCluster.enabled .controllerNamespace .controllerName (not $.Values.inCluster.impersonate) }}
+---
+# Sealing for this cluster fetches the sealed-secrets controller's public
+# certificate through the API server's service proxy: only that service.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gitopsify.fullname" $ }}-sealed-secrets
+  namespace: {{ .controllerNamespace }}
+  labels:
+    {{- include "gitopsify.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [services/proxy]
+    resourceNames: [{{ .controllerName | quote }}, {{ printf "http:%s:" .controllerName | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gitopsify.fullname" $ }}-sealed-secrets
+  namespace: {{ .controllerNamespace }}
+  labels:
+    {{- include "gitopsify.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gitopsify.fullname" $ }}-sealed-secrets
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gitopsify.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

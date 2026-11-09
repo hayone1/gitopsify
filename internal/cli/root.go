@@ -5,16 +5,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime"
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/hayone1/gitopsify/internal/telemetry"
 	"github.com/hayone1/gitopsify/internal/ui"
+	"github.com/hayone1/gitopsify/pkg/gitrepo"
 )
 
 // Version, Commit and Date are set at build time with -ldflags
@@ -72,7 +78,10 @@ func Execute() int {
 	defer stop()
 	o := &options{}
 	root := newRoot(o)
-	if err := root.ExecuteContext(ctx); err != nil {
+	err := root.ExecuteContext(ctx)
+	stop() // a second Ctrl-C ends the wait for the collector
+	o.endTelemetry(err)
+	if err != nil {
 		var ee *exitError
 		if errors.As(err, &ee) {
 			if ee.msg != "" {
@@ -91,6 +100,62 @@ func Execute() int {
 }
 
 func (o *options) ui() *ui.UI { return ui.New(o.noInput, o.noColor, o.quiet) }
+
+// startTelemetry starts OpenTelemetry when the OTEL_* variables ask for it
+// (docs/observability.md), with a span for the command. The server and the
+// local UI run until stopped: their requests and runs have spans instead.
+func (o *options) startTelemetry(cmd *cobra.Command) {
+	// Shell completion runs on every Tab and shell start (completion bash).
+	for c := cmd; c != nil; c = c.Parent() {
+		if name := c.Name(); strings.HasPrefix(name, "__complete") || name == "completion" || name == "help" {
+			return
+		}
+	}
+	path := cmd.CommandPath()
+	service := "gitopsify"
+	if path == "gitopsify server" {
+		service = "gitopsify-server"
+	}
+	if err := telemetry.Setup(cmd.Context(), service, Version); err != nil {
+		if service == "gitopsify-server" {
+			slog.New(slog.NewJSONHandler(os.Stderr, nil)).Warn("OpenTelemetry settings ignored", "error", err.Error())
+		} else {
+			o.ui().Warn("OpenTelemetry: %v", err)
+		}
+	}
+	if !telemetry.Enabled() || path == "gitopsify server" || path == "gitopsify ui" {
+		return
+	}
+	ctx, span := telemetry.Tracer().Start(cmd.Context(), path, trace.WithSpanKind(trace.SpanKindInternal))
+	cmd.SetContext(ctx)
+	o.span = span
+}
+
+// endTelemetry ends the command's span and sends what's left, waiting five
+// seconds at most for the collector.
+func (o *options) endTelemetry(err error) {
+	if !telemetry.Enabled() {
+		return
+	}
+	if o.span != nil {
+		var ee *exitError
+		switch {
+		case err == nil:
+		case errors.As(err, &ee) && ee.code == 2:
+			// --exit-code: changes present, nothing failed.
+		case err.Error() == "":
+			o.span.SetStatus(codes.Error, "failed")
+		default:
+			o.span.SetStatus(codes.Error, gitrepo.RedactURLs(err.Error()))
+		}
+		o.span.End()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := telemetry.Shutdown(ctx); err != nil {
+		o.ui().Warn("OpenTelemetry: %v", err)
+	}
+}
 
 func newRoot(o *options) *cobra.Command {
 	root := &cobra.Command{
@@ -120,12 +185,16 @@ providers: gitopsify provider search, then gitopsify export <provider>.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       versionString(),
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			o.startTelemetry(cmd)
+		},
 	}
 	o.addGlobal(root.PersistentFlags())
 	root.AddGroup(
 		&cobra.Group{ID: "migrate", Title: "Migration:"},
 		&cobra.Group{ID: "target", Title: "Target cluster:"},
 		&cobra.Group{ID: "providers", Title: "Tools to Terraform and Crossplane:"},
+		&cobra.Group{ID: "web", Title: "Web UI and server:"},
 	)
 	for _, c := range []*cobra.Command{newInit(o), newScan(o), newGenerate(o), newMigrate(o)} {
 		c.GroupID = "migrate"
@@ -137,6 +206,10 @@ providers: gitopsify provider search, then gitopsify export <provider>.`,
 	}
 	for _, c := range []*cobra.Command{newExport(o), newProvider(o)} {
 		c.GroupID = "providers"
+		root.AddCommand(c)
+	}
+	for _, c := range []*cobra.Command{newUI(o), newServer(o), newLogin(o), newLogout(o), newWhoami(o), newRun(o)} {
+		c.GroupID = "web"
 		root.AddCommand(c)
 	}
 	root.AddCommand(newRules(o), newDoctor(o), newSkills(o), newVersion(), newGenDocs(o))

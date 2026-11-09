@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"strings"
@@ -170,11 +172,117 @@ func TestSealedPerEnvironment(t *testing.T) {
 			t.Errorf("%s: %q", env, got)
 		}
 	}
+
+	// An environment's transforms apply before sealing: prod's Secret has
+	// prod's value, sealed for prod's namespace.
+	cfg.Environments[1].Transforms = []config.Transform{
+		{Type: "replace", From: "s3cr3t", To: "pr0d"},
+		{Type: "namespace", Map: map[string]string{"shop": "shop-prod"}},
+	}
+	inv = inventory()
+	if _, err := Run(inv, Options{Config: cfg, Cert: func(env string) (*rsa.PublicKey, error) { return &keys[env].PublicKey, nil }}); err != nil {
+		t.Fatal(err)
+	}
+	prod := inv.Objects[0].EnvOut["prod"]
+	enc, _, _ := unstructured.NestedStringMap(prod.Object, "spec", "encryptedData")
+	ct, _ := base64.StdEncoding.DecodeString(enc["password"])
+	if got := unseal(t, keys["prod"], ct, []byte("shop-prod/db")); got != "pr0d" || prod.GetNamespace() != "shop-prod" {
+		t.Errorf("prod: %q in %s", got, prod.GetNamespace())
+	}
 }
 
 func TestSOPSArgs(t *testing.T) {
 	args := strings.Join(SOPSArgs(config.SOPS{Age: []string{"age1a", "age1b"}, EncryptedRegex: "^(data|stringData)$"}), " ")
 	if !strings.Contains(args, "--age age1a,age1b") || !strings.Contains(args, "--encrypted-regex ^(data|stringData)$") {
 		t.Errorf("args = %s", args)
+	}
+}
+
+// Binary values (keystores) reach the store base64-encoded, and the
+// ExternalSecret decodes them; a Secret without keys stays as it is.
+func TestExternalSecretsBinaryAndEmpty(t *testing.T) {
+	cfg := config.New()
+	cfg.Secrets.Strategy = config.SecretsExternalSecrets
+	inv := inventory()
+	ks := []byte{0xfe, 0xed, 0xfe, 0xed, 0x00, 0x02, 0xff}
+	_ = unstructured.SetNestedField(inv.Objects[0].Out.Object, base64.StdEncoding.EncodeToString(ks), "data", "keystore.jks")
+	empty := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "empty", "namespace": "shop"}}}
+	inv.Add(&model.Object{Ref: model.RefOf(empty), Namespaced: true, Live: empty, Out: empty.DeepCopy()})
+	res, err := Run(inv, Options{Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _, _ := unstructured.NestedSlice(inv.Objects[0].Out.Object, "spec", "data")
+	strategy := map[string]any{}
+	for _, d := range data {
+		m := d.(map[string]any)
+		strategy[m["secretKey"].(string)] = m["remoteRef"].(map[string]any)["decodingStrategy"]
+	}
+	if strategy["keystore.jks"] != "Base64" || strategy["password"] != nil {
+		t.Errorf("decoding strategies: %v", strategy)
+	}
+	var values map[string]string
+	if err := json.Unmarshal(res.LocalFiles[".secrets/external-secrets/shop/db.json"], &values); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := base64.StdEncoding.DecodeString(values["keystore.jks"]); !bytes.Equal(b, ks) || values["password"] != "s3cr3t" {
+		t.Errorf("values: %v", values)
+	}
+	for _, o := range inv.Objects {
+		if o.Ref.Name == "empty" && (o.Out == nil || o.Out.GetKind() != "Secret") {
+			t.Errorf("the empty Secret became %v", o.Out)
+		}
+	}
+}
+
+// TestFingerprints: a sealed Secret's fingerprint is stable while the
+// source Secret, the settings and the key don't change, changes with each
+// of them, never holds the value, and is empty for Secrets read from files.
+func TestFingerprints(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	other, _ := rsa.GenerateKey(rand.Reader, 2048)
+	cfg := config.New()
+	cfg.Secrets.Strategy = config.SecretsSealedSecrets
+	cfg.Environments = []config.Environment{{Name: "uat"}}
+	run := func(mutate func(inv *model.Inventory), pub *rsa.PublicKey) string {
+		t.Helper()
+		inv := inventory()
+		inv.Objects[0].Live.SetUID("uid-1")
+		inv.Objects[0].Live.SetResourceVersion("41")
+		if mutate != nil {
+			mutate(inv)
+		}
+		if _, err := Run(inv, Options{Config: cfg, Cert: func(string) (*rsa.PublicKey, error) { return pub, nil }}); err != nil {
+			t.Fatal(err)
+		}
+		return inv.Objects[0].Fingerprints["uat"]
+	}
+	base := run(nil, &key.PublicKey)
+	if base == "" || run(nil, &key.PublicKey) != base {
+		t.Fatalf("not stable: %q", base)
+	}
+	for name, fp := range map[string]string{
+		"new resourceVersion": run(func(inv *model.Inventory) { inv.Objects[0].Live.SetResourceVersion("42") }, &key.PublicKey),
+		"another key":         run(nil, &other.PublicKey),
+		"a label":             run(func(inv *model.Inventory) { inv.Objects[0].Out.SetLabels(map[string]string{"x": "y"}) }, &key.PublicKey),
+	} {
+		if fp == base || fp == "" {
+			t.Errorf("%s: fingerprint %q", name, fp)
+		}
+	}
+	cfg.Environments[0].Transforms = []config.Transform{{Type: "replace", From: "s3cr3t", To: "other"}}
+	if run(nil, &key.PublicKey) == base {
+		t.Error("a transform didn't change the fingerprint")
+	}
+	cfg.Environments[0].Transforms = nil
+	if fp := run(func(inv *model.Inventory) { inv.Source.Offline = true }, &key.PublicKey); fp != "" {
+		t.Errorf("read from files: %q", fp)
+	}
+	// The value doesn't go in: changing it without a new resourceVersion
+	// (impossible in a cluster) keeps the fingerprint.
+	if fp := run(func(inv *model.Inventory) {
+		_ = unstructured.SetNestedField(inv.Objects[0].Out.Object, base64.StdEncoding.EncodeToString([]byte("changed")), "data", "password")
+	}, &key.PublicKey); fp != base {
+		t.Error("the value is part of the fingerprint")
 	}
 }

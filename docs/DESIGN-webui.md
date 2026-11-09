@@ -1,62 +1,55 @@
-# Design: web UI (proposal)
+# Design: web UI and server
 
-Status: proposal, to agree on before building.
+Status: built (branch `webui`). User guide: [web-ui.md](web-ui.md).
 
 ## Goal
 
-A browser front end for what the CLI does, for people who'd rather see and
-click than read flags: migrate a cluster to a GitOps repository, and export a
-tool through a provider. It must not become a second product: every run
-produces the same configuration file the CLI uses (a `Migration` or `Export`
-resource), with the command to replay it in CI.
+A browser front end for what the CLI does, for one person (`gitopsify ui`)
+and for teams (`gitopsify server`, the Helm chart), that an enterprise can
+adopt: single sign-on, roles per cluster and tool, an audit log, high
+availability, and nothing that lets one team reach another's clusters,
+repositories or Secrets.
 
-## Shape
+## Decisions
 
-- **Local first:** `gitopsify ui` starts a server on `127.0.0.1` (random
-  port), opens the browser and uses the same kubeconfig, environment and
-  provider directory as the CLI. Credentials never leave the machine.
-- **Same engine:** an HTTP API in the binary (`internal/web`) on top of the
-  packages the CLI uses (`pkg/pipeline`, `pkg/target`, `pkg/bootstrap`,
-  `pkg/provider`, `pkg/iac`); progress streams over server-sent events.
-- **Frontend** embedded in the binary with `go:embed`, built in CI.
-- Later, not v1: an in-cluster, multi-user mode (OIDC, RBAC).
-
-## Flows
-
-1. **Migrate:** pick a kube context (with `doctor`'s checks), scan, select
-   namespaces and apps in a tree (dependencies shown), choose the target
-   (Kustomize / Argo CD / Flux, layout, secrets), preview the repository
-   (file tree, contents, `kustomize build`), diff the first sync against the
-   target cluster, write or push, bootstrap, watch status.
-2. **Export:** pick a provider (installed or from the index), fill settings
-   (secrets masked), check, pick partitions, kinds and objects (references
-   pulled in), choose Terraform and/or Crossplane, preview, write, save the
-   `Export` resource.
-3. **Configuration:** open an existing `gitopsify.yaml` /
-   `gitopsify-<provider>.yaml`, edit with schema validation, run it.
-
-## Security (local server)
-
-Bound to localhost only; a random token in the opening URL, then a cookie;
-`Host` header checked (DNS rebinding); no CORS; state-changing requests need
-the token; secret values are never sent back to the browser; `--listen` for
-other addresses prints a warning.
-
-## Stack (open question)
-
-| Option | For | Against |
+| # | Decision | Why |
 |---|---|---|
-| **React + TypeScript (Vite)** (recommended) | Biggest ecosystem for what this needs: tree pickers, a YAML/HCL editor with schema validation (Monaco), diff viewers; easy to find contributors | Node toolchain for frontend work; larger bundle |
-| Svelte + TypeScript | Smaller and simpler | Fewer ready-made components |
-| Go templates + htmx | No JS toolchain at all | Hard for the editor, diff and tree views |
+| W1 | **One binary.** The server is `internal/server` in the gitopsify binary; the UI (Nuxt 4, Nuxt UI 4, `ui/`) is a static single-page app built into `web/dist` and embedded. No Node at runtime | Same release, image and version as the CLI; the API is the only interface |
+| W2 | **The CLI's engine, the CLI's files.** Runs call `pkg/pipeline`, `pkg/iac`, `pkg/provider`; what someone configures is a `Migration` or `Export` resource the CLI and CI run unchanged | The UI can't drift from the CLI, and a click-built migration becomes code |
+| W3 | **Runs are background jobs** (scan, migrate, export) with a log streamed over server-sent events, persisted output, download and push | Scans and Helm resolution take minutes; people come back later |
+| W4 | **Sign-in**: OIDC code flow with PKCE, state and nonce; sessions are AES-GCM sealed cookies (no session store); a CSRF header on changes; API tokens stored as SHA-256 for CI; local mode is a single-use link on localhost | Works with every identity provider and across replicas without shared session storage |
+| W5 | **Roles** viewer/operator/admin bound to users and groups, per cluster and per tool (globs); server-wide actions need an unlimited binding | Teams own clusters and tools; platform admins own the server |
+| W6 | **The server's access is never the user's input.** Clusters and tools are picked by name and their credentials come from the configuration; a submitted resource can't name files, kubeconfigs or tokens. Optionally clusters are read **as the signed-in person** (impersonation, never `system:` identities) | Operators must not reach the server's files or other clusters through a YAML field |
+| W7 | **Git is the dangerous edge.** Remotes are https/ssh only, validated before use, run with protocol allowlists, no hooks or symbolic links, stall timeouts and a context; `git.repositories` says which repositories each cluster's and tool's runs may use with the server's credentials | A remote URL can be a command (`--upload-pack=`); a checkout can redirect writes (symlinks); shared credentials can write another team's GitOps repository |
+| W8 | **Secret values stay out of runs** unless an admin allows them (`allowSecretValues`): no strategies that store values, no transforms that can move or test data (jsonPatch copy/move/test, kind changes, renaming encrypted Secrets; their values come out of transforms unchanged), the default SOPS regex, strict sealing with the controller the server configures per cluster, Helm values that look like credentials redacted; SOPS only to admin-approved recipients unless the cluster impersonates | Runs are downloadable by every viewer of the cluster; a migration is code the operator writes, so every field that decides where values go is the server's. The target is out of scope: pushing to its repository is deploying to it |
+| W9 | **Storage behind an interface**: the data directory (file, one replica) or PostgreSQL (several replicas: logs followed from the database, cancel through a flag, outputs archived and versioned, unpacked again when a push changed them, pushes locked across replicas by leases, heartbeats in database time, owner-fenced updates, atomic reaping) | The demo/PVC pattern and the production pattern, with the same code above them |
+| W10 | **Operability**: JSON logs with request IDs, an audit log (JSON lines or a table) for SIEMs, Prometheus metrics, OpenTelemetry traces, metrics and logs (OTLP/HTTP, the standard OTEL_* variables, built in and off until asked: the zero-code options need a privileged eBPF agent or a build wrapper without routes or logs), health probes, rate limits behind trusted proxies, webhooks (Slack, Teams, JSON), a hardened chart (non-root, read-only root, no capabilities, scoped RBAC, NetworkPolicy, ServiceMonitor, PDB) | What a platform team asks before running something in production |
+| W11 | **Carbon's look**: IBM's Carbon Design System (open source) for colors, themes (White, Gray 100) and type (IBM Plex, bundled), applied as Nuxt UI theme variables; light, dark or the system's | A recognizable enterprise design language instead of a framework's defaults, without writing components: Nuxt UI's stay, only their tokens change |
+| W12 | **One CLI, local or remote**: `gitopsify login` and `gitopsify run` talk to the server's REST API from the same binary, as Argo Workflows' CLI does. Sign-in reuses the server's OIDC client and callback. The person confirms on a page that shows a check code the terminal shows too; only then does the browser get a code, sealed with the session key and bound to the CLI's PKCE challenge, handed to 127.0.0.1 or shown for pasting. The CLI exchanges it for a bearer session (`gts_`: the cookie's contents under another sealing purpose; no CSRF header, since browsers never send it). No CRDs or controller: scheduled sync is a CronJob or CI job built from `--push-branch`, `--exit-code` and stable output (docs/scheduled-sync.md) | Users wanted Argo-style remote administration and periodic pull requests; a second binary would split docs and releases, and CRDs plus a controller would add an etcd-backed API and leader election for what a CronJob does. Stateless codes work on every replica |
 
-## Testing
+## Tests
 
-API tests in Go; browser tests with Playwright in CI (not on the WSL machine).
+- `internal/server` tests: an in-process fake OIDC provider (sign-in,
+  refusals, forged cookies), roles, tokens, CSRF, runs and live events,
+  cancel and restart, files and archives without secrets, exports through
+  a fake provider (served by the test binary), notifications, headers and
+  CSP, rate limits, the store conformance suite on files and PostgreSQL, two
+  replicas on one database, and the review's attack cases (remote URLs,
+  symlinks, redirects, impersonation, unverified emails, proxies).
+- `test/e2e/webui/run.sh`: kind seeded like the CLI's e2e suite, Keycloak,
+  a Git server and Playwright signing in as an operator, a viewer and an
+  admin; `chart.sh` repeats the browser tests against the image and the
+  chart (two replicas on PostgreSQL, impersonation) in kind.
 
-## Open questions
+## Not yet
 
-1. Stack (above).
-2. Local-only for v1 (recommended), or in-cluster from the start?
-3. Order: the registry first (smaller, and it needs the releases that now
-   exist), then the UI (recommended).
+- Revoking single sessions (sessions are stateless until they expire;
+  rotating the key signs everyone out).
+- Redacting Helm values by more than key names, or writing them as
+  encrypted values files referenced from the HelmRelease.
+- Batching run log writes, and resuming runs a stopping replica had to
+  interrupt.
+- Editing the server configuration (clusters, tools, bindings) in the UI:
+  it lives in Git, deployed with the chart.
+- Bootstrap and status of the target (`gitopsify bootstrap`/`status`) from
+  the UI: they change clusters, which runs deliberately never do yet.

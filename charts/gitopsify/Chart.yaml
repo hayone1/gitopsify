@@ -1,0 +1,24 @@
+apiVersion: v2
+name: gitopsify
+description: gitopsify's web UI for teams - turn running clusters into GitOps repositories, with single sign-on, roles per cluster and an audit log
+type: application
+version: 0.1.0
+appVersion: "0.2.0"
+home: https://github.com/hayone1/gitopsify
+sources:
+  - https://github.com/hayone1/gitopsify
+keywords: [gitops, argocd, flux, kustomize, migration]
+maintainers:
+  - name: hayone1
+    url: https://github.com/hayone1
+annotations:
+  artifacthub.io/category: integration-delivery
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://github.com/hayone1/gitopsify/blob/main/docs/web-ui.md
+    - name: support
+      url: https://github.com/hayone1/gitopsify/issues
+  artifacthub.io/images: |
+    - name: gitopsify
+      image: docker.io/hayone/gitopsify:0.2.0

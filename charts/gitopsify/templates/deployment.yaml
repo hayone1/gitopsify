@@ -1,0 +1,153 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gitopsify.fullname" . }}
+  labels:
+    {{- include "gitopsify.labels" . | nindent 4 }}
+spec:
+  {{- if eq .Values.storage.type "postgres" }}
+  # Replicas share PostgreSQL: any of them serves any run.
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+  {{- else }}
+  # One replica: runs work in this pod and its volume holds their output.
+  replicas: 1
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "gitopsify.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gitopsify.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include "gitopsify.serverConfig" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "gitopsify.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Stopping waits for runs (15s), requests (10s) and pushes (20s).
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: gitopsify
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [server, --config, /etc/gitopsify/server.yaml]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # git, helm and kubectl keep caches in HOME; the root file system is read-only.
+            - name: HOME
+              value: /tmp
+            - name: GITOPSIFY_SESSION_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "gitopsify.secretName" . }}, key: session-key}
+            - name: GITOPSIFY_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: {{ include "gitopsify.secretName" . }}, key: oidc-client-secret}
+            {{- if eq .Values.storage.type "postgres" }}
+            - name: GITOPSIFY_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.postgres.existingSecret | default (printf "%s-postgres" (include "gitopsify.fullname" .)) }}
+                  key: {{ if .Values.storage.postgres.existingSecret }}{{ .Values.storage.postgres.secretKey }}{{ else }}url{{ end }}
+            {{- end }}
+            {{- $otel := .Values.opentelemetry }}
+            {{- if or $otel.endpoint $otel.env }}
+            {{- with $otel.endpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: GITOPSIFY_POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: GITOPSIFY_POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            {{- $attrs := printf "service.instance.id=$(GITOPSIFY_POD_NAME),k8s.pod.name=$(GITOPSIFY_POD_NAME),k8s.namespace.name=$(GITOPSIFY_POD_NAMESPACE),k8s.deployment.name=%s" (include "gitopsify.fullname" .) }}
+            {{- with $otel.env.OTEL_RESOURCE_ATTRIBUTES }}
+            {{- $attrs = printf "%s,%s" $attrs . }}
+            {{- end }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ $attrs | quote }}
+            {{- range $name, $value := $otel.env }}
+            {{- if not (or (eq $name "OTEL_RESOURCE_ATTRIBUTES") (and (eq $name "OTEL_EXPORTER_OTLP_ENDPOINT") $otel.endpoint)) }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/gitopsify/server.yaml
+              subPath: server.yaml
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/gitopsify
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "gitopsify.fullname" . }}
+        - name: data
+          {{- if and .Values.persistence.enabled (ne .Values.storage.type "postgres") }}
+          persistentVolumeClaim:
+            claimName: {{ default (include "gitopsify.fullname" .) .Values.persistence.existingClaim }}
+          {{- else }}
+          emptyDir:
+            {{- with .Values.persistence.workSizeLimit }}
+            sizeLimit: {{ . }}
+            {{- else }}
+            {}
+            {{- end }}
+          {{- end }}
+        - name: tmp
+          emptyDir: {sizeLimit: {{ .Values.persistence.tmpSizeLimit | default "4Gi" }}}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

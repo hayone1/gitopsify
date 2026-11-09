@@ -68,6 +68,9 @@ func ReadCheck(r io.Reader) (*CheckResult, error) {
 	if err == nil && c == nil {
 		err = fmt.Errorf("the provider answered check without a result")
 	}
+	if c != nil && c.Partitions == nil {
+		c.Partitions = []Partition{}
+	}
 	return c, err
 }
 

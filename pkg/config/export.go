@@ -114,8 +114,8 @@ func (s SettingValue) MarshalJSON() ([]byte, error) {
 // Literal reports whether the value is written in the file itself.
 func (s SettingValue) Literal() bool { return s.Env == "" && s.File == "" }
 
-// Resolve returns the value: from the environment, a file (trimmed), or as
-// written.
+// Resolve returns the value: from the environment or a file (both without
+// surrounding whitespace, such as a trailing newline), or as written.
 func (s SettingValue) Resolve() (string, error) {
 	switch {
 	case s.Env != "":
@@ -123,7 +123,8 @@ func (s SettingValue) Resolve() (string, error) {
 		if !ok {
 			return "", fmt.Errorf("environment variable %s is not set", s.Env)
 		}
-		return v, nil
+		// Kubernetes Secrets made from files often end in a newline.
+		return strings.TrimSpace(v), nil
 	case s.File != "":
 		b, err := os.ReadFile(ExpandHome(s.File))
 		if err != nil {
@@ -260,6 +261,12 @@ func (x *Export) Validate() error {
 			return fmt.Errorf("spec.output.formats: %q isn't terraform or crossplane", f)
 		}
 	}
+	// Namespaces are <prefix>-<instance>-<partition>: a prefix that isn't
+	// the start of a DNS label makes names Kubernetes refuses, and the
+	// export's state unusable.
+	if p := e.Output.Crossplane.NamespacePrefix; p != "" && (len(p) > 20 || !dnsLabel.MatchString(p)) {
+		return fmt.Errorf("spec.output.crossplane.namespacePrefix %q: lowercase letters, digits and dashes, at most 20", p)
+	}
 	switch e.Output.SecretValues {
 	case "", SecretValuesSkip, SecretValuesLocal:
 	default:
@@ -286,6 +293,20 @@ func LoadExport(path, name string) (*Export, error) {
 	if err != nil {
 		return nil, err
 	}
+	return findExport(path, name, docs)
+}
+
+// ParseExport reads the export in data, as LoadExport does a file's; name
+// appears in errors.
+func ParseExport(name string, data []byte) (*Export, error) {
+	docs, err := ParseDocuments(name, data)
+	if err != nil {
+		return nil, err
+	}
+	return findExport(name, "", docs)
+}
+
+func findExport(path, name string, docs []Document) (*Export, error) {
 	exports := Find(docs, KindExport, "")
 	if len(exports) == 0 {
 		var kinds []string

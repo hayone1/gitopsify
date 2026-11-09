@@ -12,6 +12,3 @@ spec:
           env:
             - name: ENDPOINT
               value: https://api.example.com
-          image: registry.k8s.io/pause:3.10
-          ports:
-            - containerPort: 8080

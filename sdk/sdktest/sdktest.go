@@ -303,10 +303,12 @@ func CheckInventory(d sdk.Description, inv sdk.Inventory) []string {
 					if m.File == "" || clean != m.File || path.IsAbs(m.File) || clean == "." || strings.HasPrefix(clean, "../") || clean == ".." || strings.Contains(m.File, `\`) {
 						p.add("%s: file path %q must be relative, clean and use forward slashes", where, m.File)
 					}
-					if m.Content == nil {
+					if raw, ok := m.Content.(sdk.RawJSON); m.Content == nil || ok && (len(raw) == 0 || string(raw) == "null") {
 						p.add("%s: file %q has no content", where, m.File)
 					}
-					fk := r.Partition + "\x00" + m.File
+					// Paths that differ only by case or punctuation become
+					// one file name: tell them apart by more than that.
+					fk := r.Partition + "\x00" + strings.ToLower(fileKey.ReplaceAllString(m.File, ""))
 					if other, dup := files[fk]; dup {
 						p.add("%s: file %q is also used by %s", where, m.File, other)
 					}
@@ -329,8 +331,24 @@ func CheckInventory(d sdk.Description, inv sdk.Inventory) []string {
 			p.add("skipped %+v needs a kind, a name and a reason", sk)
 		}
 	}
+	// A warning marks what wasn't read: a kind it doesn't name exactly
+	// leaves what wasn't read looking deleted. (A partition it names may be
+	// one the provider couldn't open, so not announced: use its ID.)
+	for _, w := range inv.Warnings {
+		if w.Kind != "" {
+			if _, ok := d.Kind(w.Kind); !ok {
+				p.add("warning %+v names kind %q, which the description doesn't have", w, w.Kind)
+			}
+		}
+		if w.Message == "" {
+			p.add("warning %+v needs a message", w)
+		}
+	}
 	return p
 }
+
+// fileKey drops what file names lose when gitopsify writes them.
+var fileKey = regexp.MustCompile(`[^A-Za-z0-9/.]+`)
 
 // everything resolves every reference and secret, to exercise ForProvider.
 type everything struct{}

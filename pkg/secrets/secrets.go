@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+	"unicode/utf8"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
@@ -22,6 +23,7 @@ import (
 	"github.com/hayone1/gitopsify/pkg/config"
 	"github.com/hayone1/gitopsify/pkg/match"
 	"github.com/hayone1/gitopsify/pkg/model"
+	"github.com/hayone1/gitopsify/pkg/transform"
 )
 
 // LocalDir is the git-ignored directory, relative to the output root, that
@@ -117,20 +119,43 @@ func Run(inv *model.Inventory, opts Options) (*Result, error) {
 				if err != nil {
 					return nil, err
 				}
-				sealed, err := Seal(rnd, pub, secret, cfg.Secrets.SealedSecrets.Scope)
+				// The environment's transforms apply to the Secret, before
+				// sealing: afterwards they would see only ciphertext (and a
+				// namespace change would break the sealing scope).
+				plain := secret
+				if len(e.Transforms) > 0 {
+					plain = secret.DeepCopy()
+					if _, err := transform.Object(plain, o, e.Transforms); err != nil {
+						return nil, fmt.Errorf("environment %s: %w", e.Name, err)
+					}
+				}
+				sealed, err := Seal(rnd, pub, plain, cfg.Secrets.SealedSecrets.Scope)
 				if err != nil {
 					return nil, err
 				}
 				sealedFor[e.Name] = sealed
+				if fp := Fingerprint(inv, o, plain, e.Transforms, cfg.Transforms, cfg.Secrets.SealedSecrets.Scope, keyID(pub)); fp != "" {
+					if o.Fingerprints == nil {
+						o.Fingerprints = map[string]string{}
+					}
+					o.Fingerprints[e.Name] = fp
+				}
 			}
-			if len(envs) == 1 {
-				o.Out = sealedFor[envs[0].Name]
-			} else {
-				// Each cluster has its own sealing key.
-				o.Out = nil
-				o.EnvOut = sealedFor
-			}
+			// Each cluster has its own sealing key; renders take these as
+			// they are, without transforms.
+			o.Out = nil
+			o.EnvOut = sealedFor
 		case config.SecretsExternalSecrets:
+			if len(keys) == 0 {
+				continue // no values to keep out of Git: the Secret as it is
+			}
+			for _, e := range cfg.Environments {
+				for i, t := range e.Transforms {
+					if ok, _ := match.SelectorOrAll(t.Target, o, o.App); ok && (t.Type == "replace" || t.Type == "set" || t.Type == "jsonPatch") {
+						o.Warn("environment %s: transform %d (%s) doesn't change the values loaded into the store (one values file for every environment): change them in each environment's store", e.Name, i, t.Type)
+					}
+				}
+			}
 			es, remote, err := externalSecret(cfg, secret)
 			if err != nil {
 				return nil, err
@@ -179,13 +204,20 @@ func externalSecret(cfg *config.Config, secret *unstructured.Unstructured) (*uns
 	eso := cfg.Secrets.ExternalSecrets
 	ns, name := secret.GetNamespace(), secret.GetName()
 	values := map[string]string{}
+	// Values that aren't text (keystores) go to the store base64-encoded,
+	// and the ExternalSecret decodes them: JSON would mangle their bytes.
+	binary := map[string]bool{}
 	data, _, _ := unstructured.NestedStringMap(secret.Object, "data")
 	for k, v := range data {
 		b, err := base64.StdEncoding.DecodeString(v)
 		if err != nil {
 			return nil, nil, fmt.Errorf("secret %s/%s key %s: %w", ns, name, k, err)
 		}
-		values[k] = string(b)
+		if utf8.Valid(b) {
+			values[k] = string(b)
+		} else {
+			values[k], binary[k] = v, true
+		}
 	}
 	sd, _, _ := unstructured.NestedStringMap(secret.Object, "stringData")
 	for k, v := range sd {
@@ -224,14 +256,25 @@ func externalSecret(cfg *config.Config, secret *unstructured.Unstructured) (*uns
 		sort.Strings(keys)
 		var items []any
 		for _, k := range keys {
-			items = append(items, map[string]any{
-				"secretKey": k,
-				"remoteRef": map[string]any{"key": remoteKey(cfg, ns, name, k), "property": k},
-			})
+			ref := map[string]any{"key": remoteKey(cfg, ns, name, k), "property": k}
+			if binary[k] {
+				ref["decodingStrategy"] = "Base64"
+			}
+			items = append(items, map[string]any{"secretKey": k, "remoteRef": ref})
 		}
 		spec["data"] = items
 	} else {
-		spec["dataFrom"] = []any{map[string]any{"extract": map[string]any{"key": remoteKey(cfg, ns, name, "")}}}
+		extract := map[string]any{"key": remoteKey(cfg, ns, name, "")}
+		if len(binary) > 0 {
+			// One decoding for every key: encode them all.
+			for k, v := range values {
+				if !binary[k] {
+					values[k] = base64.StdEncoding.EncodeToString([]byte(v))
+				}
+			}
+			extract["decodingStrategy"] = "Base64"
+		}
+		spec["dataFrom"] = []any{map[string]any{"extract": extract}}
 	}
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": eso.APIVersion,

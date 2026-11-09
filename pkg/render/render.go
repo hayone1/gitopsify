@@ -90,6 +90,10 @@ func Render(inv *model.Inventory, opts Options) (*Tree, error) {
 		if err := r.renderLayout(l); err != nil {
 			return nil, err
 		}
+		if l.root != "" {
+			// A repository of its own: it keeps its own list of files.
+			r.tree.roots = append(r.tree.roots, l.root)
+		}
 	}
 	if err := r.rootFiles(); err != nil {
 		return nil, err
@@ -152,7 +156,7 @@ func (r *renderer) renderLayout(l layout) error {
 // rootFiles writes the effective configuration and local secret files at the
 // output root.
 func (r *renderer) rootFiles() error {
-	b, err := r.cfg.Marshal()
+	b, err := r.cfg.Portable().Marshal()
 	if err != nil {
 		return err
 	}

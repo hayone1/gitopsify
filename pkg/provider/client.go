@@ -52,6 +52,8 @@ type Client struct {
 	Path string
 	// Log receives the provider's progress; nil drops it.
 	Log func(LogLine)
+	// Env is the provider's environment; nil passes this process's.
+	Env []string
 }
 
 // Error is a failure of a provider call.
@@ -147,6 +149,9 @@ func (c *Client) run(ctx context.Context, method string, req *sdk.Request, read 
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	}
 	cmd.WaitDelay = 5 * time.Second
+	if c.Env != nil {
+		cmd.Env = c.Env
+	}
 	if req != nil {
 		r := *req
 		if r.APIVersion == "" {
@@ -195,8 +200,22 @@ func (c *Client) run(ctx context.Context, method string, req *sdk.Request, read 
 		_ = stderr.Close()
 		<-drained
 	}
-	wg.Wait()
+	// A child of the provider (a credential helper, a port-forward) can
+	// hold stderr open after the provider exits: stop reading it then.
+	stderrDone := make(chan struct{})
+	go func() { wg.Wait(); close(stderrDone) }()
+	closedStderr := false
+	select {
+	case <-stderrDone:
+	case <-time.After(5 * time.Second):
+		_ = stderr.Close()
+		closedStderr = true
+		<-stderrDone
+	}
 	waitErr := cmd.Wait()
+	if closedStderr && waitErr != nil && strings.Contains(waitErr.Error(), "broken pipe") {
+		waitErr = nil // our closing stderr killed it, after its answer
+	}
 
 	if ctx.Err() != nil {
 		return fail(ctx.Err(), tail.lines())

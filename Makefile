@@ -2,10 +2,22 @@
 VERSION ?= $(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/hayone1/gitopsify/internal/cli.Version=$(VERSION)
 
-.PHONY: build test golden docs gifs lint e2e e2e-vm live clean
+.PHONY: build test golden docs gifs lint e2e e2e-vm live clean ui ui-dev
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/gitopsify ./cmd/gitopsify
+
+# The web UI (ui/, Nuxt) built into web/dist, which the binary embeds. Run it
+# before make build for a binary with the UI; go install builds have none.
+ui:
+	cd ui && pnpm install --frozen-lockfile && pnpm typecheck && pnpm generate
+	find web/dist -mindepth 1 ! -name README -exec rm -rf {} +
+	cp -R ui/.output/public/. web/dist/
+
+# Develop the UI against a local server: gitopsify ui --listen 127.0.0.1:8080
+# in one terminal, this in another (http://localhost:3000).
+ui-dev:
+	cd ui && pnpm dev
 
 # The SDK (sdk/) is its own Go module, so it is tested and vetted separately.
 test:
@@ -25,7 +37,7 @@ golden:
 # command, a flag or the configuration.
 docs:
 	UPDATE_DOCS=1 go test ./internal/cli -run TestCommandReferenceIsCurrent
-	UPDATE_DOCS=1 go test ./pkg/config -run "TestSchemaIsCurrent|TestExportSchemaIsCurrent"
+	UPDATE_DOCS=1 go test ./pkg/config -run "TestSchemaIsCurrent|TestExportSchemaIsCurrent|TestServerSchemaIsCurrent"
 
 # Terminal recordings in docs/images, from docs/tapes, with VHS in Docker.
 gifs:

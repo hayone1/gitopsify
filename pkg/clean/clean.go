@@ -46,6 +46,10 @@ var stripAnnotations = []string{
 	"autopilot.gke.io/*",
 	// k3s and Rancher's objectset apply bookkeeping.
 	"objectset.rio.cattle.io/*",
+	// kapp's copies of the object as applied, Secret data included.
+	"kapp.k14s.io/original",
+	"kapp.k14s.io/original-diff*",
+	"kapp.k14s.io/identity",
 	// Load balancers and addresses allocated in the source cluster.
 	"kubernetes.digitalocean.com/load-balancer-id",
 	"metallb.universe.tf/ip-allocated-from-pool",

@@ -44,7 +44,7 @@ It asks before changing the target unless --yes is given.`,
 			if err := checkoutRemote(u, cfg); err != nil {
 				return err
 			}
-			if err := writeOutput(u, cfg, res, o.force); err != nil {
+			if _, err := writeOutput(u, cfg, res, o.force); err != nil {
 				return err
 			}
 			if g.commit || g.push || cfg.Output.Tool != config.ToolNone {

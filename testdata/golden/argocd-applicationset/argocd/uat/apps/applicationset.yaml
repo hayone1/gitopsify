@@ -37,6 +37,8 @@ spec:
               values:
                 - w0
     type: RollingSync
+  syncPolicy:
+    preserveResourcesOnDeletion: true
   template:
     metadata:
       name: '{{ .appName }}'

@@ -129,8 +129,9 @@ target silently keeps, and it grew to 35 s for 2000 dashboards in testing.
     <instance>/<partition>/        # namespace, ClusterProviderConfig, managed resources, kustomization
 ```
 
-Names come from display names (lowercase, `_` or `-` separated, never starting
-with a digit, `x` + hash when nothing is left), are unique per kind and
+Names come from display names (lowercase, `_` or `-` separated; Terraform
+names that would start with a digit get a leading `_`; `r_`/`r-` plus a hash,
+or `file-` plus a hash for files, when nothing is left), are unique per kind and
 workspace (case-insensitively), avoid Windows reserved file names, and stay as
 recorded in `.gitopsify/export.json`. Namespaces are at most 63 characters.
 
