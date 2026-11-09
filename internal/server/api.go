@@ -372,7 +372,17 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, ri *reqInfo) 
 	where := firstNonEmpty(req.Cluster, req.Tool)
 	if err != nil {
 		s.event(r, "run.create", "error", where, req.Type, err.Error())
-		writeError(w, http.StatusBadRequest, err.Error())
+		var se serverError
+		switch {
+		case errors.Is(err, errShuttingDown):
+			w.Header().Set("Retry-After", "5")
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+		case errors.As(err, &se):
+			s.log.ErrorContext(r.Context(), "starting a run", "request", ri.id, "error", err)
+			writeError(w, http.StatusInternalServerError, "the run couldn't be recorded (request "+ri.id+")")
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
 		return
 	}
 	s.event(r, "run.create", "ok", where, run.ID, req.Type+" "+run.Name)

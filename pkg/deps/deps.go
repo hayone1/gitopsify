@@ -101,13 +101,6 @@ func newGraph(inv *model.Inventory) *graph {
 	return g
 }
 
-func (g *graph) get(group, kind, ns, name string) *model.Object {
-	if name == "" {
-		return nil
-	}
-	return g.inv.Get(model.Ref{Group: group, Kind: kind, Namespace: ns, Name: name})
-}
-
 // of returns the objects o depends on or that are attached to it.
 func (g *graph) of(o *model.Object) []*model.Object {
 	var out []*model.Object

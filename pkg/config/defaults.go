@@ -169,6 +169,7 @@ func (c *Config) defaultOutput() {
 	}
 	if a.CreateProject == nil {
 		a.CreateProject = boolPtr(a.Project != "default")
+		c.derived.createProject = true
 	}
 	if a.Version == "" {
 		a.Version = DefaultArgoCDVersion
@@ -179,6 +180,7 @@ func (c *Config) defaultOutput() {
 	if a.Prune == nil {
 		// Pruning during a takeover deletes anything the export missed.
 		a.Prune = boolPtr(!c.Adopt.Enabled)
+		c.derived.prune = true
 	}
 	if a.SelfHeal == nil {
 		a.SelfHeal = boolPtr(true)
@@ -228,6 +230,17 @@ func (c *Config) Validate() error {
 		add("%s must be one of %s, got %q", field, strings.Join(allowed, ", "), v)
 	}
 	oneOf("scope.clusterScoped", c.Scope.ClusterScoped, "auto", "all", "none")
+	// Any rule that matches decides, before the built-in exclusions: a
+	// misspelled action must not include what they would leave out.
+	for i, r := range c.Scope.Rules {
+		oneOf(fmt.Sprintf("scope.rules[%d].action", i), r.Action, "include", "exclude")
+	}
+	if c.Output.Tool == ToolFlux && c.Output.Flux.Namespace != "flux-system" {
+		add("output.flux.namespace must be flux-system: Flux's install manifests, which bootstrap applies and Flux then manages itself, use that namespace")
+	}
+	if c.Adopt.Enabled && c.Output.ArgoCD.Prune != nil && *c.Output.ArgoCD.Prune {
+		add("output.argocd.prune: true with adopt: Argo CD would delete what the export missed during the takeover; remove prune (it is off while adopting) or set it to false")
+	}
 	oneOf("helm.mode", c.Helm.Mode, HelmAuto, HelmChart, HelmVendor, HelmManifests)
 	for _, r := range c.Helm.Resolvers {
 		oneOf("helm.resolvers[]", r, "local", "artifacthub")
@@ -490,6 +503,15 @@ func specField(name string) bool {
 func (c *Config) Document() any {
 	spec := *c
 	spec.APIVersion, spec.Kind = "", ""
+	// Defaults worked out from other fields stay unwritten: saved, they
+	// would no longer follow them (prune from adopt, createProject from
+	// project).
+	if c.derived.prune {
+		spec.Output.ArgoCD.Prune = nil
+	}
+	if c.derived.createProject {
+		spec.Output.ArgoCD.CreateProject = nil
+	}
 	return migrationDocument{APIVersion: c.APIVersion, Kind: c.Kind, Metadata: c.Metadata, Spec: spec}
 }
 

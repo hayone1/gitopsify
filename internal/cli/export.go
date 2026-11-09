@@ -450,7 +450,7 @@ func (r *exportRun) connect(ctx context.Context) error {
 		}
 		if inst == "" {
 			if len(c.Instances) > 1 {
-				return fmt.Errorf("--set %s: there are several instances; use --set <instance>.%s=...", k, k)
+				return fmt.Errorf("--set %s: there are several instances; use --set <instance>.%s=<value>", k, k)
 			}
 			inst = c.Instances[0].Name
 		}

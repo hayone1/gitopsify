@@ -1,0 +1,10 @@
+{
+  "app": "namespaces",
+  "appName": "uat-namespaces",
+  "appPath": "apps/namespaces/envs/uat",
+  "createNamespace": "false",
+  "namespace": "",
+  "skipDryRun": "false",
+  "type": "kustomize",
+  "wave": "w0"
+}

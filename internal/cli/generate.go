@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -155,6 +156,11 @@ func selectApps(u *ui.UI, cfg *config.Config, res *pipeline.Result) error {
 }
 
 func writeOutput(u *ui.UI, cfg *config.Config, res *pipeline.Result, force bool) error {
+	if gone := droppedEnvs(cfg); len(gone) > 0 && !force {
+		return fmt.Errorf("%s has environment(s) %s that this run doesn't generate: writing would remove their files (and a push would delete them from the repository). "+
+			"List every environment (--env for each, or none to use gitopsify.yaml's); to update one, run generate for all of them and then bootstrap --env <name>. "+
+			"Pass --force to remove them", cfg.Output.Dir, strings.Join(gone, ", "))
+	}
 	written, removed, err := res.Tree.Write(cfg.Output.Dir, force)
 	if err != nil {
 		return err
@@ -171,6 +177,26 @@ func writeOutput(u *ui.UI, cfg *config.Config, res *pipeline.Result, force bool)
 		u.Warn("%d Secrets need action in the target; see MIGRATION_REPORT.md", n)
 	}
 	return nil
+}
+
+// droppedEnvs lists the environments of the output directory's previous
+// run (its gitopsify.yaml) that this run doesn't generate.
+func droppedEnvs(cfg *config.Config) []string {
+	prev, err := config.Load(filepath.Join(cfg.Output.Dir, "gitopsify.yaml"))
+	if err != nil {
+		return nil // none yet, or not gitopsify's
+	}
+	now := map[string]bool{}
+	for _, e := range cfg.Environments {
+		now[e.Name] = true
+	}
+	var gone []string
+	for _, e := range prev.Environments {
+		if !now[e.Name] {
+			gone = append(gone, e.Name)
+		}
+	}
+	return gone
 }
 
 // layoutDirs returns the repository directories of the output: one, or one

@@ -160,6 +160,15 @@ type runState struct {
 	interrupted bool
 }
 
+// errShuttingDown refuses runs once the server is stopping.
+var errShuttingDown = errors.New("the server is shutting down; start the run again in a moment")
+
+// serverError is a failure of the server (its disk, its database), not of
+// the request.
+type serverError struct{ error }
+
+func (e serverError) Unwrap() error { return e.error }
+
 // newRuns starts working on runs; finished (may be nil) is told about
 // every run that finishes, including those failed as abandoned.
 func newRuns(st store, dir string, concurrency int, timeout, retention time.Duration, log *slog.Logger, m *metrics, finished func(Run)) (*runs, error) {
@@ -501,24 +510,35 @@ func (rs *runs) save(st *runState, fn func(*Run)) error {
 // for it: the run's span joins its trace (runs outlive requests, so only the
 // trace is shared, not the cancellation).
 func (rs *runs) start(parent context.Context, r Run, work func(context.Context, *runContext) error) (*Run, error) {
+	// The run counts from here, under the lock shutdown closes with: no
+	// run starts after shutdown began, and shutdown waits for every run
+	// that did (wg.Add never races its Wait).
 	rs.mu.Lock()
 	if rs.closed {
 		rs.mu.Unlock()
-		return nil, errors.New("the server is shutting down")
+		return nil, errShuttingDown
 	}
+	rs.wg.Add(1)
 	rs.mu.Unlock()
+	launched := false
+	defer func() {
+		if !launched {
+			rs.wg.Done()
+		}
+	}()
 	r.ID = newRunID()
 	r.Status = StatusQueued
 	// PostgreSQL keeps microseconds: paging by createdAt needs the same.
 	r.CreatedAt = time.Now().UTC().Truncate(time.Microsecond)
 	if err := os.MkdirAll(rs.runDir(r.ID), 0o700); err != nil {
-		return nil, err
+		return nil, serverError{err}
 	}
 	sctx, scancel := bg()
 	err := rs.store.createRun(sctx, &r, rs.owner)
 	scancel()
 	if err != nil {
-		return nil, err
+		_ = os.RemoveAll(rs.runDir(r.ID))
+		return nil, serverError{fmt.Errorf("recording the run: %w", err)}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), rs.timeout)
 	attrs := []attribute.KeyValue{attribute.String("gitopsify.run.id", r.ID), attribute.String("gitopsify.run.type", r.Type)}
@@ -532,11 +552,17 @@ func (rs *runs) start(parent context.Context, r Run, work func(context.Context, 
 		trace.WithAttributes(attrs...))
 	st := &runState{run: r, subs: map[chan runEvent]struct{}{}, cancel: cancel}
 	rs.mu.Lock()
+	if rs.closed {
+		// Shutdown began while the run was being recorded: it found no
+		// run to stop, so this one ends at once, interrupted.
+		st.interrupted = true
+		cancel()
+	}
 	rs.local[r.ID] = st
-	rs.wg.Add(1)
 	rs.mu.Unlock()
 	rs.metrics.runStarted(r.Type)
 
+	launched = true
 	go func() {
 		defer rs.wg.Done()
 		defer cancel()
@@ -547,6 +573,10 @@ func (rs *runs) start(parent context.Context, r Run, work func(context.Context, 
 				span.SetStatus(codes.Error, msg)
 			}
 			span.End()
+		}
+		if ctx.Err() != nil { // stopped before it was queued
+			end(rs.finish(rc, ctx.Err()))
+			return
 		}
 		select {
 		case rs.sem <- struct{}{}:

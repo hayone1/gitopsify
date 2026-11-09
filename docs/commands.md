@@ -51,7 +51,7 @@ Pair it with "generate --adopt", which writes takeover-safe sync settings.
 Usage: `gitopsify adopt [flags]`
 
 ```sh
-  gitopsify adopt --env prod --helm-records backup-delete
+  gitopsify adopt -o gitops --env prod --helm-records backup-delete
 ```
 
 **Flags**
@@ -61,6 +61,7 @@ Usage: `gitopsify adopt [flags]`
 | `--backup-dir` | `.gitopsify-backup/helm-records` | where backups are written |
 | `--dry-run` |  | show what would happen |
 | `--helm-records` | `backup` | keep, backup or backup-delete |
+| `-o`, `--output` |  | directory of the generated repository, whose gitopsify.yaml names the GitOps tool |
 | `-y`, `--yes` |  | don't ask for confirmation |
 
 **Scope**
@@ -502,7 +503,7 @@ Usage: `gitopsify doctor [flags]`
 | `--argocd-version` |  | Argo CD version to install (default v3.5.6) |
 | `--env` |  | target environment: name or name=kube-context (repeatable) |
 | `--flux-version` |  | Flux version to install (default v2.9.6) |
-| `--force` |  | write into a non-empty directory not created by gitopsify |
+| `--force` |  | write into a non-empty directory not created by gitopsify, or remove environments this run doesn't generate |
 | `--layout` |  | environment layout: folder-per-env or repo-per-env |
 | `--no-auto-sync` |  | don't enable automated sync on Argo CD applications |
 | `-o`, `--output` |  | output directory (default ./gitops) |
@@ -702,7 +703,7 @@ Usage: `gitopsify generate [flags]`
 | `--argocd-version` |  | Argo CD version to install (default v3.5.6) |
 | `--env` |  | target environment: name or name=kube-context (repeatable) |
 | `--flux-version` |  | Flux version to install (default v2.9.6) |
-| `--force` |  | write into a non-empty directory not created by gitopsify |
+| `--force` |  | write into a non-empty directory not created by gitopsify, or remove environments this run doesn't generate |
 | `--layout` |  | environment layout: folder-per-env or repo-per-env |
 | `--no-auto-sync` |  | don't enable automated sync on Argo CD applications |
 | `-o`, `--output` |  | output directory (default ./gitops) |
@@ -836,7 +837,7 @@ Usage: `gitopsify init [flags]`
 | `--argocd-version` |  | Argo CD version to install (default v3.5.6) |
 | `--env` |  | target environment: name or name=kube-context (repeatable) |
 | `--flux-version` |  | Flux version to install (default v2.9.6) |
-| `--force` |  | write into a non-empty directory not created by gitopsify |
+| `--force` |  | write into a non-empty directory not created by gitopsify, or remove environments this run doesn't generate |
 | `--layout` |  | environment layout: folder-per-env or repo-per-env |
 | `--no-auto-sync` |  | don't enable automated sync on Argo CD applications |
 | `-o`, `--output` |  | output directory (default ./gitops) |
@@ -941,7 +942,7 @@ Usage: `gitopsify migrate [flags]`
 | `--argocd-version` |  | Argo CD version to install (default v3.5.6) |
 | `--env` |  | target environment: name or name=kube-context (repeatable) |
 | `--flux-version` |  | Flux version to install (default v2.9.6) |
-| `--force` |  | write into a non-empty directory not created by gitopsify |
+| `--force` |  | write into a non-empty directory not created by gitopsify, or remove environments this run doesn't generate |
 | `--layout` |  | environment layout: folder-per-env or repo-per-env |
 | `--no-auto-sync` |  | don't enable automated sync on Argo CD applications |
 | `-o`, `--output` |  | output directory (default ./gitops) |

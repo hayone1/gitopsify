@@ -242,12 +242,6 @@ func crossplaneReadme(res *Result, in Input, wsDirs []string) []byte {
 	b.WriteString("## 1. Install the provider\n\n```sh\nkubectl apply -k setup/\nkubectl wait provider.pkg.crossplane.io/" + xp.Name + " --for=condition=Healthy --timeout=10m\n# The provider can report Healthy before all its CRDs are served:\nkubectl wait crd --all --for=condition=Established --timeout=5m\n```\n\n")
 	b.WriteString("`setup/` holds the Provider package. Apply it first: the " + xp.ProviderConfig.Kind + " of each workspace and the managed resources use kinds that exist only once the provider runs.\n\n")
 	b.WriteString("## 2. Credentials\n\nEach " + xp.ProviderConfig.Kind + " reads its credentials from a Secret in `" + CredentialsNamespace + "`:\n\n")
-	var keys []string
-	for _, s := range d.Settings {
-		if s.Crossplane != "" {
-			keys = append(keys, s.Crossplane)
-		}
-	}
 	insts := map[string]bool{}
 	for _, w := range res.State.Workspaces {
 		if inst, _, ok := strings.Cut(w.Dir, "/"); ok {

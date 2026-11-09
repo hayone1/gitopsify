@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    team: shop
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false

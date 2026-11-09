@@ -237,6 +237,7 @@ func flux(ctx context.Context, o Options) error {
 		}
 		data["identity"] = string(key)
 		if g.KnownHostsFile == "" {
+			//lint:ignore ST1005 a product name
 			return fmt.Errorf("Flux needs the Git server's host keys for SSH: pass --known-hosts (for example from ssh-keyscan)")
 		}
 		kh, err := os.ReadFile(g.KnownHostsFile)

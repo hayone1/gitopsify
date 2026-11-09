@@ -142,7 +142,8 @@ func (r *renderer) argoEnv(l layout, env config.Environment) error {
 	appsDir := path.Join(envDir, "apps")
 	project := r.projectName(l, env.Name)
 
-	if config.True(a.CreateProject, true) {
+	// Never Argo CD's own default project: other applications use it.
+	if config.True(a.CreateProject, true) && project != "default" {
 		if err := r.tree.AddYAML(l.file(appsDir, "project.yaml"), r.appProject(l, env, project)); err != nil {
 			return err
 		}
@@ -404,17 +405,18 @@ func (r *renderer) applicationSet(l layout, env config.Environment, envDir, apps
 	a := r.cfg.Output.ArgoCD
 	ordered := config.True(r.cfg.Ordering.Enabled, true) && len(waves) > 1
 	repo, rev := l.repoURL, r.cfg.Output.Repo.Revision
-	syncOpts := "        - ServerSideApply=true\n"
+	// Indented for spec.syncPolicy in the patch below.
+	syncOpts := "      - ServerSideApply=true\n"
 	if !config.True(a.ServerSideApply, true) {
 		syncOpts = ""
 	}
 	if r.cfg.Adopt.Enabled {
-		syncOpts += "        - ClientSideApplyMigration=false\n"
+		syncOpts += "      - ClientSideApplyMigration=false\n"
 	}
 	automated := ""
 	if config.True(a.AutoSync, true) && !ordered {
 		// RollingSync drives syncs itself and turns automated sync off.
-		automated = fmt.Sprintf("        automated:\n          prune: %t\n          selfHeal: %t\n", config.True(a.Prune, true), config.True(a.SelfHeal, true))
+		automated = fmt.Sprintf("    automated:\n      prune: %t\n      selfHeal: %t\n", config.True(a.Prune, true), config.True(a.SelfHeal, true))
 	}
 	patch := `spec:
 {{- if eq .type "helm" }}
@@ -453,7 +455,7 @@ func (r *renderer) applicationSet(l layout, env config.Environment, envDir, apps
 {{- end }}
   syncPolicy:
 ` + automated + `    syncOptions:
-` + strings.ReplaceAll(syncOpts, "        - ", "      - ") + `{{- if eq .skipDryRun "true" }}
+` + syncOpts + `{{- if eq .skipDryRun "true" }}
       - SkipDryRunOnMissingResource=true
 {{- end }}
 {{- if eq .createNamespace "true" }}
@@ -480,6 +482,10 @@ func (r *renderer) applicationSet(l layout, env config.Environment, envDir, apps
 			},
 		},
 		"templatePatch": patch,
+		// An Application that drops out of the generator (its config file
+		// removed, a bad push) leaves its objects running: they were
+		// running before gitopsify, and Argo CD would otherwise delete them.
+		"syncPolicy": map[string]any{"preserveResourcesOnDeletion": true},
 	}
 	if ordered {
 		var ws []int

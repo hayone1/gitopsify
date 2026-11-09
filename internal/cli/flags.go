@@ -289,7 +289,7 @@ func (o *options) addOutput(fs *pflag.FlagSet) {
 	fs.StringVar(&o.repoPath, "repo-path", "", "directory of the output inside the repository")
 	fs.StringArrayVar(&o.envs, "env", nil, "target environment: name or name=kube-context (repeatable)")
 	fs.BoolVar(&o.adopt, "adopt", false, "the target already runs these objects: generate takeover-safe sync settings")
-	fs.BoolVar(&o.force, "force", false, "write into a non-empty directory not created by gitopsify")
+	fs.BoolVar(&o.force, "force", false, "write into a non-empty directory not created by gitopsify, or remove environments this run doesn't generate")
 	fs.StringVar(&o.argoVersion, "argocd-version", "", "Argo CD version to install (default "+config.DefaultArgoCDVersion+")")
 	fs.StringVar(&o.fluxVersion, "flux-version", "", "Flux version to install (default "+config.DefaultFluxVersion+")")
 	fs.StringVar(&o.project, "project", "", "Argo CD project (default gitopsify)")

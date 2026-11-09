@@ -1,0 +1,10 @@
+{
+  "app": "cluster",
+  "appName": "uat-cluster",
+  "appPath": "apps/cluster/envs/uat",
+  "createNamespace": "false",
+  "namespace": "",
+  "skipDryRun": "false",
+  "type": "kustomize",
+  "wave": "w0"
+}

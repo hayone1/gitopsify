@@ -1,0 +1,13 @@
+{
+  "app": "inhouse",
+  "appName": "uat-inhouse",
+  "appPath": "apps/inhouse/charts/inhouse",
+  "createNamespace": "false",
+  "namespace": "tools",
+  "releaseName": "inhouse",
+  "skipDryRun": "false",
+  "type": "helm-git",
+  "valuesBase": "apps/inhouse/base/values.yaml",
+  "valuesEnv": "apps/inhouse/envs/uat/values.yaml",
+  "wave": "w0"
+}

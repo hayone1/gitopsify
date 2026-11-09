@@ -64,6 +64,15 @@ func TestUserFromClaims(t *testing.T) {
 	if u.Username != "7" || u.Email != "" {
 		t.Errorf("email without email_verified: %+v", u)
 	}
+	// usernameClaim: email takes the verified address only: an unverified
+	// one could be anybody's.
+	byEmail := &config.ServerOIDC{GroupsClaim: "groups", UsernameClaim: "email"}
+	if u, err := userFromClaims(byEmail, map[string]any{"sub": "9", "email": "boss@acme.io", "email_verified": false}); err == nil {
+		t.Errorf("an unverified email became the username: %+v", u)
+	}
+	if u, err := userFromClaims(byEmail, map[string]any{"sub": "9", "email": "boss@acme.io", "email_verified": true}); err != nil || u.Username != "boss@acme.io" {
+		t.Errorf("verified email as username: %+v %v", u, err)
+	}
 	trusting := &config.ServerOIDC{GroupsClaim: "groups", TrustUnverifiedEmail: true}
 	if u, _ := userFromClaims(trusting, map[string]any{"sub": "7", "email": "alice@corp.com"}); u.Username != "alice@corp.com" {
 		t.Errorf("trustUnverifiedEmail: %+v", u)

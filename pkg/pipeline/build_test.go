@@ -99,7 +99,17 @@ func TestGoldenKustomizationsBuild(t *testing.T) {
 // templatePatch the way the ApplicationSet controller does, for every app
 // type, and checks the result is a valid Application spec.
 func TestApplicationSetTemplatePatch(t *testing.T) {
-	dir := filepath.Join("..", "..", "testdata", "golden", "argocd-applicationset", "argocd", "uat")
+	for _, c := range []struct {
+		golden    string
+		automated bool
+	}{{"argocd-applicationset", false}, {"argocd-applicationset-unordered", true}} {
+		t.Run(c.golden, func(t *testing.T) {
+			testTemplatePatch(t, filepath.Join("..", "..", "testdata", "golden", c.golden, "argocd", "uat"), c.automated)
+		})
+	}
+}
+
+func testTemplatePatch(t *testing.T, dir string, automated bool) {
 	data, err := os.ReadFile(filepath.Join(dir, "apps", "applicationset.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +144,8 @@ func TestApplicationSetTemplatePatch(t *testing.T) {
 				Source  map[string]any   `json:"source"`
 				Sources []map[string]any `json:"sources"`
 				Sync    struct {
-					SyncOptions []string `json:"syncOptions"`
+					Automated   map[string]any `json:"automated"`
+					SyncOptions []string       `json:"syncOptions"`
 				} `json:"syncPolicy"`
 			} `json:"spec"`
 		}
@@ -164,6 +175,9 @@ func TestApplicationSetTemplatePatch(t *testing.T) {
 		}
 		if len(patch.Spec.Sync.SyncOptions) == 0 || patch.Spec.Sync.SyncOptions[0] != "ServerSideApply=true" {
 			t.Errorf("%s: syncOptions = %v", f, patch.Spec.Sync.SyncOptions)
+		}
+		if (patch.Spec.Sync.Automated != nil) != automated || (automated && patch.Spec.Sync.Automated["selfHeal"] != true) {
+			t.Errorf("%s: automated = %v", f, patch.Spec.Sync.Automated)
 		}
 	}
 	for _, typ := range []string{"kustomize", "helm", "helm-git"} {

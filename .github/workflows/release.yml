@@ -57,11 +57,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
+      - uses: oras-project/setup-oras@v1
       - run: |
           v=${GITHUB_REF_NAME#v}
+          # Artifact Hub lists the image this version runs.
+          sed -i "s|image: docker.io/hayone/gitopsify:.*|image: docker.io/hayone/gitopsify:$v|" charts/gitopsify/Chart.yaml
           helm package charts/gitopsify --version "$v" --app-version "$v"
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
           helm push "gitopsify-$v.tgz" oci://ghcr.io/hayone1/charts
+          # Artifact Hub's repository metadata (artifacthub-repo.yml).
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          cd charts/gitopsify
+          oras push ghcr.io/hayone1/charts/gitopsify:artifacthub.io \
+            --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+            artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
 
   # Installs the release just published the way users do, on every platform.
   verify-install:

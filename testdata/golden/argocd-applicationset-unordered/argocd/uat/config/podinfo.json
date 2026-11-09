@@ -1,0 +1,15 @@
+{
+  "app": "podinfo",
+  "appName": "uat-podinfo",
+  "chart": "podinfo",
+  "createNamespace": "false",
+  "namespace": "podinfo",
+  "releaseName": "podinfo",
+  "repoURL": "https://stefanprodan.github.io/podinfo",
+  "skipDryRun": "false",
+  "type": "helm",
+  "valuesBase": "apps/podinfo/base/values.yaml",
+  "valuesEnv": "apps/podinfo/envs/uat/values.yaml",
+  "version": "6.9.2",
+  "wave": "w0"
+}

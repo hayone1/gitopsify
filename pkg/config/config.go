@@ -88,7 +88,13 @@ type Config struct {
 	Output       Output        `json:"output"`
 	Environments []Environment `json:"environments"`
 	Adopt        Adopt         `json:"adopt"`
+
+	derived derivedDefaults
 }
+
+// derivedDefaults records the defaults Default worked out from other fields,
+// which Document leaves out.
+type derivedDefaults struct{ prune, createProject bool }
 
 // Source is the cluster gitopsify reads from.
 type Source struct {

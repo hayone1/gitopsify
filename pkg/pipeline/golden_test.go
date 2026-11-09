@@ -46,6 +46,15 @@ var cases = map[string]func(c *config.Config){
 		c.Output.Repo.URL = "https://github.com/acme/gitops.git"
 		c.Environments = []config.Environment{{Name: "uat"}}
 	},
+	// Unordered: Argo CD's automated sync instead of RollingSync.
+	"argocd-applicationset-unordered": func(c *config.Config) {
+		c.Output.Tool = config.ToolArgoCD
+		c.Output.ArgoCD.Pattern = config.PatternApplicationSet
+		c.Output.Repo.URL = "https://github.com/acme/gitops.git"
+		off := false
+		c.Ordering.Enabled = &off
+		c.Environments = []config.Environment{{Name: "uat"}}
+	},
 	"argocd-single": func(c *config.Config) {
 		c.Output.Tool = config.ToolArgoCD
 		c.Output.ArgoCD.Pattern = config.PatternSingle

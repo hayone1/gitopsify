@@ -379,15 +379,6 @@ func toAny(ss []string) []any {
 	return out
 }
 
-func appendUnique(list []string, s string) []string {
-	for _, v := range list {
-		if v == s {
-			return list
-		}
-	}
-	return append(list, s)
-}
-
 func sortedMapKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

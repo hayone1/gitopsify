@@ -351,6 +351,12 @@ func userFromClaims(c *config.ServerOIDC, claims map[string]any) (*User, error) 
 	}
 	u := &User{Name: str("name"), Email: email, Via: "oidc"}
 	switch {
+	case c.UsernameClaim == "email":
+		// The verified address only: anyone may type an address.
+		if email == "" {
+			return nil, loginFailed("claims", "the ID token's email isn't verified (email_verified), and usernameClaim is email")
+		}
+		u.Username = email
 	case c.UsernameClaim != "":
 		u.Username = str(c.UsernameClaim)
 	case email != "":

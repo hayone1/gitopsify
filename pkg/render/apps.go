@@ -6,6 +6,7 @@ import (
 	"path"
 	"reflect"
 	"sort"
+	"strings"
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -215,8 +216,16 @@ func (r *renderer) renderHelmApp(l layout, a *model.App) error {
 		if err != nil {
 			return err
 		}
+		// The chart name and file names come from the release record, which
+		// anyone who can create Secrets in the namespace can forge.
+		if c := rel.Chart.Name; c == "" || c == "." || c == ".." || strings.ContainsAny(c, "/\\") {
+			return fmt.Errorf("helm release %s: chart name %q isn't a valid directory name; exclude the release or use helm.mode: manifests", rel.Key(), c)
+		}
 		names := make([]string, 0, len(files))
 		for n := range files {
+			if treePath(n) != nil {
+				return fmt.Errorf("helm release %s: chart file %q isn't a path inside the chart; exclude the release or use helm.mode: manifests", rel.Key(), n)
+			}
 			names = append(names, n)
 		}
 		sort.Strings(names)

@@ -191,6 +191,24 @@ func TestSelectionAndHelm(t *testing.T) {
 	}
 }
 
+// A cluster-scoped object named with --resource is migrated, though nothing
+// selected references it.
+func TestSelectClusterScoped(t *testing.T) {
+	inv := objects(t,
+		`{apiVersion: cert-manager.io/v1, kind: ClusterIssuer, metadata: {name: letsencrypt}}`,
+		`{apiVersion: cert-manager.io/v1, kind: ClusterIssuer, metadata: {name: other}}`,
+	)
+	cfg := config.New()
+	cfg.Scope.Resources = []string{"clusterissuer.cert-manager.io/letsencrypt"}
+	run(t, inv, cfg)
+	if got := reason(inv, "ClusterIssuer.cert-manager.io/letsencrypt"); got != "included" {
+		t.Errorf("named ClusterIssuer: %q", got)
+	}
+	if got := reason(inv, "ClusterIssuer.cert-manager.io/other"); got == "included" {
+		t.Error("an unnamed ClusterIssuer was included")
+	}
+}
+
 func TestParseResourceSpec(t *testing.T) {
 	for in, want := range map[string]ResourceSpec{
 		"deploy/web":                         {Kind: "deploy", Name: "web"},

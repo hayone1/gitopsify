@@ -326,7 +326,7 @@ func (s *Server) startExport(ctx context.Context, req runRequest, u *User) (*Run
 	spec, _ := json.Marshal(exportDocument(x, d, t))
 	r := Run{Type: RunExport, Name: firstNonEmpty(x.Metadata.Name, t.Name), Tool: t.Name, CreatedBy: u.Username, Spec: spec, Repo: req.Repo}
 	return s.runs.start(ctx, r, func(ctx context.Context, rc *runContext) error {
-		if err := s.export(ctx, rc, x, t, in, d, settings, req.AllowPartial); err != nil {
+		if err := s.export(ctx, rc, x, t, in, d, settings, req.AllowPartial, req.Repo); err != nil {
 			return err
 		}
 		if req.Publish != nil {
@@ -337,7 +337,19 @@ func (s *Server) startExport(ctx context.Context, req runRequest, u *User) (*Run
 }
 
 func (s *Server) export(ctx context.Context, rc *runContext, x *config.Export, t *config.ServerTool, in *provider.Installed,
-	d *sdk.Description, settings map[string]string, allowPartial bool) error {
+	d *sdk.Description, settings map[string]string, allowPartial bool, repo *RunRepo) error {
+	// The repository the export goes to: its branch, and the state of the
+	// export already there (stable names, removed blocks), come first.
+	dir := s.runs.outputDir(rc.ID())
+	if repo != nil {
+		if err := s.checkoutRemote(ctx, rc, dir, repo.URL, repo.Branch); err != nil {
+			return err
+		}
+	}
+	prev, err := iac.LoadState(dir)
+	if err != nil {
+		return fmt.Errorf("the export state in %s: %w", firstNonEmpty(repoURL(repo), "the output"), err)
+	}
 	client := &provider.Client{Name: in.Name, Path: in.Path, Env: s.providerEnv(), Log: func(l provider.LogLine) {
 		switch l.Level {
 		case "DEBUG":
@@ -395,7 +407,7 @@ func (s *Server) export(ctx context.Context, rc *runContext, x *config.Export, t
 		}
 		inv.Skipped = picked.Skipped
 	}
-	res, err := iac.Build(iac.Input{Description: d, Instances: []*iac.Instance{{Name: t.Name, Settings: settings, Target: check.Target,
+	res, err := iac.Build(iac.Input{Description: d, Previous: prev, Instances: []*iac.Instance{{Name: t.Name, Settings: settings, Target: check.Target,
 		Kinds: kinds, Inventory: inv, Selected: selected}}, Options: iac.Options{
 		Formats: x.Spec.Output.Formats, Adopt: x.Spec.Output.AdoptOrDefault(), SecretValues: firstNonEmpty(x.Spec.Output.SecretValues, config.SecretValuesSkip),
 		NamespacePrefix: x.Spec.Output.Crossplane.NamespacePrefix, ManagementPolicies: x.Spec.Output.Crossplane.ManagementPolicies,
@@ -404,7 +416,6 @@ func (s *Server) export(ctx context.Context, rc *runContext, x *config.Export, t
 	if err != nil {
 		return err
 	}
-	dir := s.runs.outputDir(rc.ID())
 	written, _, err := res.Write(dir, true)
 	if err != nil {
 		return err
@@ -520,4 +531,11 @@ func settingEnvs(v reflect.Value) []string {
 		return out
 	}
 	return nil
+}
+
+func repoURL(r *RunRepo) string {
+	if r == nil {
+		return ""
+	}
+	return r.URL
 }

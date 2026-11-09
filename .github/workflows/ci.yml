@@ -37,6 +37,10 @@ jobs:
       - run: npm install -g pnpm@10.20.0
       - run: make ui
       - run: make lint
+      # Bugs vet doesn't catch, and known vulnerabilities in code the binary
+      # calls (the weekly run catches new ones).
+      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./... && (cd sdk && go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...)
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - run: make test
       - run: make build
       # Releases and go install build without go.work: go.sum must be

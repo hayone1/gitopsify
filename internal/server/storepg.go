@@ -85,24 +85,40 @@ func newPGStore(ctx context.Context, url string, maxConns int) (*pgStore, error)
 		pool.Close()
 		return nil, fmt.Errorf("connecting to PostgreSQL: %w", redactPG(err))
 	}
+	if err := migratePG(ctx, pool); err != nil {
+		pool.Close() // after migratePG released its connection: Close waits for it
+		return nil, err
+	}
+	return &pgStore{pool: pool}, nil
+}
+
+// migratePG creates or updates the tables, one replica at a time, within
+// two minutes (a replica holding the lock, or locks on the tables).
+func migratePG(ctx context.Context, pool *pgxpool.Pool) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		pool.Close()
-		return nil, err
+		return fmt.Errorf("connecting to PostgreSQL: %w", redactPG(err))
 	}
 	defer conn.Release()
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, pgLock); err != nil {
-		pool.Close()
-		return nil, err
+		return fmt.Errorf("waiting for the schema lock (another replica updating the tables?): %w", err)
 	}
-	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, pgLock) //nolint:errcheck
+	defer func() {
+		uctx, ucancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ucancel()
+		if _, err := conn.Exec(uctx, `SELECT pg_advisory_unlock($1)`, pgLock); err != nil {
+			// The session would keep the lock in the pool: end it.
+			_ = conn.Conn().Close(uctx)
+		}
+	}()
 	for _, stmt := range pgSchema {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
-			pool.Close()
-			return nil, fmt.Errorf("creating the tables: %w", err)
+			return fmt.Errorf("creating the tables (the database user needs to own them, or CREATE on the schema): %w", err)
 		}
 	}
-	return &pgStore{pool: pool}, nil
+	return nil
 }
 
 // redactPG keeps passwords out of connection errors.

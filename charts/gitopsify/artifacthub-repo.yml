@@ -1,0 +1,15 @@
+# Artifact Hub's metadata for oci://ghcr.io/hayone1/charts/gitopsify, pushed
+# by the release workflow under the tag "artifacthub.io".
+#
+# After adding the repository on artifacthub.io (kind: Helm charts, URL
+# oci://ghcr.io/hayone1/charts/gitopsify), uncomment and fill in:
+# - repositoryID, from the repository's card in the control panel: it gives
+#   the "Verified publisher" label;
+# - owners, with the email of your Artifact Hub account: it lets you claim
+#   the repository.
+# They take effect with the next release.
+
+# repositoryID: 00000000-0000-0000-0000-000000000000
+# owners:
+#   - name: hayone1
+#     email: you@example.com

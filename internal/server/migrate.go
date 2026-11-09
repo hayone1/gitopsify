@@ -166,6 +166,7 @@ func (s *Server) prepareMigration(text, cluster string, u *User) (*config.Config
 	}
 	if usesSealedSecrets(cfg) {
 		if len(cfg.Environments) == 0 || !cfg.Environments[0].Cluster.Access.Configured() {
+			//lint:ignore ST1005 a product name
 			return nil, errors.New("Sealed Secrets are sealed with the controller's certificate, which the server fetches from the first environment's cluster: pick that cluster (spec.environments[0].cluster.context), or use sops, external-secrets or skip")
 		}
 		if err := s.pinSealedSecrets(cfg, envClusters); err != nil {
@@ -387,33 +388,46 @@ func r0(res *pipeline.Result) int {
 	return n
 }
 
+// checkoutRemote checks out a branch of a remote into an output directory
+// that isn't a repository yet, so a push continues the remote's history.
+// Failing to is a warning (a new repository, or one the server can't read
+// yet): the push then says why.
+func (s *Server) checkoutRemote(ctx context.Context, rc *runContext, dir, remote, branch string) error {
+	if remote == "" {
+		return nil
+	}
+	env, err := gitEnv(s.cfg.Git, remote)
+	if err != nil {
+		return err
+	}
+	done, err := gitrepo.CheckoutEnv(ctx, dir, remote, branch, env)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		rc.Warn("couldn't check out %s (%v); the output starts a new history and pushing it may be refused", remote, err)
+		return nil
+	}
+	if done {
+		if err := noSymlinks(dir); err != nil {
+			return err
+		}
+		if err := refuseTrackedSecrets(dir, remote); err != nil {
+			return err
+		}
+		rc.Info("checked out %s (%s)", remote, firstNonEmpty(branch, "main"))
+	}
+	return nil
+}
+
 func (s *Server) migrate(ctx context.Context, rc *runContext, cfg *config.Config) error {
 	dir := s.runs.outputDir(rc.ID())
 	cfg.Output.Dir = dir
-	// Continue the remote's history, as generate --push does.
-	if cfg.Output.Repo.URL != "" {
-		for d, remote := range layoutDirs(cfg) {
-			env, err := gitEnv(s.cfg.Git, remote)
-			if err != nil {
-				return err
-			}
-			done, err := gitrepo.CheckoutEnv(ctx, d, remote, cfg.Output.Repo.Revision, env)
-			if err != nil {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				rc.Warn("couldn't check out %s (%v); the output starts a new history and pushing it may be refused", remote, err)
-				continue
-			}
-			if done {
-				if err := noSymlinks(d); err != nil {
-					return err
-				}
-				if err := refuseTrackedSecrets(d, remote); err != nil {
-					return err
-				}
-				rc.Info("checked out %s (%s)", remote, firstNonEmpty(cfg.Output.Repo.Revision, "main"))
-			}
+	// Continue the remote's history, as generate --push does (every
+	// repository: repo-per-env may name them per environment only).
+	for d, remote := range layoutDirs(cfg) {
+		if err := s.checkoutRemote(ctx, rc, d, remote, cfg.Output.Repo.Revision); err != nil {
+			return err
 		}
 	}
 	popts := s.pipelineOptions(rc, cfg)

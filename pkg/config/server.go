@@ -485,13 +485,20 @@ func (s *Server) Validate() error {
 	if d, err := time.ParseDuration(sp.Auth.SessionTTL); err != nil || d <= 0 {
 		add("spec.auth.sessionTTL %q: want a positive duration, such as 12h", sp.Auth.SessionTTL)
 	}
+	// Zero isn't "forever": a zero retention prunes everything at once,
+	// and a zero timeout fails every run.
 	for _, d := range []struct{ name, v string }{{"runs.timeout", sp.Runs.Timeout}, {"runs.retention", sp.Runs.Retention}, {"audit.retention", sp.Audit.Retention}} {
-		if _, err := time.ParseDuration(d.v); err != nil {
+		if v, err := time.ParseDuration(d.v); err != nil {
 			add("spec.%s: %v", d.name, err)
+		} else if v <= 0 {
+			add("spec.%s %q: want a positive duration, such as 720h", d.name, d.v)
 		}
 	}
 	if sp.Runs.Concurrency < 1 {
 		add("spec.runs.concurrency must be at least 1")
+	}
+	if sp.Runs.MaxQueuedPerUser < 1 {
+		add("spec.runs.maxQueuedPerUser must be at least 1")
 	}
 	validRole := func(r string) bool { return r == RoleViewer || r == RoleOperator || r == RoleAdmin }
 	if sp.RBAC.DefaultRole != "" && !validRole(sp.RBAC.DefaultRole) {

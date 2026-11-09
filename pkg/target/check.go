@@ -112,17 +112,39 @@ func Check(ctx context.Context, inv *model.Inventory, cfg *config.Config, env *c
 	for _, o := range inv.Included() {
 		migratedNames[o.Ref.GroupKind()+"/"+o.Ref.Name] = true
 	}
+	// Chart objects come from the release's recorded manifest: transforms
+	// map classes in the chart's values, which that manifest predates.
+	mapped := map[string]bool{}
+	for _, ts := range [][]config.Transform{cfg.Transforms, env.Transforms} {
+		for _, t := range ts {
+			if t.Type == "storageClass" || t.Type == "ingressClass" {
+				for from := range t.Map {
+					mapped[t.Type+"/"+from] = true
+				}
+			}
+		}
+	}
+	var fromChart bool
 	checkRef := func(check, group, version, resource, kind, name, user string) {
 		if name == "" || migratedNames[kind+"."+group+"/"+name] || migratedNames[kind+"/"+name] {
 			return
 		}
+		transform := strings.ToLower(kind[:1]) + kind[1:]
+		if fromChart && mapped[transform+"/"+name] {
+			return // the chart's values are mapped
+		}
 		_, err := c.Dynamic.Resource(schema.GroupVersionResource{Group: group, Version: version, Resource: resource}).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			add(SeverityError, check, user, "%s %q does not exist in the target (map it with a %s transform or create it)", kind, name, strings.ToLower(kind[:1])+kind[1:])
+		switch {
+		case err == nil:
+		case fromChart:
+			add(SeverityWarning, check, user, "%s %q does not exist in the target, as the release's recorded manifest has it; if the chart's values don't set it otherwise, map it with a %s transform or create it (diff --helm-template renders the generated values)", kind, name, transform)
+		default:
+			add(SeverityError, check, user, "%s %q does not exist in the target (map it with a %s transform or create it)", kind, name, transform)
 		}
 	}
 	for _, eo := range objs {
 		u := eo.Object
+		fromChart = eo.FromChart
 		subject := refString(u)
 		switch u.GroupVersionKind().GroupKind().String() {
 		case "PersistentVolumeClaim":

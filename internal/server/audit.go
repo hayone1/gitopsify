@@ -90,5 +90,3 @@ func (a *auditLog) query(q auditQuery) ([]AuditEvent, error) {
 	defer cancel()
 	return a.store.queryAudit(ctx, q)
 }
-
-func (a *auditLog) close() {}

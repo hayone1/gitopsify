@@ -31,7 +31,6 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/log/global"
 	lognoop "go.opentelemetry.io/otel/log/noop"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
@@ -172,7 +171,7 @@ func Setup(ctx context.Context, service, version string) error {
 		otel.SetMeterProvider(mp)
 	}
 	if lp != nil {
-		global.SetLoggerProvider(lp)
+		otel.SetLoggerProvider(lp)
 	}
 	logs, shutdowns = lp, stop
 	enabled.Store(true)
@@ -192,7 +191,7 @@ func Shutdown(ctx context.Context) error {
 	if enabled.Swap(false) {
 		otel.SetTracerProvider(tracenoop.NewTracerProvider())
 		otel.SetMeterProvider(metricnoop.NewMeterProvider())
-		global.SetLoggerProvider(lognoop.NewLoggerProvider())
+		otel.SetLoggerProvider(lognoop.NewLoggerProvider())
 	}
 	return errors.Join(errs...)
 }

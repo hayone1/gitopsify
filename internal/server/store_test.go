@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hayone1/gitopsify/pkg/config"
 )
@@ -753,4 +756,103 @@ func TestLeaseLoss(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Error("unlock hung")
 	}
+}
+
+// Runs started while the server shuts down either start before it (and it
+// stops them) or are refused; none keeps working after shutdown returned.
+func TestStartDuringShutdown(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		fs, err := newFileStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		rs, err := newRuns(fs, t.TempDir(), 2, time.Minute, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var ids []string
+		for j := 0; j < 8; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r, err := rs.start(context.Background(), Run{Type: RunScan, Name: "x"}, func(ctx context.Context, _ *runContext) error {
+					<-ctx.Done()
+					return ctx.Err()
+				})
+				switch {
+				case err == nil:
+					mu.Lock()
+					ids = append(ids, r.ID)
+					mu.Unlock()
+				case !errors.Is(err, errShuttingDown):
+					t.Error(err)
+				}
+			}()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		rs.shutdown(ctx)
+		if ctx.Err() != nil {
+			t.Fatal("shutdown waited for a run it didn't stop")
+		}
+		cancel()
+		wg.Wait()
+		for _, id := range ids {
+			got, ok := rs.get(id)
+			if !ok || !got.finished() || got.Status != StatusFailed || !strings.HasPrefix(got.Error, "interrupted") {
+				t.Fatalf("run %s after shutdown: %+v", id, got)
+			}
+		}
+	}
+}
+
+// A schema error (a database user that may not create tables) is reported,
+// without hanging, and leaves the schema lock free for other replicas.
+func TestPGSchemaError(t *testing.T) {
+	u := pgURL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	// A fresh database the limited role can't create tables in.
+	for _, q := range []string{`DROP DATABASE IF EXISTS gitopsify_limited`, `DROP ROLE IF EXISTS gitopsify_limited`,
+		`CREATE ROLE gitopsify_limited LOGIN PASSWORD 'pw'`, `CREATE DATABASE gitopsify_limited`} {
+		if _, err := admin.Exec(ctx, q); err != nil {
+			t.Fatal(q, err)
+		}
+	}
+	pu, err := url.Parse(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pu.User = url.UserPassword("gitopsify_limited", "pw")
+	pu.Path = "/gitopsify_limited"
+	done := make(chan error, 1)
+	go func() {
+		st, err := newPGStore(ctx, pu.String(), 2)
+		if err == nil {
+			_ = st.close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "creating the tables") {
+			t.Fatalf("got %v, want a schema error", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("newPGStore hung on a schema error")
+	}
+	// The lock is free: the real store opens at once.
+	octx, ocancel := context.WithTimeout(ctx, 10*time.Second)
+	defer ocancel()
+	st, err := newPGStore(octx, u, 2)
+	if err != nil {
+		t.Fatalf("the schema lock stayed held: %v", err)
+	}
+	_ = st.close()
 }

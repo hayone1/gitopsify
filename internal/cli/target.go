@@ -233,10 +233,10 @@ later "helm upgrade" would fight the GitOps tool. adopt backs them up and, with
 so they are kept.
 
 Pair it with "generate --adopt", which writes takeover-safe sync settings.`,
-		Example: "  gitopsify adopt --env prod --helm-records backup-delete",
+		Example: "  gitopsify adopt -o gitops --env prod --helm-records backup-delete",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := o.load(cmd)
+			cfg, err := o.loadForBootstrap(cmd)
 			if err != nil {
 				return err
 			}
@@ -248,6 +248,16 @@ Pair it with "generate --adopt", which writes takeover-safe sync settings.`,
 			case target.HelmRecordsKeep, target.HelmRecordsBackup, target.HelmRecordsBackupDelete:
 			default:
 				return fmt.Errorf("--helm-records must be keep, backup or backup-delete")
+			}
+			if helmRecords == target.HelmRecordsBackupDelete {
+				if o.configFile == "" && !fileExists(DefaultConfigFile) {
+					// Flux HelmReleases keep using the records: deleting
+					// them makes Flux install every release again.
+					return fmt.Errorf("--helm-records backup-delete needs to know the GitOps tool that takes over: pass -o <the generated repository> or -c gitopsify.yaml")
+				}
+				if backupDir == "" {
+					return fmt.Errorf("--helm-records backup-delete needs a --backup-dir: the records are deleted only after they are backed up")
+				}
 			}
 			c, err := targetClient(o, cfg, env)
 			if err != nil {
@@ -292,11 +302,11 @@ Pair it with "generate --adopt", which writes takeover-safe sync settings.`,
 	cmd.Flags().StringVar(&backupDir, "backup-dir", filepath.Join(".gitopsify-backup", "helm-records"), "where backups are written")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would happen")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "don't ask for confirmation")
+	cmd.Flags().StringVarP(&o.output, "output", "o", "", "directory of the generated repository, whose gitopsify.yaml names the GitOps tool")
 	return cmd
 }
 
 type bootstrapFlags struct {
-	dir         string
 	gitUser     string
 	gitToken    string
 	sshKey      string
