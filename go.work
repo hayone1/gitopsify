@@ -2,7 +2,7 @@
 // both is one pull request. go install ...@version ignores this file and uses
 // the tagged SDK go.mod requires; releases build with GOWORK=off to match
 // (docs/development.md, "The SDK module").
-go 1.27.3
+go 1.27.4
 
 use (
 	.
